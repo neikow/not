@@ -18,6 +18,10 @@ rotating the secret everywhere, and the server's environment held a long-lived c
   not-server pair`). Access to the Docker host is the admin credential, so the server needs no secret
   in its environment. Paired devices mint codes too (Settings → Add device), list devices and revoke any
   of them. All devices are equal: single user ([0004](0004-single-user.md)).
+- **QR codes** carry `not://pair?server=<url>&code=<code>` (format in `not-protocol`), so scanning fills
+  in both fields. Shown by `not-server pair <public URL>`, the Mac's and Android's Add Device; scanned in
+  the Android app with CameraX + ZXing rather than Google's code scanner, which needs Play services and
+  ships usage telemetry. The camera permission is asked for only when the scanner opens.
 - **The server identifies the pusher from the token.** The client no longer sends a device id; pulls
   skip the caller's own updates by its paired device id.
 - **Credentials live in the core's SQLite file**, next to the replica they authenticate, not in the

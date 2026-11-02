@@ -3,6 +3,8 @@
 //! The server treats `data` as opaque bytes: it never decodes Loro updates. Every endpoint except
 //! `/pair` needs `Authorization: Bearer <device token>`; the server knows which device is calling.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// Server-assigned position in the global update log. Strictly increasing.
@@ -94,6 +96,45 @@ pub struct DeviceInfo {
     pub last_seen_at: Option<i64>,
 }
 
+/// What a pairing QR code holds: `not://pair?server=<url>&code=<code>`. Scanning one fills in both
+/// fields a new device needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairingLink {
+    pub server_url: String,
+    pub code: String,
+}
+
+impl PairingLink {
+    const PREFIX: &str = "not://pair?";
+
+    /// `None` unless `text` is a pairing link with both fields.
+    pub fn parse(text: &str) -> Option<Self> {
+        let query = text.trim().strip_prefix(Self::PREFIX)?;
+        let (mut server_url, mut code) = (None, None);
+        for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+            match &*key {
+                "server" => server_url = Some(value.into_owned()),
+                "code" => code = Some(value.into_owned()),
+                _ => {}
+            }
+        }
+        Some(Self {
+            server_url: server_url.filter(|s| !s.is_empty())?,
+            code: code.filter(|c| !c.is_empty())?,
+        })
+    }
+}
+
+impl fmt::Display for PairingLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let query = form_urlencoded::Serializer::new(String::new())
+            .append_pair("server", &self.server_url)
+            .append_pair("code", &self.code)
+            .finish();
+        write!(f, "{}{query}", Self::PREFIX)
+    }
+}
+
 mod b64 {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer};
@@ -121,5 +162,24 @@ mod tests {
         let json = serde_json::to_string(&u).unwrap();
         assert_eq!(json, r#"{"doc":"workspace","data":"AAH+/w=="}"#);
         assert_eq!(serde_json::from_str::<DocUpdate>(&json).unwrap(), u);
+    }
+
+    #[test]
+    fn pairing_links_round_trip() {
+        let link = PairingLink {
+            server_url: "https://not.example.ts.net:8443/x?y=1".into(),
+            code: "7KQ2M-X9CHD".into(),
+        };
+        let text = link.to_string();
+        assert_eq!(
+            text,
+            "not://pair?server=https%3A%2F%2Fnot.example.ts.net%3A8443%2Fx%3Fy%3D1&code=7KQ2M-X9CHD"
+        );
+        assert_eq!(PairingLink::parse(&format!(" {text}\n")), Some(link));
+        assert_eq!(
+            PairingLink::parse("not://pair?server=https%3A%2F%2Fa&code="),
+            None
+        );
+        assert_eq!(PairingLink::parse("https://example.com/?server=a&code=b"), None);
     }
 }

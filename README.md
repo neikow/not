@@ -43,6 +43,7 @@ local testing the emulator reaches the host at `http://10.0.2.2:8080`. Dev short
 open "not://add?title=Milk"                                       # macOS: quick add to the Inbox
 open not.app --args -serverURL http://127.0.0.1:8080 -pairingCode CODE   # macOS: pair on launch
 adb shell am start -n dev.lysen.not/.MainActivity --es server http://10.0.2.2:8080 --es code CODE  # debug builds only
+adb shell am start -n dev.lysen.not/.MainActivity --ez pinWidget true   # debug: ask the launcher to place the widget
 ```
 
 ## Run the server
@@ -50,10 +51,11 @@ adb shell am start -n dev.lysen.not/.MainActivity --es server http://10.0.2.2:80
 ```sh
 docker compose up -d --build
 curl localhost:8080/healthz
-docker compose exec not not-server pair      # one-time code for the first device (valid 10 min)
+docker compose exec not not-server pair https://not.example.ts.net   # one-time code + QR (valid 10 min)
 ```
 
-Enter the server URL and code in the app. Further devices get codes from a paired one (Add device) or
+Scan the QR code with the Android app (Sync → Scan QR code), or enter the server URL and code by hand.
+Set `NOT_PUBLIC_URL` in the environment to skip the URL argument. Further devices get codes from a paired one (Add device) or
 from `not-server pair` again. `not-server devices` and `not-server revoke <id>` manage them from the host.
 
 Data lives in the `not-data` volume (`/data/not.db`). Put the server behind your reverse proxy or Tailscale

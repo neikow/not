@@ -136,7 +136,8 @@ without changing the model.
 - Single user, no secrets in the environment. Devices pair with one-time codes and get revocable
   per-device tokens (stored hashed). The first code comes from the CLI on the host
   (`not-server pair`); paired devices mint more. See [ADR 0006](adr/0006-device-pairing.md).
-- CLI: `not-server [serve]`, `pair`, `devices`, `revoke <id>`.
+- CLI: `not-server [serve]`, `pair [public URL]` (prints a QR code when the URL is known),
+  `devices`, `revoke <id>`.
 - Runs behind the user's reverse proxy or Tailscale; TLS is terminated there.
 
 ## Reminders and notifications
@@ -149,11 +150,19 @@ offline and on time. Completing a task anywhere cancels its reminder everywhere 
 - Android (sideloaded, no Play policy limits): `AlarmManager` exact alarms (`USE_EXACT_ALARM`), WorkManager
   for periodic sync, optional UnifiedPush via self-hosted ntfy for instant wake-ups.
 
+## Background sync on Android
+
+Live sync runs whenever the process is up (the `Application` opens the store and starts it, for the
+activity, widgets and workers alike). `SyncWorker` (WorkManager, network-constrained) covers the rest:
+every 15 minutes, so widgets stay fresh, and right after edits made from a widget or quick add, so they
+reach the server even if the app is never opened. It calls the FFI's one-shot `sync()`; a pull cursor
+never moves backwards, so a worker and live sync running at once are harmless.
+
 ## System integration
 
 | macOS | Android |
 |---|---|
-| Menu-bar app, global hotkey → quick-add panel with natural-language parsing | Glance widgets: today list with checkboxes, habit grid, quick add |
+| Menu-bar app, global hotkey → quick-add panel with natural-language parsing | Glance tasks widget ✅ (any list, checkboxes, + opens a quick-add dialog); later today list, habit grid |
 | Raycast extension over a local unix socket (add, search, today, check habit, new note) | Quick Settings tile → quick-add sheet |
 | Local notifications with actions | Share target → task or note |
 | `not://` URL scheme, App Intents (Shortcuts), Core Spotlight indexing | Notification actions, app shortcuts |
@@ -170,10 +179,11 @@ an IndexedDB cache. Online-first; no parity goal.
 |---|---|
 | P0 spike ✅ | core (tasks in Loro + read model), relay server, live sync, uniffi → minimal SwiftUI + Compose apps, verified Mac ⇄ Android end to end incl. offline edits |
 | P0.5 ✅ | Built-in Inbox, device pairing with per-device tokens, revocation |
+| P1 (in progress) | ✅ Android tasks widget + quick add, background sync, QR pairing. Next: quick-add parser, recurrence, reminders, hotkey panel, Raycast |
 | P1 | Quick-add parser, recurrence, reminders, hotkey panel, Raycast, Android widgets |
 | P2 | Notes: per-note docs, markdown editors (biggest UX effort) |
 | P3 | Habits |
-| P4 | Web companion, TickTick CSV import, compaction, QR pairing |
+| P4 | Web companion, TickTick CSV import, compaction |
 
 ## Decision records
 

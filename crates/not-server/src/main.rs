@@ -2,7 +2,10 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use not_protocol::PairingLink;
 use not_server::{AppState, PAIRING_CODE_TTL};
+use qrcode::QrCode;
+use qrcode::render::unicode::Dense1x2;
 use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "\
@@ -10,13 +13,15 @@ usage: not-server [command]
 
 commands:
   serve         run the sync server (default)
-  pair          print a one-time code to pair a device
+  pair [URL]    print a one-time code to pair a device, plus a QR code when the
+                server's public URL is known (argument or NOT_PUBLIC_URL)
   devices       list paired devices
   revoke <id>   unpair a device
 
 environment:
   NOT_DB        database path (default /data/not.db)
-  NOT_ADDR      listen address (default 0.0.0.0:8080)";
+  NOT_ADDR      listen address (default 0.0.0.0:8080)
+  NOT_PUBLIC_URL  URL devices use to reach this server, for pairing QR codes";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -25,7 +30,8 @@ async fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
         [] | ["serve"] => serve(&db_path).await,
-        ["pair"] => pair(&db_path),
+        ["pair"] => pair(&db_path, std::env::var("NOT_PUBLIC_URL").ok()),
+        ["pair", url] => pair(&db_path, Some(url.to_string())),
         ["devices"] => devices(&db_path),
         ["revoke", id] => revoke(&db_path, id),
         ["-h" | "--help" | "help"] => {
@@ -71,13 +77,27 @@ async fn serve(db_path: &str) -> CliResult {
     Ok(())
 }
 
-fn pair(db_path: &str) -> CliResult {
+fn pair(db_path: &str, public_url: Option<String>) -> CliResult {
     let code = AppState::open(db_path)?.create_pairing_code()?;
     println!("Pairing code: {}", code.code);
     println!(
         "Valid for {} minutes, for one device. In the app: Settings → Sync → Pair.",
         PAIRING_CODE_TTL.as_secs() / 60
     );
+    if let Some(server_url) = public_url.filter(|u| !u.trim().is_empty()) {
+        let link = PairingLink {
+            server_url: server_url.trim().to_owned(),
+            code: code.code,
+        };
+        // Light modules drawn in the terminal's foreground: right way round on dark terminals.
+        let qr = QrCode::new(link.to_string())?
+            .render::<Dense1x2>()
+            .dark_color(Dense1x2::Light)
+            .light_color(Dense1x2::Dark)
+            .quiet_zone(true)
+            .build();
+        println!("\nOr scan with the Android app (Sync → Scan QR code):\n\n{qr}\n{link}");
+    }
     Ok(())
 }
 

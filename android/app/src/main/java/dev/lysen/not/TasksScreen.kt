@@ -1,5 +1,6 @@
 package dev.lysen.not
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -45,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
@@ -53,6 +56,9 @@ import android.text.format.DateUtils
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.lysen.not.core.Device
 import dev.lysen.not.core.SyncState
+import dev.lysen.not.core.pairingLink
+import dev.lysen.not.pairing.QrScanner
+import dev.lysen.not.pairing.qrBitmap
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -215,6 +221,18 @@ private fun PairForm(state: UiState, viewModel: TasksViewModel) {
     var url by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var name by remember { mutableStateOf(viewModel.defaultDeviceName) }
+    var scanning by remember { mutableStateOf(false) }
+    var scanError by remember { mutableStateOf(false) }
+
+    OutlinedButton(onClick = { scanning = true }, enabled = !state.busy) { Text("Scan QR code") }
+    if (scanError) {
+        Text("That QR code isn't a pairing code.", color = MaterialTheme.colorScheme.error)
+    }
+    Text(
+        "Or enter the server and code:",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
     OutlinedTextField(url, { url = it }, label = { Text("Server URL") }, singleLine = true)
     OutlinedTextField(
         code,
@@ -240,6 +258,16 @@ private fun PairForm(state: UiState, viewModel: TasksViewModel) {
             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
         }
     }
+
+    if (scanning) {
+        QrScanner(
+            onScan = {
+                scanning = false
+                scanError = !viewModel.pairWithLink(it)
+            },
+            onCancel = { scanning = false },
+        )
+    }
 }
 
 @Composable
@@ -260,9 +288,18 @@ private fun PairedInfo(state: UiState, viewModel: TasksViewModel) {
     if (code == null) {
         TextButton(onClick = viewModel::createPairingCode, enabled = !state.busy) { Text("Add device") }
     } else {
+        val qr = remember(info.serverUrl, code.code) { qrBitmap(pairingLink(info.serverUrl, code.code)) }
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Image(
+                bitmap = qr,
+                contentDescription = "Pairing QR code",
+                filterQuality = FilterQuality.None,
+                modifier = Modifier.size(200.dp),
+            )
+        }
         Text(code.code, style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace))
         Text(
-            "Enter on the new device with this server's URL. Works once, for 10 minutes.",
+            "Scan it with the new device, or enter the code there with this server's URL. Works once, for 10 minutes.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

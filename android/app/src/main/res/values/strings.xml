@@ -1,3 +1,6 @@
 <resources>
     <string name="app_name">not</string>
+    <string name="widget_tasks">Tasks</string>
+    <string name="widget_tasks_description">Open tasks of one list, with checkboxes and quick add</string>
+    <string name="add_task">Add task</string>
 </resources>

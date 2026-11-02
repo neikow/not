@@ -7,6 +7,7 @@ mod store;
 mod sync;
 
 pub use error::{Error, Result};
+pub use not_protocol::PairingLink;
 pub use store::{ChangeOrigin, INBOX, List, ListenerId, Store, Task, WORKSPACE};
 pub use sync::{Credentials, Outgoing};
 #[cfg(feature = "net")]

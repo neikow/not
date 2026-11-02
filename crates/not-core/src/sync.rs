@@ -95,10 +95,7 @@ impl Store {
     }
 
     pub fn pull_cursor(&self) -> Result<Seq> {
-        let inner = self.lock();
-        Ok(storage::kv_get(&inner.db, PULL_SEQ_KEY)?
-            .and_then(|b| b.try_into().ok().map(u64::from_le_bytes))
-            .unwrap_or(0))
+        read_cursor(&self.lock())
     }
 
     /// Imports pulled updates, refreshes the read model and advances the cursor.
@@ -109,7 +106,10 @@ impl Store {
         let changed = self.flush(&mut inner)?;
         if result.is_ok() {
             storage::kv_set(&inner.db, SERVER_VV_KEY, &inner.server_vv.encode())?;
-            storage::kv_set(&inner.db, PULL_SEQ_KEY, &response.seq.to_le_bytes())?;
+            // A concurrent sync round (e.g. a background worker) may already have moved it further.
+            if response.seq > read_cursor(&inner)? {
+                storage::kv_set(&inner.db, PULL_SEQ_KEY, &response.seq.to_le_bytes())?;
+            }
         }
         drop(inner);
         if changed {
@@ -141,6 +141,12 @@ impl Store {
         }
         Ok(())
     }
+}
+
+fn read_cursor(inner: &Inner) -> Result<Seq> {
+    Ok(storage::kv_get(&inner.db, PULL_SEQ_KEY)?
+        .and_then(|b| b.try_into().ok().map(u64::from_le_bytes))
+        .unwrap_or(0))
 }
 
 /// True if `a` contains every op in `b`.

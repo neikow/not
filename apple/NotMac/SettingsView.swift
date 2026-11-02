@@ -1,3 +1,4 @@
+import CoreImage.CIFilterBuiltins
 import NotCore
 import SwiftUI
 
@@ -75,6 +76,11 @@ private struct PairedView: View {
             }
             Section {
                 if let code {
+                    HStack {
+                        Spacer()
+                        QRCodeView(text: pairingLink(serverUrl: info.serverUrl, code: code.code))
+                        Spacer()
+                    }
                     LabeledContent("Pairing code") {
                         Text(code.code).font(.title2.monospaced()).textSelection(.enabled)
                     }
@@ -86,7 +92,7 @@ private struct PairedView: View {
             } header: {
                 Text("Add a device")
             } footer: {
-                Text("Enter the code on the new device along with this server's URL.")
+                Text("Scan the QR code with the Android app, or enter the code there along with this server's URL.")
                     .foregroundStyle(.secondary)
             }
             Section("Devices") {
@@ -137,6 +143,30 @@ private struct PairedView: View {
     private func lastSeen(_ device: Device) -> String {
         guard let seen = device.lastSeenAt else { return "Never synced" }
         return "Last seen " + date(seen).formatted(.relative(presentation: .named))
+    }
+}
+
+/// A QR code drawn with hard edges, on white so it scans in dark mode too.
+private struct QRCodeView: View {
+    let text: String
+
+    var body: some View {
+        if let image = Self.render(text) {
+            Image(decorative: image, scale: 1)
+                .interpolation(.none)
+                .resizable()
+                .frame(width: 180, height: 180)
+                .padding(10)
+                .background(.white, in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private static func render(_ text: String) -> CGImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(text.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+        return CIContext().createCGImage(output, from: output.extent)
     }
 }
 

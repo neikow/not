@@ -8,12 +8,12 @@ import androidx.lifecycle.viewModelScope
 import dev.lysen.not.core.Device
 import dev.lysen.not.core.NotException
 import dev.lysen.not.core.PairingCode
-import dev.lysen.not.core.StoreObserver
 import dev.lysen.not.core.SyncInfo
 import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.TaskItem
 import dev.lysen.not.core.TaskList
 import dev.lysen.not.core.inboxId
+import dev.lysen.not.core.parsePairingLink
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,8 +41,9 @@ data class UiState(
 
 val INBOX_ID: String = inboxId()
 
-class TasksViewModel(app: Application) : AndroidViewModel(app) {
-    private val store = (app as NotApp).store
+class TasksViewModel(application: Application) : AndroidViewModel(application) {
+    private val app = application as NotApp
+    private val store = app.store
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
@@ -50,24 +51,12 @@ class TasksViewModel(app: Application) : AndroidViewModel(app) {
     val defaultDeviceName: String =
         Settings.Global.getString(app.contentResolver, Settings.Global.DEVICE_NAME) ?: Build.MODEL
 
-    // Called from Rust threads.
-    private val observer = object : StoreObserver {
-        override fun onChange() {
-            viewModelScope.launch { reload() }
-        }
-
-        override fun onSyncState(state: SyncState) {
-            _state.update { it.copy(sync = state) }
-        }
-    }
-
     init {
         // Before pairing, the shared server token was kept here in plain text.
         app.deleteSharedPreferences("sync")
-        store.setObserver(observer)
-        reload()
         _state.update { it.copy(syncInfo = run { store.syncInfo() }) }
-        run { store.startSync() }
+        viewModelScope.launch { app.changes.collect { reload() } }
+        viewModelScope.launch { app.syncState.collect { sync -> _state.update { it.copy(sync = sync) } } }
     }
 
     fun syncNow() = store.syncNow()
@@ -79,11 +68,19 @@ class TasksViewModel(app: Application) : AndroidViewModel(app) {
         loadDevices()
     }
 
+    /** Pairs with the server and code in a scanned QR code. False if it isn't a pairing code. */
+    fun pairWithLink(scanned: String): Boolean {
+        val link = parsePairingLink(scanned) ?: return false
+        pair(link.serverUrl, link.code, defaultDeviceName)
+        return true
+    }
+
     fun unpair() = launchBusy {
         try {
             store.unpair()
         } finally {
-            _state.update { it.copy(syncInfo = null, sync = null, devices = emptyList(), pairingCode = null) }
+            app.clearSyncState()
+            _state.update { it.copy(syncInfo = null, devices = emptyList(), pairingCode = null) }
         }
     }
 
@@ -184,7 +181,7 @@ class TasksViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
-private val NotException.userMessage: String
+internal val NotException.userMessage: String
     get() = when (this) {
         is NotException.NotFound -> detail
         is NotException.Invalid -> detail

@@ -36,6 +36,13 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("androidx.glance:glance-appwidget:1.2.0")
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
+    // Pairing QR codes: CameraX for the viewfinder, ZXing to read and draw codes (no Play services).
+    implementation("androidx.camera:camera-camera2:1.6.2")
+    implementation("androidx.camera:camera-lifecycle:1.6.2")
+    implementation("androidx.camera:camera-compose:1.6.2")
+    implementation("com.google.zxing:core:3.5.4")
     // uniffi's Kotlin bindings call into the Rust library through JNA.
     implementation("net.java.dev.jna:jna:5.19.1@aar")
     debugImplementation("androidx.compose.ui:ui-tooling")

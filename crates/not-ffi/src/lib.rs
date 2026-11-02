@@ -17,6 +17,28 @@ pub fn inbox_id() -> String {
     not_core::INBOX.into()
 }
 
+/// Server URL and one-time code, as carried by a pairing QR code.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PairingLink {
+    pub server_url: String,
+    pub code: String,
+}
+
+/// The text to put in a pairing QR code: `not://pair?server=…&code=…`.
+#[uniffi::export]
+pub fn pairing_link(server_url: String, code: String) -> String {
+    not_core::PairingLink { server_url, code }.to_string()
+}
+
+/// `None` if `text` (e.g. a scanned QR code) isn't a pairing link.
+#[uniffi::export]
+pub fn parse_pairing_link(text: String) -> Option<PairingLink> {
+    not_core::PairingLink::parse(&text).map(|l| PairingLink {
+        server_url: l.server_url,
+        code: l.code,
+    })
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 // Variant fields can't be called `message`: it would clash with Kotlin's `Throwable.message`.
 pub enum NotError {
@@ -241,6 +263,18 @@ impl NotStore {
         if let Some(live) = &*self.live.lock().unwrap() {
             live.sync_now();
         }
+    }
+
+    /// One full round (push, then pull) that completes before returning, for background work such
+    /// as Android's WorkManager. No-op if this device isn't paired.
+    pub async fn sync(&self) -> Result<(), NotError> {
+        let Some(credentials) = self.store.credentials()? else {
+            return Ok(());
+        };
+        let client = SyncClient::from_credentials(&credentials);
+        let store = self.store.clone();
+        self.on_runtime(async move { client.sync(&store).await.map(drop) })
+            .await
     }
 
     // ---- pairing ----
