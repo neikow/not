@@ -52,6 +52,10 @@ import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.pairingLink
 import dev.lysen.not.pairing.QrScanner
 import dev.lysen.not.pairing.qrBitmap
+import dev.lysen.not.widget.HabitsWidgetReceiver
+import dev.lysen.not.widget.NoteWidgetReceiver
+import dev.lysen.not.widget.NotesWidgetReceiver
+import dev.lysen.not.widget.TasksWidgetReceiver
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -84,10 +88,22 @@ fun SettingsScreen(viewModel: TasksViewModel, onBack: () -> Unit) {
                 if (state.syncInfo == null) PairForm(state, viewModel) else PairedInfo(state, viewModel)
             }
 
-            SectionTitle("Shortcuts")
+            SectionTitle("Widgets and shortcuts")
             SettingsCard(padded = false) {
-                ShortcutRow("Add widget to home screen", "Open tasks of a list, with checkboxes and quick add") {
-                    scope.launch { Shortcuts.requestWidget(context) }
+                ShortcutRow("Tasks widget", "Open tasks of a list, with checkboxes and quick add") {
+                    scope.launch { Shortcuts.requestWidget(context, TasksWidgetReceiver::class.java) }
+                }
+                HorizontalDivider()
+                ShortcutRow("Habits widget", "Today's habits; tap one to check in") {
+                    scope.launch { Shortcuts.requestWidget(context, HabitsWidgetReceiver::class.java) }
+                }
+                HorizontalDivider()
+                ShortcutRow("Notes widget", "Pinned and recent notes of a folder") {
+                    scope.launch { Shortcuts.requestWidget(context, NotesWidgetReceiver::class.java) }
+                }
+                HorizontalDivider()
+                ShortcutRow("Note widget", "One note, with tickable checklists") {
+                    scope.launch { Shortcuts.requestWidget(context, NoteWidgetReceiver::class.java) }
                 }
                 if (Shortcuts.canRequestTile) {
                     HorizontalDivider()

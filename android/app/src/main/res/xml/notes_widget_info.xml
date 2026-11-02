@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Configuration is optional (defaults to all notes); long-press the widget to pick a folder. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="dev.lysen.not.widget.NotesWidgetConfigActivity"
+    android:description="@string/widget_notes_description"
+    android:initialLayout="@layout/glance_default_loading_layout"
+    android:minWidth="180dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="80dp"
+    android:previewLayout="@layout/widget_notes_preview"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="3"
+    android:targetCellHeight="3"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable|configuration_optional" />

@@ -13,6 +13,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -20,6 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.StateFlow
 
 enum class Tab(val label: String, val icon: Int) {
     Tasks("Tasks", R.drawable.ic_task_alt),
@@ -29,9 +31,24 @@ enum class Tab(val label: String, val icon: Int) {
 
 /** Tasks, Habits and Notes as bottom tabs; Settings opens over them from the Tasks drawer. */
 @Composable
-fun NotAppUi(tasks: TasksViewModel, habits: HabitsViewModel, notes: NotesViewModel) {
+fun NotAppUi(
+    tasks: TasksViewModel,
+    habits: HabitsViewModel,
+    notes: NotesViewModel,
+    requestedTab: StateFlow<Tab?>,
+    onTabShown: () -> Unit,
+) {
     var tab by rememberSaveable { mutableStateOf(Tab.Tasks) }
     var showsSettings by rememberSaveable { mutableStateOf(false) }
+    // Links from widgets and shortcuts switch tabs.
+    val requested by requestedTab.collectAsStateWithLifecycle()
+    LaunchedEffect(requested) {
+        requested?.let {
+            tab = it
+            showsSettings = false
+            onTabShown()
+        }
+    }
     if (showsSettings) {
         BackHandler { showsSettings = false }
         SettingsScreen(tasks, onBack = { showsSettings = false })

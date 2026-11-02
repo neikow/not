@@ -6,6 +6,9 @@ import dev.lysen.not.core.NotException
 import dev.lysen.not.core.NotStore
 import dev.lysen.not.core.StoreObserver
 import dev.lysen.not.core.SyncState
+import dev.lysen.not.widget.HabitsWidget
+import dev.lysen.not.widget.NoteWidget
+import dev.lysen.not.widget.NotesWidget
 import dev.lysen.not.widget.TasksWidget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,7 +66,9 @@ class NotApp : Application() {
         SyncWorker.schedulePeriodic(this)
         // Widgets whose session ended need a nudge to re-render; coalesce bursts like a big pull.
         scope.launch {
-            changes.drop(1).debounce(300).collect { TasksWidget().updateAll(this@NotApp) }
+            changes.drop(1).debounce(300).collect {
+                listOf(TasksWidget(), HabitsWidget(), NotesWidget(), NoteWidget()).forEach { it.updateAll(this@NotApp) }
+            }
         }
     }
 

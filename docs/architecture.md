@@ -167,7 +167,7 @@ never moves backwards, so a worker and live sync running at once are harmless.
 
 | macOS | Android |
 |---|---|
-| Menu bar extra ✅ (quick add, open tasks of a chosen list); global hotkey → quick-add panel with natural-language parsing | Glance tasks widget ✅ (any list, checkboxes, + opens a quick-add dialog); later today list, habit grid |
+| Menu bar extra ✅ (quick add, open tasks of a chosen list); global hotkey → quick-add panel with natural-language parsing | Glance tasks widget ✅ (any list, checkboxes, + opens a quick-add dialog); habits widget ✅ (check in from the home screen); notes widget ✅ (folder, + new note) and single-note widget ✅ (tickable checklists); later today list |
 | Raycast extension over a local unix socket (add, search, today, check habit, new note) | Quick Settings tile ✅ and app-icon shortcut ✅ → quick-add dialog |
 | Local notifications with actions | Share target → task or note |
 | `not://` URL scheme, App Intents (Shortcuts), Core Spotlight indexing | Notification actions, app shortcuts |

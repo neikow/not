@@ -2,6 +2,12 @@
     <string name="app_name">not</string>
     <string name="widget_tasks">Tasks</string>
     <string name="widget_tasks_description">Open tasks of one list, with checkboxes and quick add</string>
+    <string name="widget_habits">Habits</string>
+    <string name="widget_habits_description">Today\'s habits; tap one to check in</string>
+    <string name="widget_notes">Notes</string>
+    <string name="widget_notes_description">Pinned and recent notes of a folder, with new note</string>
+    <string name="widget_note">Note</string>
+    <string name="widget_note_description">One note on your home screen, with tickable checklists</string>
     <string name="add_task">Add task</string>
     <string name="add_task_subtitle">Inbox</string>
 
@@ -10,4 +16,13 @@
     <string name="widget_preview_task_1">Buy oat milk</string>
     <string name="widget_preview_task_2">Call the dentist</string>
     <string name="widget_preview_task_3">Renew passport</string>
+    <string name="widget_preview_habit_1">Read</string>
+    <string name="widget_preview_habit_2">Water · 1 of 3</string>
+    <string name="widget_preview_habit_3">Stretch</string>
+    <string name="widget_preview_note_1">Pancakes</string>
+    <string name="widget_preview_note_2">Trip to Lisbon</string>
+    <string name="widget_preview_note_3">Gift ideas</string>
+    <string name="widget_preview_item_1">Flour</string>
+    <string name="widget_preview_item_2">Eggs</string>
+    <string name="widget_preview_item_3">Milk</string>
 </resources>

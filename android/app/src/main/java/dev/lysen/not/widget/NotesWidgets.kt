@@ -1,0 +1,350 @@
+package dev.lysen.not.widget
+
+import android.content.Context
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.glance.ColorFilter
+import androidx.glance.GlanceId
+import androidx.glance.Image
+import androidx.glance.GlanceModifier
+import androidx.glance.GlanceTheme
+import androidx.glance.ImageProvider
+import androidx.glance.LocalContext
+import androidx.glance.action.Action
+import androidx.glance.action.ActionParameters
+import androidx.glance.action.actionParametersOf
+import androidx.glance.action.clickable
+import androidx.glance.appwidget.CheckBox
+import androidx.glance.appwidget.GlanceAppWidget
+import androidx.glance.appwidget.GlanceAppWidgetReceiver
+import androidx.glance.appwidget.action.ActionCallback
+import androidx.glance.appwidget.action.actionRunCallback
+import androidx.glance.appwidget.action.actionStartActivity
+import androidx.glance.appwidget.components.CircleIconButton
+import androidx.glance.appwidget.components.Scaffold
+import androidx.glance.appwidget.components.TitleBar
+import androidx.glance.appwidget.cornerRadius
+import androidx.glance.appwidget.lazy.LazyColumn
+import androidx.glance.appwidget.lazy.items
+import androidx.glance.appwidget.provideContent
+import androidx.glance.background
+import androidx.glance.currentState
+import androidx.glance.layout.Alignment
+import androidx.glance.layout.Box
+import androidx.glance.layout.Column
+import androidx.glance.layout.Row
+import androidx.glance.layout.size
+import androidx.glance.layout.Spacer
+import androidx.glance.layout.fillMaxSize
+import androidx.glance.layout.fillMaxWidth
+import androidx.glance.layout.height
+import androidx.glance.layout.padding
+import androidx.glance.text.FontWeight
+import androidx.glance.text.Text
+import androidx.glance.text.TextDecoration
+import androidx.glance.text.TextStyle
+import dev.lysen.not.MainActivity
+import dev.lysen.not.NotApp
+import dev.lysen.not.R
+import dev.lysen.not.SyncWorker
+import dev.lysen.not.Tab
+import dev.lysen.not.core.NoteSummary
+import dev.lysen.not.core.NotException
+import dev.lysen.not.core.NotStore
+
+/** Notes widget: folder shown; "" or missing means all notes. */
+val FOLDER_KEY = stringPreferencesKey("folder_id")
+
+/** Note widget: the note shown. */
+val NOTE_KEY = stringPreferencesKey("note_id")
+private val NOTE_ID = ActionParameters.Key<String>("note_id")
+private val LINE = ActionParameters.Key<Int>("line")
+
+// ---- notes list ----
+
+/** Pinned, then recently edited notes of one folder (or all); tap opens one, + writes a new one. */
+class NotesWidget : GlanceAppWidget() {
+    override suspend fun provideGlance(context: Context, id: GlanceId) {
+        val app = context.applicationContext as NotApp
+        provideContent {
+            val folderId = currentState(FOLDER_KEY)?.takeIf { it.isNotEmpty() }
+            val version by app.changes.collectAsState()
+            val content = remember(folderId, version) { NotesContent.load(app.store, folderId) }
+            GlanceTheme { NotesWidgetContent(content) }
+        }
+    }
+}
+
+class NotesWidgetReceiver : GlanceAppWidgetReceiver() {
+    override val glanceAppWidget: GlanceAppWidget = NotesWidget()
+}
+
+private data class NotesContent(val folderId: String?, val title: String, val notes: List<NoteSummary>) {
+    companion object {
+        fun load(store: NotStore, folderId: String?): NotesContent =
+            try {
+                // The folder may have been deleted on another device: fall back to all notes.
+                val folder = folderId?.let { id -> store.folders().firstOrNull { it.id == id } }
+                NotesContent(folder?.id, folder?.title ?: "Notes", store.notes(folder?.id).take(30))
+            } catch (_: NotException) {
+                NotesContent(null, "Notes", emptyList())
+            }
+    }
+}
+
+@Composable
+private fun NotesWidgetContent(content: NotesContent) {
+    val context = LocalContext.current
+    Scaffold(
+        titleBar = {
+            TitleBar(
+                startIcon = ImageProvider(R.drawable.ic_note),
+                title = content.title,
+                modifier = GlanceModifier.clickable(actionStartActivity(MainActivity.openTab(context, Tab.Notes))),
+                actions = {
+                    CircleIconButton(
+                        imageProvider = ImageProvider(R.drawable.ic_add),
+                        contentDescription = "New note",
+                        onClick = actionStartActivity(MainActivity.newNote(context, content.folderId)),
+                        backgroundColor = null,
+                    )
+                },
+            )
+        },
+    ) {
+        if (content.notes.isEmpty()) {
+            Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No notes yet", style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant))
+            }
+        } else {
+            LazyColumn(GlanceModifier.fillMaxSize()) {
+                items(content.notes, itemId = { it.id.hashCode().toLong() }) { note ->
+                    Column(GlanceModifier.fillMaxWidth().padding(bottom = 6.dp)) {
+                        Column(
+                            GlanceModifier
+                                .fillMaxWidth()
+                                .background(GlanceTheme.colors.secondaryContainer)
+                                .cornerRadius(12.dp)
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .clickable(actionStartActivity(MainActivity.openNote(context, note.id))),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (note.pinned) {
+                                    Image(
+                                        ImageProvider(R.drawable.ic_pin),
+                                        contentDescription = "Pinned",
+                                        colorFilter = ColorFilter.tint(GlanceTheme.colors.primary),
+                                        modifier = GlanceModifier.size(14.dp).padding(end = 4.dp),
+                                    )
+                                }
+                                Text(
+                                    note.title.ifEmpty { "New note" },
+                                    maxLines = 1,
+                                    style = TextStyle(
+                                        color = GlanceTheme.colors.onSecondaryContainer,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Medium,
+                                    ),
+                                )
+                            }
+                            if (note.preview.isNotEmpty()) {
+                                Text(
+                                    note.preview,
+                                    maxLines = 2,
+                                    style = TextStyle(color = GlanceTheme.colors.onSecondaryContainer, fontSize = 13.sp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Picks the folder a notes widget shows. Optional; defaults to all notes. */
+class NotesWidgetConfigActivity : PickerConfigActivity() {
+    override val dialogTitle = "Show notes from"
+    override val widget = NotesWidget()
+
+    override fun options(store: NotStore) =
+        listOf(PickerOption("", "All notes")) + store.folders().map { PickerOption(it.id, it.title, it.depth.toInt()) }
+
+    override fun save(prefs: MutablePreferences, choice: String) {
+        prefs[FOLDER_KEY] = choice
+    }
+}
+
+// ---- one note ----
+
+/** One note on the home screen; its checklist items can be ticked right there. */
+class NoteWidget : GlanceAppWidget() {
+    override suspend fun provideGlance(context: Context, id: GlanceId) {
+        val app = context.applicationContext as NotApp
+        provideContent {
+            val noteId = currentState(NOTE_KEY)
+            val version by app.changes.collectAsState()
+            val content = remember(noteId, version) { NoteContent.load(app.store, noteId) }
+            GlanceTheme { NoteWidgetContent(content) }
+        }
+    }
+}
+
+class NoteWidgetReceiver : GlanceAppWidgetReceiver() {
+    override val glanceAppWidget: GlanceAppWidget = NoteWidget()
+}
+
+/** Ticks or unticks the checklist item on line [LINE] of the note. */
+class ToggleNoteCheckbox : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        val id = parameters[NOTE_ID] ?: return
+        val line = parameters[LINE] ?: return
+        val store = (context.applicationContext as NotApp).store
+        try {
+            val lines = store.noteBody(id).split('\n').toMutableList()
+            val match = CHECK_ITEM.find(lines.getOrNull(line) ?: return) ?: return
+            val mark = if (match.groupValues[2] == " ") "x" else " "
+            lines[line] = lines[line].replaceRange(match.groups[2]!!.range, mark)
+            store.setNoteBody(id, lines.joinToString("\n"))
+        } catch (_: NotException) {
+            return
+        }
+        SyncWorker.pushSoon(context)
+    }
+}
+
+private val CHECK_ITEM = Regex("""^(\s*[-*+] \[)([ xX])(] ?)(.*)""")
+private val HEADING = Regex("""^#{1,6} (.*)""")
+private val BULLET = Regex("""^(\s*)(?:[-*+]|\d+\.) (.*)""")
+
+/** A line of a note as the widget draws it; [index] is its line number in the body. */
+private sealed interface NoteLine {
+    val index: Int
+
+    data class Heading(override val index: Int, val text: String) : NoteLine
+    data class Check(override val index: Int, val checked: Boolean, val text: String, val depth: Int) : NoteLine
+    data class Bullet(override val index: Int, val text: String, val depth: Int) : NoteLine
+    data class Plain(override val index: Int, val text: String) : NoteLine
+    data class Gap(override val index: Int) : NoteLine
+}
+
+private data class NoteContent(val id: String?, val title: String, val lines: List<NoteLine>, val missing: Boolean) {
+    companion object {
+        fun load(store: NotStore, id: String?): NoteContent {
+            if (id == null) return NoteContent(null, "Note", emptyList(), missing = true)
+            return try {
+                val body = store.noteBody(id)
+                val all = body.split('\n')
+                // The first line is the title; the title bar shows it.
+                val first = all.indexOfFirst { it.isNotBlank() }
+                val title = store.notes(null).firstOrNull { it.id == id }?.title.orEmpty()
+                val lines = all.withIndex().drop(first + 1).take(200).map { (i, raw) -> parse(i, raw) }
+                NoteContent(id, title.ifEmpty { "Note" }, lines.dropWhile { it is NoteLine.Gap }, missing = false)
+            } catch (_: NotException) {
+                NoteContent(id, "Note", emptyList(), missing = true)
+            }
+        }
+
+        private fun parse(index: Int, raw: String): NoteLine {
+            CHECK_ITEM.find(raw)?.let {
+                val depth = it.groupValues[1].takeWhile { c -> c == ' ' }.length / 2
+                return NoteLine.Check(index, it.groupValues[2] != " ", plain(it.groupValues[4]), depth)
+            }
+            HEADING.find(raw)?.let { return NoteLine.Heading(index, plain(it.groupValues[1])) }
+            BULLET.find(raw)?.let {
+                return NoteLine.Bullet(index, plain(it.groupValues[2]), it.groupValues[1].length / 2)
+            }
+            return if (raw.isBlank()) NoteLine.Gap(index) else NoteLine.Plain(index, plain(raw.removePrefix("> ")))
+        }
+
+        /** Without inline markers; the widget can't style parts of a line. */
+        private fun plain(text: String) = text.replace("**", "").replace("~~", "").replace("`", "")
+            .replace(Regex("""(^|\W)[*_](\S.*?\S|\S)[*_](\W|$)"""), "$1$2$3")
+    }
+}
+
+@Composable
+private fun NoteWidgetContent(content: NoteContent) {
+    val context = LocalContext.current
+    val open = content.id?.let { actionStartActivity(MainActivity.openNote(context, it)) }
+    Scaffold(
+        titleBar = {
+            TitleBar(
+                startIcon = ImageProvider(R.drawable.ic_note),
+                title = content.title,
+                modifier = if (open != null) GlanceModifier.clickable(open) else GlanceModifier,
+            )
+        },
+    ) {
+        when {
+            content.id == null -> Message("Long-press the widget to pick a note.")
+            content.missing -> Message("This note was deleted. Long-press the widget to pick another.")
+            content.lines.isEmpty() -> Message("Nothing else in this note")
+            else -> LazyColumn(GlanceModifier.fillMaxSize()) {
+                items(content.lines, itemId = { it.index.toLong() }) { line ->
+                    NoteLineView(content.id!!, line, open!!)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoteLineView(noteId: String, line: NoteLine, open: Action) {
+    val text = TextStyle(color = GlanceTheme.colors.onSurface, fontSize = 14.sp)
+    when (line) {
+        is NoteLine.Check -> CheckBox(
+            checked = line.checked,
+            onCheckedChange = actionRunCallback<ToggleNoteCheckbox>(actionParametersOf(NOTE_ID to noteId, LINE to line.index)),
+            text = line.text,
+            style = if (line.checked) {
+                text.copy(color = GlanceTheme.colors.onSurfaceVariant, textDecoration = TextDecoration.LineThrough)
+            } else {
+                text
+            },
+            maxLines = 3,
+            modifier = GlanceModifier.fillMaxWidth().padding(start = (line.depth * 16).dp),
+        )
+        is NoteLine.Heading -> Text(
+            line.text,
+            style = text.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold),
+            modifier = GlanceModifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp).clickable(open),
+        )
+        is NoteLine.Bullet -> Text(
+            "•  ${line.text}",
+            style = text,
+            modifier = GlanceModifier.fillMaxWidth().padding(start = (4 + line.depth * 16).dp, bottom = 2.dp).clickable(open),
+        )
+        is NoteLine.Plain -> Text(
+            line.text,
+            style = text,
+            modifier = GlanceModifier.fillMaxWidth().padding(bottom = 2.dp).clickable(open),
+        )
+        is NoteLine.Gap -> Spacer(GlanceModifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun Message(text: String) {
+    Box(GlanceModifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
+        Text(text, style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant))
+    }
+}
+
+/** Picks the note a note widget shows. Required when placing it. */
+class NoteWidgetConfigActivity : PickerConfigActivity() {
+    override val dialogTitle = "Show note"
+    override val widget = NoteWidget()
+
+    override fun options(store: NotStore) = store.notes(null).map { PickerOption(it.id, it.title.ifEmpty { "New note" }) }
+
+    override fun save(prefs: MutablePreferences, choice: String) {
+        prefs[NOTE_KEY] = choice
+    }
+}

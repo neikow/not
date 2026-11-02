@@ -6,13 +6,14 @@ import android.content.Context
 import android.graphics.drawable.Icon
 import android.os.Build
 import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import dev.lysen.not.widget.TasksWidgetReceiver
 
 /** System dialogs that place the app's shortcuts, offered from Settings. */
 object Shortcuts {
-    /** Asks the launcher to place the tasks widget. False if the launcher doesn't support it. */
-    suspend fun requestWidget(context: Context): Boolean =
-        GlanceAppWidgetManager(context).requestPinGlanceAppWidget(TasksWidgetReceiver::class.java)
+    /** Asks the launcher to place a widget. False if the launcher doesn't support it. */
+    suspend fun requestWidget(context: Context, receiver: Class<out GlanceAppWidgetReceiver> = TasksWidgetReceiver::class.java): Boolean =
+        GlanceAppWidgetManager(context).requestPinGlanceAppWidget(receiver)
 
     val canRequestTile: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 

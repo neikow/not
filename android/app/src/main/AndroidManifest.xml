@@ -67,6 +67,60 @@
             </intent-filter>
         </service>
 
+        <activity
+            android:name=".widget.NotesWidgetConfigActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Not.Translucent">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".widget.NoteWidgetConfigActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Not.Translucent">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".widget.HabitsWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_habits">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/habits_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".widget.NotesWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_notes">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/notes_widget_info" />
+        </receiver>
+        <receiver
+            android:name=".widget.NoteWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_note">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/note_widget_info" />
+        </receiver>
         <receiver
             android:name=".widget.TasksWidgetReceiver"
             android:exported="true"
