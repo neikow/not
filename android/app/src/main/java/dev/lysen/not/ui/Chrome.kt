@@ -115,60 +115,52 @@ fun LargeTitleScreen(
 class TabItem(val label: String, val icon: Int, val badge: Int = 0)
 
 /**
- * The floating pill at the bottom. The selected tab is a wide mint capsule with its label, the
- * others narrow icons. Slots grow and shrink together, so the pill itself never changes width.
+ * The floating pill at the bottom: equal, fixed slots (icon over label), with a mint capsule that
+ * slides behind the selected one. Nothing inside changes size, so nothing shifts.
  */
 @Composable
 fun FloatingTabBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
     val colors = Not.colors
-    Row(
+    val indicator by animateDpAsState(
+        TabWidth * selected,
+        spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
+        label = "tab indicator",
+    )
+    Box(
         modifier
             .shadow(18.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.18f), spotColor = Color.Black.copy(alpha = 0.18f))
             .clip(CircleShape)
             .background(colors.surface)
             .padding(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        tabs.forEachIndexed { index, tab ->
-            val isSelected = index == selected
-            val spec = spring<Dp>(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
-            val width by animateDpAsState(if (isSelected) SelectedTabWidth else TabWidth, spec, label = "tab width")
-            val bg by animateColorAsState(if (isSelected) colors.accent else Color.Transparent, label = "tab")
-            val label by animateFloatAsState(if (isSelected) 1f else 0f, label = "tab label")
-            Box(
-                Modifier
-                    .width(width)
-                    .height(48.dp)
-                    .clip(CircleShape)
-                    .background(bg)
-                    .pressable({ onSelect(index) }, pressedScale = 0.92f, onClickLabel = tab.label),
-                contentAlignment = Alignment.Center,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.offset(x = indicator).size(TabWidth, TabHeight).clip(CircleShape).background(colors.accent))
+        Row {
+            tabs.forEachIndexed { index, tab ->
+                val isSelected = index == selected
+                val tint by animateColorAsState(if (isSelected) colors.onAccent else colors.inkMuted, label = "tab tint")
+                Column(
+                    Modifier
+                        .size(TabWidth, TabHeight)
+                        .clip(CircleShape)
+                        .pressable({ onSelect(index) }, pressedScale = 0.92f, onClickLabel = tab.label),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+                ) {
                     Box {
-                        Icon(tab.icon, tab.label, tint = if (isSelected) colors.onAccent else colors.inkMuted)
+                        Icon(tab.icon, null, tint = tint, size = 22.dp)
                         if (tab.badge > 0 && !isSelected) {
-                            Badge(tab.badge, Modifier.align(Alignment.TopEnd).offset(x = 11.dp, y = (-8).dp))
+                            Badge(tab.badge, Modifier.align(Alignment.TopEnd).offset(x = 11.dp, y = (-6).dp))
                         }
                     }
-                    // The label only takes room while there is room for it.
-                    if (label > 0.05f) {
-                        Text(
-                            tab.label,
-                            style = Not.type.label,
-                            color = colors.onAccent,
-                            maxLines = 1,
-                            modifier = Modifier.padding(start = 8.dp * label).alpha(label),
-                        )
-                    }
+                    Text(tab.label, style = Not.type.tiny, color = tint, maxLines = 1)
                 }
             }
         }
     }
 }
 
-private val TabWidth = 60.dp
-private val SelectedTabWidth = 112.dp
+private val TabWidth = 76.dp
+private val TabHeight = 52.dp
 
 /** What the + beside the tab bar does on the current screen; screens set it with [AddAction]. */
 @Stable
@@ -197,7 +189,7 @@ fun FloatingAddButton(label: String, onClick: () -> Unit, modifier: Modifier = M
     val colors = Not.colors
     Box(
         modifier
-            .size(60.dp)
+            .size(64.dp)
             .shadow(18.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.18f), spotColor = Color.Black.copy(alpha = 0.18f))
             .clip(CircleShape)
             .background(colors.accent)
@@ -225,4 +217,4 @@ fun BottomBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, modif
 
 /** Height the bottom bar occupies, including its gap and the system navigation bar. */
 @Composable
-fun floatingTabBarHeight(): Dp = 60.dp + 12.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+fun floatingTabBarHeight(): Dp = 64.dp + 12.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
