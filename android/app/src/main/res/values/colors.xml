@@ -7,4 +7,6 @@
     <color name="widget_preview_background">#FFEEF0FF</color>
     <color name="widget_preview_content">#FF1B1B21</color>
     <color name="widget_preview_card">#FFDDE1F9</color>
+    <!-- Behind the app before Compose draws (launch, splash). Matches ui/Theme.kt. -->
+    <color name="app_background">#FFF7F8FA</color>
 </resources>

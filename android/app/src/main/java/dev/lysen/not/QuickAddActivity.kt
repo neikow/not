@@ -7,12 +7,6 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -25,9 +19,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import dev.lysen.not.core.NotException
+import dev.lysen.not.ui.Button
+import dev.lysen.not.ui.ButtonKind
+import dev.lysen.not.ui.CardDialog
+import dev.lysen.not.ui.Field
 import kotlinx.coroutines.flow.first
 
 /**
@@ -76,33 +72,23 @@ private fun QuickAddDialog(listTitle: String, onAdd: (String) -> Unit, onDismiss
     var text by remember { mutableStateOf("") }
     val focus = remember { FocusRequester() }
     val submit = { if (text.isNotBlank()) onAdd(text) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Add to $listTitle") },
-        text = {
-            // The dialog's own window: opened from the Quick Settings shade, it only gets focus once
-            // the shade has collapsed, and asking for the keyboard any earlier is ignored.
-            val window = LocalWindowInfo.current
-            val keyboard = LocalSoftwareKeyboardController.current
-            LaunchedEffect(window) {
-                snapshotFlow { window.isWindowFocused }.first { it }
-                focus.requestFocus()
-                keyboard?.show()
-            }
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                placeholder = { Text("Task") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Sentences,
-                    imeAction = ImeAction.Done,
-                ),
-                keyboardActions = KeyboardActions(onDone = { submit() }),
-                modifier = Modifier.fillMaxWidth().focusRequester(focus),
-            )
+    CardDialog(
+        title = "Add to $listTitle",
+        onDismiss = onDismiss,
+        buttons = {
+            Button("Cancel", onDismiss, kind = ButtonKind.Quiet)
+            Button("Add", submit, enabled = text.isNotBlank())
         },
-        confirmButton = { TextButton(onClick = submit, enabled = text.isNotBlank()) { Text("Add") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
+    ) {
+        // The dialog's own window: opened from the Quick Settings shade, it only gets focus once
+        // the shade has collapsed, and asking for the keyboard any earlier is ignored.
+        val window = LocalWindowInfo.current
+        val keyboard = LocalSoftwareKeyboardController.current
+        LaunchedEffect(window) {
+            snapshotFlow { window.isWindowFocused }.first { it }
+            focus.requestFocus()
+            keyboard?.show()
+        }
+        Field(text, { text = it }, "Task", filled = true, onDone = submit, modifier = Modifier.fillMaxWidth().focusRequester(focus))
+    }
 }

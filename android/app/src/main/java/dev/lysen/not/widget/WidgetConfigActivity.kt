@@ -11,9 +11,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -24,6 +21,14 @@ import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.lifecycle.lifecycleScope
 import dev.lysen.not.NotApp
 import dev.lysen.not.NotTheme
+import dev.lysen.not.ui.Button
+import dev.lysen.not.ui.ButtonKind
+import dev.lysen.not.ui.CardDialog
+import dev.lysen.not.ui.Not
+import dev.lysen.not.ui.Text
+import dev.lysen.not.ui.pressable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import dev.lysen.not.core.NotException
 import dev.lysen.not.core.NotStore
 import kotlinx.coroutines.launch
@@ -89,24 +94,25 @@ class WidgetConfigActivity : PickerConfigActivity() {
 
 @Composable
 private fun Picker(title: String, options: List<PickerOption>, onPick: (String) -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
-                if (options.isEmpty()) Text("Nothing to choose from yet.")
-                options.forEach { option ->
-                    TextButton(onClick = { onPick(option.id) }, modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            option.label,
-                            maxLines = 1,
-                            modifier = Modifier.fillMaxWidth().padding(start = (option.depth * 16).dp),
-                        )
-                    }
-                }
+    CardDialog(
+        title = title,
+        onDismiss = onDismiss,
+        buttons = { Button("Cancel", onDismiss, kind = ButtonKind.Quiet) },
+    ) {
+        Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+            if (options.isEmpty()) Text("Nothing to choose from yet.", color = Not.colors.inkMuted)
+            options.forEach { option ->
+                Text(
+                    option.label,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(CircleShape)
+                        .pressable({ onPick(option.id) }, pressedScale = 0.98f)
+                        .heightIn(min = 48.dp)
+                        .padding(start = (12 + option.depth * 16).dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+                )
             }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
+        }
+    }
 }

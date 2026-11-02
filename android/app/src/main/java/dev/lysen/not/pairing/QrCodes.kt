@@ -19,9 +19,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.lysen.not.ui.Button
+import dev.lysen.not.ui.ButtonKind
+import dev.lysen.not.ui.Not
+import dev.lysen.not.ui.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -84,13 +85,15 @@ fun QrScanner(onScan: (String) -> Unit, onCancel: () -> Unit) {
             Text(
                 "Point the camera at the pairing QR code",
                 color = Color.White,
-                style = MaterialTheme.typography.bodyLarge,
+                style = Not.type.bodyStrong,
                 modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(24.dp),
             )
-            TextButton(
-                onClick = onCancel,
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(24.dp),
-            ) { Text("Cancel", color = Color.White) }
+            Button(
+                "Cancel",
+                onCancel,
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(24.dp),
+                kind = ButtonKind.Secondary,
+            )
         }
     }
 }

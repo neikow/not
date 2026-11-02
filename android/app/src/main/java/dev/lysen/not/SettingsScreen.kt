@@ -2,36 +2,20 @@ package dev.lysen.not
 
 import android.text.format.DateUtils
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -41,9 +25,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -52,122 +37,125 @@ import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.pairingLink
 import dev.lysen.not.pairing.QrScanner
 import dev.lysen.not.pairing.qrBitmap
+import dev.lysen.not.ui.Button
+import dev.lysen.not.ui.ButtonKind
+import dev.lysen.not.ui.CardDialog
+import dev.lysen.not.ui.Divider
+import dev.lysen.not.ui.Field
+import dev.lysen.not.ui.Icon
+import dev.lysen.not.ui.IconButton
+import dev.lysen.not.ui.LargeTitleScreen
+import dev.lysen.not.ui.Not
+import dev.lysen.not.ui.Spinner
+import dev.lysen.not.ui.Text
+import dev.lysen.not.ui.pressable
 import dev.lysen.not.widget.HabitsWidgetReceiver
 import dev.lysen.not.widget.NoteWidgetReceiver
 import dev.lysen.not.widget.NotesWidgetReceiver
 import dev.lysen.not.widget.TasksWidgetReceiver
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(viewModel: TasksViewModel, onBack: () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Settings") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(painterResource(R.drawable.ic_arrow_back), "Back") }
-                },
-            )
-        },
-    ) { padding ->
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .navigationBarsPadding(),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            SectionTitle("Sync")
-            SettingsCard {
+
+    LargeTitleScreen(
+        title = "Settings",
+        navigation = { IconButton(R.drawable.ic_arrow_back, "Back", onBack) },
+        bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
+    ) {
+        item(key = "sync") {
+            Section("Sync") {
                 if (state.syncInfo == null) PairForm(state, viewModel) else PairedInfo(state, viewModel)
             }
-
-            SectionTitle("Widgets and shortcuts")
-            SettingsCard(padded = false) {
-                ShortcutRow("Tasks widget", "Open tasks of a list, with checkboxes and quick add") {
+        }
+        item(key = "shortcuts") {
+            Section("Widgets and shortcuts", padded = false) {
+                ShortcutRow(R.drawable.ic_task_alt, "Tasks widget", "Open tasks of a list, with checkboxes and quick add") {
                     scope.launch { Shortcuts.requestWidget(context, TasksWidgetReceiver::class.java) }
                 }
-                HorizontalDivider()
-                ShortcutRow("Habits widget", "Today's habits; tap one to check in") {
+                Divider(Modifier.padding(start = 56.dp))
+                ShortcutRow(R.drawable.ic_repeat, "Habits widget", "Today's habits; tap one to check in") {
                     scope.launch { Shortcuts.requestWidget(context, HabitsWidgetReceiver::class.java) }
                 }
-                HorizontalDivider()
-                ShortcutRow("Notes widget", "Pinned and recent notes of a folder") {
+                Divider(Modifier.padding(start = 56.dp))
+                ShortcutRow(R.drawable.ic_note, "Notes widget", "Pinned and recent notes of a folder") {
                     scope.launch { Shortcuts.requestWidget(context, NotesWidgetReceiver::class.java) }
                 }
-                HorizontalDivider()
-                ShortcutRow("Note widget", "One note, with tickable checklists") {
+                Divider(Modifier.padding(start = 56.dp))
+                ShortcutRow(R.drawable.ic_checklist, "Note widget", "One note, with tickable checklists") {
                     scope.launch { Shortcuts.requestWidget(context, NoteWidgetReceiver::class.java) }
                 }
                 if (Shortcuts.canRequestTile) {
-                    HorizontalDivider()
-                    ShortcutRow("Add Quick Settings tile", "Add a task from the notification shade") {
+                    Divider(Modifier.padding(start = 56.dp))
+                    ShortcutRow(R.drawable.ic_add_task, "Quick Settings tile", "Add a task from the notification shade") {
                         Shortcuts.requestTile(context)
                     }
                 }
             }
-
-            SectionTitle("About")
+        }
+        item(key = "about") {
             Text(
                 "not ${BuildConfig.VERSION_NAME}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                style = Not.type.caption,
+                color = Not.colors.inkFaint,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
         }
     }
 
     state.error?.let {
-        AlertDialog(
-            onDismissRequest = viewModel::dismissError,
-            confirmButton = { TextButton(onClick = viewModel::dismissError) { Text("OK") } },
-            title = { Text("Something went wrong") },
-            text = { Text(it) },
-        )
+        CardDialog(
+            title = "Something went wrong",
+            onDismiss = viewModel::dismissError,
+            buttons = { Button("OK", viewModel::dismissError) },
+        ) { Text(it, color = Not.colors.inkMuted) }
     }
 }
 
 @Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 4.dp),
-    )
-}
-
-@Composable
-private fun SettingsCard(padded: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+private fun Section(title: String, padded: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.padding(horizontal = 16.dp).padding(top = 20.dp)) {
+        Text(title, style = Not.type.label, color = Not.colors.inkMuted, modifier = Modifier.padding(start = 8.dp, bottom = 8.dp))
         Column(
-            Modifier.padding(if (padded) 16.dp else 0.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(Not.colors.surface)
+                .padding(if (padded) 20.dp else 0.dp),
+            verticalArrangement = if (padded) Arrangement.spacedBy(12.dp) else Arrangement.Top,
             content = content,
         )
     }
 }
 
 @Composable
-private fun ShortcutRow(title: String, subtitle: String, onClick: () -> Unit) {
-    Column(
+private fun ShortcutRow(icon: Int, title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .pressable(onClick, pressedScale = 0.985f)
             .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, style = MaterialTheme.typography.bodyLarge)
-        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) { Icon(icon, null, tint = Not.colors.accentInk, size = 22.dp) }
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(title, style = Not.type.body)
+            Text(subtitle, style = Not.type.caption, color = Not.colors.inkMuted)
+        }
+        Icon(R.drawable.ic_add, "Add", tint = Not.colors.inkFaint, size = 20.dp)
+    }
+}
+
+/** A small caption above a field. */
+@Composable
+private fun Labeled(label: String, content: @Composable () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label, style = Not.type.caption, color = Not.colors.inkMuted, modifier = Modifier.padding(start = 4.dp))
+        content()
     }
 }
 
@@ -178,42 +166,30 @@ private fun PairForm(state: UiState, viewModel: TasksViewModel) {
     var name by remember { mutableStateOf(viewModel.defaultDeviceName) }
     var scanning by remember { mutableStateOf(false) }
     var scanError by remember { mutableStateOf(false) }
+    val colors = Not.colors
 
-    Text("Pair this device with your server to sync.", style = MaterialTheme.typography.bodyMedium)
-    Button(onClick = { scanning = true }, enabled = !state.busy) { Text("Scan QR code") }
-    if (scanError) {
-        Text("That QR code isn't a pairing code.", color = MaterialTheme.colorScheme.error)
+    Text("Pair this device with your server to sync.", style = Not.type.body)
+    Button("Scan QR code", { scanning = true }, Modifier.fillMaxWidth(), enabled = !state.busy)
+    if (scanError) Text("That QR code isn't a pairing code.", style = Not.type.caption, color = colors.danger)
+
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+        Divider(Modifier.weight(1f))
+        Text("or enter it", style = Not.type.caption, color = colors.inkFaint, modifier = Modifier.padding(horizontal = 12.dp))
+        Divider(Modifier.weight(1f))
     }
-    Text(
-        "Or enter the server and code:",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    OutlinedTextField(url, { url = it }, label = { Text("Server URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(
-        code,
-        { code = it },
-        label = { Text("Pairing code") },
-        placeholder = { Text("XXXXX-XXXXX") },
-        singleLine = true,
-        textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
-        modifier = Modifier.fillMaxWidth(),
-    )
-    OutlinedTextField(name, { name = it }, label = { Text("Device name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    Labeled("Server URL") { Field(url, { url = it }, "https://not.example.com", filled = true, modifier = Modifier.fillMaxWidth()) }
+    Labeled("Pairing code") {
+        Field(code, { code = it }, "XXXXX-XXXXX", filled = true, style = Not.type.body.merge(fontFamily = FontFamily.Monospace), modifier = Modifier.fillMaxWidth())
+    }
+    Labeled("Device name") { Field(name, { name = it }, "This phone", filled = true, modifier = Modifier.fillMaxWidth()) }
     Text(
         "Get a code on the server with `not-server pair`, or on a paired device under Settings → Add device.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = Not.type.caption,
+        color = colors.inkMuted,
     )
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlinedButton(
-            onClick = { viewModel.pair(url, code, name) },
-            enabled = !state.busy && url.isNotBlank() && code.isNotBlank(),
-        ) { Text("Pair") }
-        if (state.busy) {
-            Spacer(Modifier.width(12.dp))
-            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-        }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Button("Pair", { viewModel.pair(url, code, name) }, kind = ButtonKind.Secondary, enabled = !state.busy && url.isNotBlank() && code.isNotBlank())
+        if (state.busy) Spinner()
     }
 
     if (scanning) {
@@ -230,6 +206,7 @@ private fun PairForm(state: UiState, viewModel: TasksViewModel) {
 @Composable
 private fun PairedInfo(state: UiState, viewModel: TasksViewModel) {
     val info = state.syncInfo ?: return
+    val colors = Not.colors
     var pendingRevoke by remember { mutableStateOf<Device?>(null) }
     var confirmingUnpair by remember { mutableStateOf(false) }
     // The server no longer knows this device (revoked, or its database was reset): only unpairing helps.
@@ -238,97 +215,94 @@ private fun PairedInfo(state: UiState, viewModel: TasksViewModel) {
 
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(info.serverUrl, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                "${info.deviceName} · ${syncStatus(state.sync)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text(info.serverUrl, style = Not.type.bodyStrong, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(7.dp).clip(RoundedCornerShape(50)).background(statusColor(state.sync)))
+                Text("${info.deviceName} · ${syncStatus(state.sync)}", style = Not.type.caption, color = colors.inkMuted)
+            }
         }
         // Lives here, not in the device list, which can't load once the server rejects us.
-        TextButton(onClick = { confirmingUnpair = true }, enabled = !state.busy) {
-            Text("Unpair", color = MaterialTheme.colorScheme.error)
-        }
+        Button("Unpair", { confirmingUnpair = true }, kind = ButtonKind.Danger, enabled = !state.busy)
     }
 
     if (confirmingUnpair) {
-        AlertDialog(
-            onDismissRequest = { confirmingUnpair = false },
-            title = { Text("Unpair this device?") },
-            text = {
-                Text(
-                    if (rejected) "Tasks stay here. Pair again to resume syncing."
-                    else "Sync stops and this device is removed from the server. Tasks stay here.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
+        CardDialog(
+            title = "Unpair this device?",
+            onDismiss = { confirmingUnpair = false },
+            buttons = {
+                Button("Cancel", { confirmingUnpair = false }, kind = ButtonKind.Quiet)
+                Button("Unpair", {
                     viewModel.unpair()
                     confirmingUnpair = false
-                }) { Text("Unpair", color = MaterialTheme.colorScheme.error) }
+                }, kind = ButtonKind.Danger)
             },
-            dismissButton = { TextButton(onClick = { confirmingUnpair = false }) { Text("Cancel") } },
-        )
+        ) {
+            Text(
+                if (rejected) "Tasks stay here. Pair again to resume syncing."
+                else "Sync stops and this device is removed from the server. Tasks stay here.",
+                color = colors.inkMuted,
+            )
+        }
     }
     if (rejected) return
-    HorizontalDivider()
+    Divider()
 
     val code = state.pairingCode
     if (code == null) {
-        TextButton(onClick = viewModel::createPairingCode, enabled = !state.busy) { Text("Add device") }
+        Button("Add device", viewModel::createPairingCode, kind = ButtonKind.Secondary, icon = R.drawable.ic_add, enabled = !state.busy)
     } else {
         val qr = remember(info.serverUrl, code.code) { qrBitmap(pairingLink(info.serverUrl, code.code)) }
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Image(
-                bitmap = qr,
-                contentDescription = "Pairing QR code",
-                filterQuality = FilterQuality.None,
-                modifier = Modifier.size(200.dp),
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // QR codes need a light background to scan, in dark mode too.
+            Box(Modifier.clip(RoundedCornerShape(20.dp)).background(Color.White).padding(12.dp)) {
+                Image(bitmap = qr, contentDescription = "Pairing QR code", filterQuality = FilterQuality.None, modifier = Modifier.size(184.dp))
+            }
+            Text(code.code, style = Not.type.title.merge(fontFamily = FontFamily.Monospace))
+            Text(
+                "Scan it with the new device, or enter the code there with this server's URL. Works once, for 10 minutes.",
+                style = Not.type.caption,
+                color = colors.inkMuted,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
         }
-        Text(code.code, style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace))
-        Text(
-            "Scan it with the new device, or enter the code there with this server's URL. Works once, for 10 minutes.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
-    HorizontalDivider()
+    Divider()
 
-    Text("Devices", style = MaterialTheme.typography.titleSmall)
+    Text("Devices", style = Not.type.label, color = colors.inkMuted)
     state.devices.forEach { device ->
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(if (device.isCurrent) "${device.name} (this device)" else device.name)
-                Text(
-                    device.lastSeenAt?.let { "Last seen ${ago(it)}" } ?: "Never synced",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(if (device.isCurrent) "${device.name} (this device)" else device.name, style = Not.type.body)
+                Text(device.lastSeenAt?.let { "Last seen ${ago(it)}" } ?: "Never synced", style = Not.type.caption, color = colors.inkMuted)
             }
-            if (!device.isCurrent) {
-                TextButton(onClick = { pendingRevoke = device }, enabled = !state.busy) {
-                    Text("Revoke", color = MaterialTheme.colorScheme.error)
-                }
-            }
+            if (!device.isCurrent) Button("Revoke", { pendingRevoke = device }, kind = ButtonKind.Quiet, enabled = !state.busy)
         }
     }
 
     // Revoking can't be undone (the device must pair again), so it still asks.
     pendingRevoke?.let { device ->
-        AlertDialog(
-            onDismissRequest = { pendingRevoke = null },
-            title = { Text("Revoke ${device.name}?") },
-            text = { Text("${device.name} stops syncing until it is paired again. Its local data stays on it.") },
-            confirmButton = {
-                TextButton(onClick = {
+        CardDialog(
+            title = "Revoke ${device.name}?",
+            onDismiss = { pendingRevoke = null },
+            buttons = {
+                Button("Cancel", { pendingRevoke = null }, kind = ButtonKind.Quiet)
+                Button("Revoke", {
                     viewModel.revoke(device)
                     pendingRevoke = null
-                }) { Text("Revoke", color = MaterialTheme.colorScheme.error) }
+                }, kind = ButtonKind.Danger)
             },
-            dismissButton = { TextButton(onClick = { pendingRevoke = null }) { Text("Cancel") } },
-        )
+        ) {
+            Text("${device.name} stops syncing until it is paired again. Its local data stays on it.", color = colors.inkMuted)
+        }
     }
+}
+
+@Composable
+private fun statusColor(state: SyncState?): Color = when (state) {
+    SyncState.Synced -> Not.colors.accent
+    SyncState.Syncing, null -> Not.colors.inkFaint
+    is SyncState.Offline -> Color(0xFFF0A030)
+    SyncState.Unauthorized -> Not.colors.danger
 }
 
 private fun ago(millis: Long): CharSequence =

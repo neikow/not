@@ -1,7 +1,12 @@
 package dev.lysen.not.ui
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
@@ -289,5 +294,28 @@ fun EmptyState(icon: Int, title: String, hint: String, modifier: Modifier = Modi
         }
         Text(title, style = Not.type.heading, textAlign = TextAlign.Center)
         Text(hint, style = Not.type.caption.merge(fontSize = Not.type.body.fontSize, lineHeight = Not.type.body.lineHeight), color = colors.inkMuted, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 280.dp))
+    }
+}
+
+/** A small spinning arc, for work in flight. */
+@Composable
+fun Spinner(modifier: Modifier = Modifier, size: Dp = 20.dp, color: Color = Not.colors.accentInk) {
+    val turn by rememberInfiniteTransition(label = "spinner").animateFloat(
+        0f,
+        360f,
+        infiniteRepeatable(tween<Float>(900, easing = LinearEasing)),
+        label = "turn",
+    )
+    androidx.compose.foundation.Canvas(modifier.size(size)) {
+        val stroke = 2.dp.toPx()
+        drawArc(
+            color,
+            startAngle = turn,
+            sweepAngle = 270f,
+            useCenter = false,
+            topLeft = androidx.compose.ui.geometry.Offset(stroke / 2, stroke / 2),
+            size = androidx.compose.ui.geometry.Size(this.size.width - stroke, this.size.height - stroke),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round),
+        )
     }
 }
