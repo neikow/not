@@ -9,11 +9,23 @@ struct ContentView: View {
             Sidebar(model: model)
                 .navigationSplitViewColumnWidth(min: 190, ideal: 220)
         } detail: {
-            TaskListView(model: model)
-                .inspector(isPresented: $model.showsInspector) {
-                    TaskInspector(model: model)
-                        .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
+            Group {
+                if model.selection == .habits {
+                    HabitsView(model: model)
+                } else {
+                    TaskListView(model: model)
                 }
+            }
+            .inspector(isPresented: $model.showsInspector) {
+                Group {
+                    if model.selection == .habits {
+                        HabitInspector(model: model)
+                    } else {
+                        TaskInspector(model: model)
+                    }
+                }
+                .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
+            }
         }
         .toolbar {
             ToolbarItem(placement: .status) { SyncBadge(state: model.syncState) }
@@ -23,8 +35,11 @@ struct ContentView: View {
                 } label: {
                     Label("Info", systemImage: "sidebar.trailing")
                 }
-                .help("Show task details (⌘I)")
+                .help("Show details (⌘I)")
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            model.refreshToday()
         }
         .alert("Something went wrong", isPresented: .constant(model.errorMessage != nil)) {
             Button("OK") { model.errorMessage = nil }
@@ -41,17 +56,20 @@ private struct Sidebar: View {
     @State private var renamingID: String?
 
     var body: some View {
-        List(selection: $model.selectedListID) {
+        List(selection: $model.selection) {
             if let inbox = model.inbox {
                 Label(inbox.title, systemImage: "tray")
                     .badge(Int(inbox.openCount))
-                    .tag(inbox.id)
+                    .tag(SidebarItem.list(inbox.id))
             }
+            Label("Habits", systemImage: "repeat")
+                .badge(model.habits.count { $0.due && $0.count < $0.habit.goal })
+                .tag(SidebarItem.habits)
             Section("Lists") {
                 ForEach(model.userLists, id: \.id) { list in
                     ListRow(list: list, renamingID: $renamingID, model: model)
                         .badge(Int(list.openCount))
-                        .tag(list.id)
+                        .tag(SidebarItem.list(list.id))
                         .contextMenu {
                             Button("Rename") { renamingID = list.id }
                             Divider()

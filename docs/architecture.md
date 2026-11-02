@@ -60,8 +60,8 @@ All data lives in Loro documents. Two kinds of doc:
 |---|---|---|
 | `tasks` | `LoroTree` | Nodes are lists and tasks. List → task → subtask. Tasks at the root are in the **Inbox**, which is built in (id `inbox`) rather than a node, so two fresh devices can't each create one. Sibling order via Loro fractional index; move indexes count siblings of the same kind. Each node's meta map holds its fields (`kind`, `title`, `notes` as a mergeable `LoroText`, `completed_at`, `deleted_at`, later `priority`, `due`, `rrule`, …). Deletes are soft (`deleted_at`) so undo restores the same nodes ([ADR 0007](adr/0007-soft-delete-and-undo.md)). |
 | `notes` | `LoroTree` (planned) | Folder → note-ref nodes. Meta holds `title`, `pinned`, `preview`, so note lists render without loading bodies. |
-| `habits` | `LoroMap` (planned) | Habit definitions: schedule, goal, unit. |
-| `habit_log` | `LoroMap` of `LoroCounter` (planned) | Key `habitId:YYYY-MM-DD` (local calendar date, never a timestamp). Counters sum concurrent check-ins. |
+| `habits` | `LoroTree` | Flat; the tree only gives habits a mergeable order. Meta: `title`, `goal` (check-ins per day), `days` (weekday bit mask, bit 0 = Monday), `deleted_at`. |
+| `habit_log` | `LoroMap` of `LoroCounter` | Key `habitId:YYYY-MM-DD` (local calendar date from the app, never a timestamp). Counters sum concurrent check-ins; streaks are computed from the read model. |
 | `completions` | `LoroMap` (planned) | Recurring-task history keyed `taskId:occurrenceDate`, so completing the same occurrence twice offline is idempotent. |
 
 **`note:<id>`** — one per note (planned). `LoroText` body holding markdown. Loaded lazily; carries its own
@@ -187,7 +187,7 @@ an IndexedDB cache. Online-first; no parity goal.
 | P1 (in progress) | ✅ Android tasks widget (with picker preview), quick add from widget / QS tile / app shortcut, app icons (Mac: Icon Composer / Liquid Glass), Mac menu bar extra, background sync, QR pairing; core UX: notes, subtasks, rename, reorder, completed section, undo, soft delete, keyboard flow (Mac), swipe actions + drawer + settings screen (Android). Next: quick-add parser, due dates, Today, reminders, recurrence, hotkey panel, Raycast |
 | P1 | Quick-add parser, recurrence, reminders, hotkey panel, Raycast, Android widgets |
 | P2 | Notes: per-note docs, markdown editors (biggest UX effort) |
-| P3 | Habits |
+| P3 ✅ | Habits: check-ins, goals, weekday schedules, streaks, history grid (Mac + Android) |
 | P4 | Web companion, TickTick CSV import, compaction |
 
 ## Decision records

@@ -76,21 +76,26 @@ import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.TaskList
 import kotlinx.coroutines.launch
 
-/** Tasks, with Settings as a second screen. */
+enum class Screen { Tasks, Habits, Settings }
+
+/** Tasks, with Habits and Settings as further screens. */
 @Composable
-fun NotAppUi(viewModel: TasksViewModel) {
-    var showsSettings by rememberSaveable { mutableStateOf(false) }
-    if (showsSettings) {
-        BackHandler { showsSettings = false }
-        SettingsScreen(viewModel, onBack = { showsSettings = false })
-    } else {
-        TasksScreen(viewModel, onOpenSettings = { showsSettings = true })
+fun NotAppUi(viewModel: TasksViewModel, habits: HabitsViewModel) {
+    var screen by rememberSaveable { mutableStateOf(Screen.Tasks) }
+    val habitsState by habits.state.collectAsStateWithLifecycle()
+    if (screen != Screen.Tasks) BackHandler { screen = Screen.Tasks }
+    when (screen) {
+        Screen.Tasks -> TasksScreen(viewModel, habitsState.pending, onOpen = { screen = it })
+        Screen.Habits -> HabitsScreen(habits, navigationIcon = {
+            IconButton(onClick = { screen = Screen.Tasks }) { Icon(painterResource(R.drawable.ic_arrow_back), "Back") }
+        })
+        Screen.Settings -> SettingsScreen(viewModel, onBack = { screen = Screen.Tasks })
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
+private fun TasksScreen(viewModel: TasksViewModel, pendingHabits: Int, onOpen: (Screen) -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -116,10 +121,11 @@ private fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                     viewModel.select(it)
                     scope.launch { drawer.close() }
                 },
+                pendingHabits = pendingHabits,
                 onNewList = { newList = true },
-                onSettings = {
+                onOpen = {
                     scope.launch { drawer.close() }
-                    onOpenSettings()
+                    onOpen(it)
                 },
             )
         },
@@ -145,7 +151,7 @@ private fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                 )
             },
             snackbarHost = { SnackbarHost(snackbar) },
-            bottomBar = { AddTaskBar(listTitle = state.selectedList?.title ?: "Inbox", onAdd = { viewModel.addTask(it) }) },
+            bottomBar = { AddBar("Add to ${state.selectedList?.title ?: "Inbox"}", onAdd = { viewModel.addTask(it) }) },
         ) { padding ->
             TaskList(state, viewModel, Modifier.padding(padding))
         }
@@ -191,9 +197,10 @@ private fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
 @Composable
 private fun ListsDrawer(
     state: UiState,
+    pendingHabits: Int,
     onSelect: (String) -> Unit,
     onNewList: () -> Unit,
-    onSettings: () -> Unit,
+    onOpen: (Screen) -> Unit,
 ) {
     ModalDrawerSheet {
         Text(
@@ -230,10 +237,18 @@ private fun ListsDrawer(
         )
         HorizontalDivider(Modifier.padding(horizontal = 28.dp, vertical = 8.dp))
         NavigationDrawerItem(
+            label = { Text("Habits") },
+            icon = { Icon(painterResource(R.drawable.ic_repeat), null) },
+            badge = { if (pendingHabits > 0) Text(pendingHabits.toString()) },
+            selected = false,
+            onClick = { onOpen(Screen.Habits) },
+            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+        )
+        NavigationDrawerItem(
             label = { Text("Settings") },
             icon = { Icon(painterResource(R.drawable.ic_settings), null) },
             selected = false,
-            onClick = onSettings,
+            onClick = { onOpen(Screen.Settings) },
             modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
         )
     }
@@ -262,22 +277,7 @@ private fun TaskList(state: UiState, viewModel: TasksViewModel, modifier: Modifi
     var showsCompleted by rememberSaveable { mutableStateOf(false) }
     val outline = state.outline
     if (outline.open.isEmpty() && outline.completed.isEmpty()) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(
-                    painterResource(R.drawable.ic_task_alt),
-                    null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(40.dp),
-                )
-                Text("Nothing here yet", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Add a task below",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        EmptyState(R.drawable.ic_task_alt, "Nothing here yet", "Add a task below", modifier)
         return
     }
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 4.dp)) {
@@ -411,34 +411,6 @@ private fun CompletedHeader(count: Int, expanded: Boolean, onToggle: () -> Unit,
             if (expanded) "Hide completed" else "Show completed",
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.rotate(rotation),
-        )
-    }
-}
-
-@Composable
-private fun AddTaskBar(listTitle: String, onAdd: (String) -> Unit) {
-    var draft by remember { mutableStateOf("") }
-    Surface(tonalElevation = 3.dp) {
-        OutlinedTextField(
-            value = draft,
-            onValueChange = { draft = it },
-            placeholder = { Text("Add to $listTitle") },
-            singleLine = true,
-            shape = MaterialTheme.shapes.extraLarge,
-            keyboardOptions = KeyboardOptions(
-                capitalization = KeyboardCapitalization.Sentences,
-                imeAction = ImeAction.Done,
-            ),
-            // Keeps the keyboard up for the next task.
-            keyboardActions = KeyboardActions(onDone = {
-                onAdd(draft)
-                draft = ""
-            }),
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(12.dp),
         )
     }
 }

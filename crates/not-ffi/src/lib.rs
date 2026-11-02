@@ -17,6 +17,12 @@ pub fn inbox_id() -> String {
     not_core::INBOX.into()
 }
 
+/// Habit `days` mask for a daily habit. Bit 0 = Monday … bit 6 = Sunday.
+#[uniffi::export]
+pub fn every_day() -> u8 {
+    not_core::EVERY_DAY
+}
+
 /// Server URL and one-time code, as carried by a pairing QR code.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PairingLink {
@@ -96,6 +102,38 @@ pub struct OutlineRow {
 pub struct Outline {
     pub open: Vec<OutlineRow>,
     pub completed: Vec<OutlineRow>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Habit {
+    pub id: String,
+    pub title: String,
+    /// Check-ins per scheduled day.
+    pub goal: u32,
+    /// Scheduled weekdays: bit 0 = Monday … bit 6 = Sunday.
+    pub days: u8,
+}
+
+/// A habit as of one day (the user's today).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HabitSummary {
+    pub habit: Habit,
+    /// Check-ins that day.
+    pub count: u32,
+    /// That day is a scheduled weekday.
+    pub due: bool,
+    /// Scheduled days in a row that met the goal; an unfinished today doesn't break it.
+    pub streak: u32,
+    pub best_streak: u32,
+    /// Check-ins of the 7 days ending that day, oldest first.
+    pub week: Vec<u32>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HabitDay {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    pub count: u32,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -237,6 +275,58 @@ impl NotStore {
     /// Deletes a list or task and everything under it. Undoable.
     pub fn delete_item(&self, id: String) -> Result<(), NotError> {
         Ok(self.store.delete(&id)?)
+    }
+
+    // ---- habits ----
+    // Dates are the user's local calendar dates as `YYYY-MM-DD`.
+
+    pub fn create_habit(&self, title: String, goal: u32, days: u8) -> Result<String, NotError> {
+        Ok(self.store.create_habit(&title, goal, days)?)
+    }
+
+    pub fn update_habit(&self, id: String, title: String, goal: u32, days: u8) -> Result<(), NotError> {
+        Ok(self.store.update_habit(&id, &title, goal, days)?)
+    }
+
+    pub fn move_habit(&self, id: String, index: u32) -> Result<(), NotError> {
+        Ok(self.store.move_habit(&id, index as usize)?)
+    }
+
+    /// Undoable; check-ins are kept.
+    pub fn delete_habit(&self, id: String) -> Result<(), NotError> {
+        Ok(self.store.delete_habit(&id)?)
+    }
+
+    /// Adds (or with a negative `delta` removes) check-ins on `date`. Returns the new count.
+    pub fn log_habit(&self, id: String, date: String, delta: i64) -> Result<u32, NotError> {
+        Ok(self.store.log_habit(&id, &date, delta)?)
+    }
+
+    /// One tap: a check-in until the goal is met, then back to zero. Returns the new count.
+    pub fn toggle_habit(&self, id: String, date: String) -> Result<u32, NotError> {
+        Ok(self.store.toggle_habit(&id, &date)?)
+    }
+
+    pub fn habits(&self, date: String) -> Result<Vec<HabitSummary>, NotError> {
+        Ok(self
+            .store
+            .habits(&date)?
+            .into_iter()
+            .map(HabitSummary::from)
+            .collect())
+    }
+
+    /// Days in `from..=to` with check-ins, for history grids.
+    pub fn habit_days(&self, id: String, from: String, to: String) -> Result<Vec<HabitDay>, NotError> {
+        Ok(self
+            .store
+            .habit_days(&id, &from, &to)?
+            .into_iter()
+            .map(|d| HabitDay {
+                date: d.date,
+                count: d.count,
+            })
+            .collect())
     }
 
     // ---- undo ----
@@ -452,6 +542,24 @@ impl From<not_core::Task> for TaskItem {
             title: t.title,
             notes: t.notes,
             completed_at: t.completed_at,
+        }
+    }
+}
+
+impl From<not_core::HabitSummary> for HabitSummary {
+    fn from(s: not_core::HabitSummary) -> Self {
+        Self {
+            habit: Habit {
+                id: s.habit.id,
+                title: s.habit.title,
+                goal: s.habit.goal,
+                days: s.habit.days,
+            },
+            count: s.count,
+            due: s.due,
+            streak: s.streak,
+            best_streak: s.best_streak,
+            week: s.week,
         }
     }
 }

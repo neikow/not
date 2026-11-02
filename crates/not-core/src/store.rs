@@ -5,16 +5,20 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loro::{
-    ContainerTrait, ExportMode, LoroDoc, LoroResult, LoroTree, Subscription, TreeID, TreeParentId,
+    ContainerTrait, ExportMode, LoroDoc, LoroMap, LoroResult, LoroTree, Subscription, TreeID, TreeParentId,
     UndoManager, VersionVector,
 };
 use rusqlite::Connection;
 
-use crate::projection::{self, COMPLETED_AT, DELETED_AT, Dirty, KIND, KIND_LIST, KIND_TASK, NOTES, TITLE};
-use crate::{Error, Result, storage};
+use crate::projection::{
+    self, COMPLETED_AT, DELETED_AT, Dirty, KIND, KIND_LIST, KIND_TASK, NOTES, Roots, TITLE,
+};
+use crate::{Error, Result, habits, storage};
 
 pub const WORKSPACE: &str = "workspace";
 const TASKS_TREE: &str = "tasks";
+const HABITS_TREE: &str = "habits";
+const HABIT_LOG: &str = "habit_log";
 
 /// Id of the built-in Inbox list. It isn't a node: tasks at the root of the tree are in the Inbox,
 /// so there is nothing to create and two fresh devices can't end up with an Inbox each.
@@ -80,6 +84,8 @@ pub struct ListenerId(u64);
 pub struct Store {
     pub(crate) doc: LoroDoc,
     tasks: LoroTree,
+    pub(crate) habits: LoroTree,
+    pub(crate) habit_log: LoroMap,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
     /// This session's local edits; remote changes are never undone.
@@ -115,6 +121,9 @@ impl Store {
         }
         let tasks = doc.get_tree(TASKS_TREE);
         tasks.enable_fractional_index(0);
+        let habits = doc.get_tree(HABITS_TREE);
+        habits.enable_fractional_index(0);
+        let habit_log = doc.get_map(HABIT_LOG);
 
         let tx = db.transaction()?;
         if storage::needs_compaction(&tx, WORKSPACE)? {
@@ -122,6 +131,7 @@ impl Store {
         }
         if storage::ensure_read_model(&tx)? {
             projection::rebuild(&tasks, &tx)?;
+            habits::rebuild(&habits, &habit_log, &tx)?;
         }
         let server_vv = storage::kv_get(&tx, SERVER_VV_KEY)?
             .map(|b| VersionVector::decode(&b))
@@ -133,9 +143,13 @@ impl Store {
         let dirty = Arc::new(Mutex::new(Dirty::default()));
         let subscription = {
             let dirty = dirty.clone();
-            let tree_id = tasks.id();
+            let roots = Roots {
+                tasks: tasks.id(),
+                habits: habits.id(),
+                habit_log: habit_log.id(),
+            };
             doc.subscribe_root(Arc::new(move |event| {
-                dirty.lock().unwrap().record(&tree_id, &event);
+                dirty.lock().unwrap().record(&roots, &event);
             }))
         };
 
@@ -150,6 +164,8 @@ impl Store {
             }),
             doc,
             tasks,
+            habits,
+            habit_log,
             dirty,
             history,
             listeners: Mutex::default(),
@@ -398,9 +414,14 @@ impl Store {
     }
 
     fn write<T>(&self, mutate: impl FnOnce(&LoroTree) -> Result<T>) -> Result<T> {
+        self.transact(|| mutate(&self.tasks))
+    }
+
+    /// Runs `mutate` as one Loro commit (one undo step), then persists and projects it.
+    pub(crate) fn transact<T>(&self, mutate: impl FnOnce() -> Result<T>) -> Result<T> {
         let (out, changed) = {
             let mut inner = self.lock();
-            let out = mutate(&self.tasks);
+            let out = mutate();
             // Commit and flush even on error so the read model never lags behind applied ops.
             self.doc.commit();
             (out, self.flush(&mut inner)?)
@@ -425,7 +446,11 @@ impl Store {
             let update = self.doc.export(ExportMode::updates(saved_vv))?;
             storage::append_update(&tx, WORKSPACE, &update)?;
         }
-        projection::apply(&self.tasks, &tx, dirty)?;
+        projection::apply(&self.tasks, &tx, dirty.tasks)?;
+        if dirty.habits {
+            habits::project_habits(&self.habits, &tx)?;
+        }
+        habits::project_log(&self.habit_log, &tx, &dirty.habit_log)?;
         tx.commit()?;
         *saved_vv = vv;
         Ok(true)
@@ -496,7 +521,7 @@ fn place(tree: &LoroTree, id: TreeID, parent: TreeParentId, kind: &str, index: u
     Ok(())
 }
 
-fn clean_title(title: &str) -> Result<String> {
+pub(crate) fn clean_title(title: &str) -> Result<String> {
     let title = title.trim();
     if title.is_empty() {
         return Err(Error::Invalid("title is empty".into()));
@@ -504,7 +529,7 @@ fn clean_title(title: &str) -> Result<String> {
     Ok(title.to_owned())
 }
 
-fn now_millis() -> i64 {
+pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)

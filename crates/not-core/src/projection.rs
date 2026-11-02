@@ -1,11 +1,12 @@
 //! Projects the `tasks` tree of the workspace doc into the `list` / `task` read-model tables.
 //!
 //! Loro events tell us which nodes changed; only those rows (and, for structural changes, their
-//! subtrees) are rewritten.
+//! subtrees) are rewritten. [`Dirty`] also collects what changed in the other containers, which
+//! their own modules project.
 
 use std::collections::HashSet;
 
-use loro::event::{Diff, DiffEvent};
+use loro::event::{ContainerDiff, Diff, DiffEvent};
 use loro::{
     Container, ContainerID, Index, LoroMap, LoroTree, LoroValue, TreeID, TreeParentId, ValueOrContainer,
 };
@@ -25,47 +26,92 @@ pub const NOTES: &str = "notes";
 /// from the tree, so undo (and a later trash) bring back the same node ids.
 pub const DELETED_AT: &str = "deleted_at";
 
+/// Ids of the workspace's root containers, to tell events apart.
+pub struct Roots {
+    pub tasks: ContainerID,
+    pub habits: ContainerID,
+    pub habit_log: ContainerID,
+}
+
 #[derive(Debug, Default)]
 pub struct Dirty {
-    /// Created, moved, deleted or restored: the node and its whole subtree are re-projected.
-    structure: HashSet<TreeID>,
-    /// Only the node's meta map changed.
-    meta: HashSet<TreeID>,
+    pub tasks: TreeDirty,
+    /// Any habit definition changed; there are few, so they are re-projected together.
+    pub habits: bool,
+    /// `habit_log` keys whose counter changed.
+    pub habit_log: HashSet<String>,
 }
 
 impl Dirty {
     pub fn is_empty(&self) -> bool {
-        self.structure.is_empty() && self.meta.is_empty()
+        self.tasks.is_empty() && !self.habits && self.habit_log.is_empty()
     }
 
-    pub fn record(&mut self, tree: &ContainerID, event: &DiffEvent) {
+    pub fn record(&mut self, roots: &Roots, event: &DiffEvent) {
         for change in &event.events {
-            if let Diff::Tree(diff) = &change.diff {
-                if change.target == tree {
-                    self.structure.extend(diff.diff.iter().map(|item| item.target));
+            let under =
+                |root: &ContainerID| change.target == root || change.path.iter().any(|(c, _)| c == root);
+            if under(&roots.habits) {
+                self.habits = true;
+            } else if *change.target == roots.habit_log {
+                if let Diff::Map(m) = &change.diff {
+                    self.habit_log.extend(m.updated.keys().map(|k| k.to_string()));
                 }
-                continue;
-            }
-            // Each path entry is (container, its index within the previous container), so a node's
-            // meta map appears as `(meta, Node(id))` right after `(tree, _)`.
-            let Some(node) = change.path.windows(2).find_map(|pair| match pair {
-                [(parent, _), (_, Index::Node(id))] if parent == tree => Some(*id),
-                _ => None,
-            }) else {
-                continue;
-            };
-            // Deleting or restoring changes what's visible below the node, too.
-            let visibility = matches!(&change.diff, Diff::Map(m) if m.updated.contains_key(DELETED_AT));
-            if visibility {
-                self.structure.insert(node);
+            } else if under(&roots.habit_log) {
+                self.habit_log
+                    .extend(change.path.windows(2).find_map(|pair| match pair {
+                        [(parent, _), (_, Index::Key(key))] if *parent == roots.habit_log => {
+                            Some(key.to_string())
+                        }
+                        _ => None,
+                    }));
             } else {
-                self.meta.insert(node);
+                self.tasks.record(&roots.tasks, change);
             }
         }
     }
 }
 
-pub fn apply(tree: &LoroTree, db: &Connection, dirty: Dirty) -> Result<()> {
+/// Nodes of one tree to re-project.
+#[derive(Debug, Default)]
+pub struct TreeDirty {
+    /// Created, moved, deleted or restored: the node and its whole subtree are re-projected.
+    structure: HashSet<TreeID>,
+    /// Only the node's meta map (or a container in it) changed.
+    meta: HashSet<TreeID>,
+}
+
+impl TreeDirty {
+    pub fn is_empty(&self) -> bool {
+        self.structure.is_empty() && self.meta.is_empty()
+    }
+
+    fn record(&mut self, tree: &ContainerID, change: &ContainerDiff<'_>) {
+        if let Diff::Tree(diff) = &change.diff {
+            if change.target == tree {
+                self.structure.extend(diff.diff.iter().map(|item| item.target));
+            }
+            return;
+        }
+        // Each path entry is (container, its index within the previous container), so a node's
+        // meta map appears as `(meta, Node(id))` right after `(tree, _)`.
+        let Some(node) = change.path.windows(2).find_map(|pair| match pair {
+            [(parent, _), (_, Index::Node(id))] if parent == tree => Some(*id),
+            _ => None,
+        }) else {
+            return;
+        };
+        // Deleting or restoring changes what's visible below the node, too.
+        let visibility = matches!(&change.diff, Diff::Map(m) if m.updated.contains_key(DELETED_AT));
+        if visibility {
+            self.structure.insert(node);
+        } else {
+            self.meta.insert(node);
+        }
+    }
+}
+
+pub fn apply(tree: &LoroTree, db: &Connection, dirty: TreeDirty) -> Result<()> {
     for id in &dirty.structure {
         project_subtree(tree, db, *id)?;
     }

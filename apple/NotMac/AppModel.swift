@@ -17,13 +17,20 @@ final class AppModel {
     private(set) var canRedo = false
     var errorMessage: String?
 
-    var selectedListID: String? {
+    var selection: SidebarItem? {
         didSet {
-            guard oldValue != selectedListID else { return }
+            guard oldValue != selection else { return }
             selectedTaskID = nil
             editingTaskID = nil
+            selectedHabitID = nil
             reloadTasks()
         }
+    }
+
+    /// The list shown, if the selection is one.
+    var selectedListID: String? {
+        get { if case let .list(id) = selection { id } else { nil } }
+        set { selection = newValue.map(SidebarItem.list) }
     }
     var selectedTaskID: String?
     /// The task whose title is being edited in place.
@@ -41,6 +48,12 @@ final class AppModel {
     }
     /// Open tasks of `panelListID`, without completed subtasks.
     private(set) var panelRows: [OutlineRow] = []
+
+    /// Habits as of `today`.
+    private(set) var habits: [HabitSummary] = []
+    var selectedHabitID: String?
+    /// The user's local date; habits are checked in on it.
+    private(set) var today = AppModel.dayString(.now)
 
     @ObservationIgnored private let store: NotStore
     @ObservationIgnored private var observer: ModelObserver?
@@ -225,6 +238,59 @@ final class AppModel {
         run { try store.moveTaskBefore(id: task.id, parentId: parent, beforeId: anchor) }
     }
 
+    // MARK: Habits
+
+    var selectedHabit: HabitSummary? { habits.first { $0.habit.id == selectedHabitID } }
+
+    @discardableResult
+    func addHabit(_ title: String) -> String? {
+        guard !title.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return run { try store.createHabit(title: title, goal: 1, days: everyDay()) }
+    }
+
+    func updateHabit(_ habit: Habit) {
+        run { try store.updateHabit(id: habit.id, title: habit.title, goal: habit.goal, days: habit.days) }
+    }
+
+    /// A check-in until the goal is met, then back to zero.
+    func toggleHabit(_ id: String) {
+        run { _ = try store.toggleHabit(id: id, date: today) }
+    }
+
+    func logHabit(_ id: String, _ delta: Int64) {
+        run { _ = try store.logHabit(id: id, date: today, delta: delta) }
+    }
+
+    func deleteHabit(_ id: String) {
+        if selectedHabitID == id { selectedHabitID = nil }
+        run { try store.deleteHabit(id: id) }
+    }
+
+    func moveHabit(from source: Int, to destination: Int) {
+        // `destination` counts the moved row itself when moving down.
+        let index = source < destination ? destination - 1 : destination
+        run { try store.moveHabit(id: habits[source].habit.id, index: UInt32(index)) }
+    }
+
+    /// Check-ins per day (`YYYY-MM-DD`) from `from` through today.
+    func habitHistory(_ id: String, from: Date) -> [String: UInt32] {
+        let days = run { try store.habitDays(id: id, from: Self.dayString(from), to: today) } ?? []
+        return Dictionary(uniqueKeysWithValues: days.map { ($0.date, $0.count) })
+    }
+
+    /// Picks up a new day (midnight, or waking up the next morning).
+    func refreshToday() {
+        let now = Self.dayString(.now)
+        guard now != today else { return }
+        today = now
+        reloadHabits()
+    }
+
+    static func dayString(_ date: Date) -> String {
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
     // MARK: Undo
 
     func undo() { run { _ = try store.undo() } }
@@ -248,12 +314,21 @@ final class AppModel {
         self.lists = lists
         canUndo = store.canUndo()
         canRedo = store.canRedo()
-        if let selected = selectedListID, lists.contains(where: { $0.id == selected }) {
+        switch selection {
+        case .habits:
+            break
+        case let .list(id) where lists.contains(where: { $0.id == id }):
             reloadTasks()
-        } else {
+        default:
             selectedListID = inboxID
         }
         reloadPanel()
+        reloadHabits()
+    }
+
+    private func reloadHabits() {
+        habits = run { try store.habits(date: today) } ?? []
+        if selectedHabit == nil { selectedHabitID = nil }
     }
 
     private func reloadPanel() {
@@ -304,6 +379,12 @@ final class AppModel {
         case nil: error.localizedDescription
         }
     }
+}
+
+/// What the sidebar shows in the main column.
+enum SidebarItem: Hashable {
+    case list(String)
+    case habits
 }
 
 /// Bridges Rust callbacks (background threads) onto the main actor.

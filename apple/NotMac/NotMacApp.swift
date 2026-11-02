@@ -13,7 +13,10 @@ struct NotMacApp: App {
             ContentView(model: appDelegate.model)
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { appDelegate.model.syncNow() }
+            if phase == .active {
+                appDelegate.model.refreshToday()
+                appDelegate.model.syncNow()
+            }
         }
         .commands { TaskCommands(model: appDelegate.model) }
 

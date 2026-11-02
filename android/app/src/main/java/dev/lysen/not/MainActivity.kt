@@ -12,13 +12,14 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: TasksViewModel by viewModels()
+    private val habits: HabitsViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
-            NotTheme { NotAppUi(viewModel) }
+            NotTheme { NotAppUi(viewModel, habits) }
         }
     }
 
@@ -34,6 +35,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        habits.refreshToday()
         viewModel.syncNow()
     }
 
