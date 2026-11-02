@@ -23,6 +23,9 @@ cargo test --workspace --all-features
 
 ## Run the apps
 
+`make` lists dev shortcuts (`make server`, `make pair URL=…`, `make mac-run`, `make phone`, …); the
+steps below are what they run.
+
 Prerequisites: Xcode, xcodegen, Android SDK + NDK, `rustup target add aarch64-linux-android`,
 `cargo install cargo-ndk`.
 
