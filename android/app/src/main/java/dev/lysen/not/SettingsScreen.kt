@@ -215,14 +215,46 @@ private fun PairForm(state: UiState, viewModel: TasksViewModel) {
 private fun PairedInfo(state: UiState, viewModel: TasksViewModel) {
     val info = state.syncInfo ?: return
     var pendingRevoke by remember { mutableStateOf<Device?>(null) }
-    LaunchedEffect(info.deviceId) { viewModel.refreshDevices() }
+    var confirmingUnpair by remember { mutableStateOf(false) }
+    // The server no longer knows this device (revoked, or its database was reset): only unpairing helps.
+    val rejected = state.sync == SyncState.Unauthorized
+    LaunchedEffect(info.deviceId, rejected) { if (!rejected) viewModel.refreshDevices() }
 
-    Text(info.serverUrl, style = MaterialTheme.typography.bodyLarge)
-    Text(
-        "${info.deviceName} · ${syncStatus(state.sync)}",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(info.serverUrl, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "${info.deviceName} · ${syncStatus(state.sync)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        // Lives here, not in the device list, which can't load once the server rejects us.
+        TextButton(onClick = { confirmingUnpair = true }, enabled = !state.busy) {
+            Text("Unpair", color = MaterialTheme.colorScheme.error)
+        }
+    }
+
+    if (confirmingUnpair) {
+        AlertDialog(
+            onDismissRequest = { confirmingUnpair = false },
+            title = { Text("Unpair this device?") },
+            text = {
+                Text(
+                    if (rejected) "Tasks stay here. Pair again to resume syncing."
+                    else "Sync stops and this device is removed from the server. Tasks stay here.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.unpair()
+                    confirmingUnpair = false
+                }) { Text("Unpair", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmingUnpair = false }) { Text("Cancel") } },
+        )
+    }
+    if (rejected) return
     HorizontalDivider()
 
     val code = state.pairingCode
@@ -258,8 +290,10 @@ private fun PairedInfo(state: UiState, viewModel: TasksViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            TextButton(onClick = { pendingRevoke = device }, enabled = !state.busy) {
-                Text(if (device.isCurrent) "Unpair" else "Revoke", color = MaterialTheme.colorScheme.error)
+            if (!device.isCurrent) {
+                TextButton(onClick = { pendingRevoke = device }, enabled = !state.busy) {
+                    Text("Revoke", color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }
@@ -268,18 +302,13 @@ private fun PairedInfo(state: UiState, viewModel: TasksViewModel) {
     pendingRevoke?.let { device ->
         AlertDialog(
             onDismissRequest = { pendingRevoke = null },
-            title = { Text(if (device.isCurrent) "Unpair this device?" else "Revoke ${device.name}?") },
-            text = {
-                Text(
-                    if (device.isCurrent) "Sync stops and this device is removed from the server. Tasks stay here."
-                    else "${device.name} stops syncing until it is paired again. Its local data stays on it.",
-                )
-            },
+            title = { Text("Revoke ${device.name}?") },
+            text = { Text("${device.name} stops syncing until it is paired again. Its local data stays on it.") },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.revoke(device)
                     pendingRevoke = null
-                }) { Text(if (device.isCurrent) "Unpair" else "Revoke", color = MaterialTheme.colorScheme.error) }
+                }) { Text("Revoke", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { pendingRevoke = null }) { Text("Cancel") } },
         )

@@ -89,6 +89,11 @@ private struct PairedView: View {
     @State private var devices: [Device] = []
     @State private var code: PairingCode?
     @State private var pendingRevoke: Device?
+    @State private var confirmingUnpair = false
+
+    /// The server no longer knows this device (revoked, or its database was reset), so only
+    /// unpairing makes sense.
+    private var rejected: Bool { model.syncState == .unauthorized }
 
     var body: some View {
         Form {
@@ -96,60 +101,74 @@ private struct PairedView: View {
                 LabeledContent("Server", value: info.serverUrl)
                 LabeledContent("This Mac", value: info.deviceName)
                 LabeledContent("Status", value: status)
-            }
-            Section {
-                if let code {
-                    HStack {
-                        Spacer()
-                        QRCodeView(text: pairingLink(serverUrl: info.serverUrl, code: code.code))
-                        Spacer()
-                    }
-                    LabeledContent("Pairing code") {
-                        Text(code.code).font(.title2.monospaced()).textSelection(.enabled)
-                    }
-                    Text("Works once, until \(date(code.expiresAt).formatted(date: .omitted, time: .shortened)).")
-                        .foregroundStyle(.secondary)
-                } else {
-                    Button("Add Device…") { Task { code = await model.createPairingCode() } }
-                }
-            } header: {
-                Text("Add a device")
-            } footer: {
-                Text("Scan the QR code with the Android app, or enter the code there along with this server's URL.")
-                    .foregroundStyle(.secondary)
-            }
-            Section("Devices") {
-                ForEach(devices, id: \.id) { device in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(device.isCurrent ? "\(device.name) (this Mac)" : device.name)
-                            Text(lastSeen(device)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button(device.isCurrent ? "Unpair…" : "Revoke…", role: .destructive) {
-                            pendingRevoke = device
-                        }
-                    }
+                HStack {
+                    Spacer()
+                    // Lives here, not in the device list, which can't load once the server rejects us.
+                    Button("Unpair…", role: .destructive) { confirmingUnpair = true }
                 }
             }
+            if !rejected { otherSections }
         }
-        .frame(minHeight: 640)
-        .task(id: info.deviceId) { devices = await model.devices() }
+        .frame(minHeight: rejected ? 0 : 640)
+        .task(id: [info.deviceId, rejected ? 1 : 0]) { if !rejected { devices = await model.devices() } }
+        .confirmationDialog("Unpair this Mac?", isPresented: $confirmingUnpair) {
+            Button("Unpair", role: .destructive) { Task { await model.unpair() } }
+        } message: {
+            Text(rejected
+                ? "Tasks stay on this Mac. Pair again to resume syncing."
+                : "Sync stops and this Mac is removed from the server. Tasks stay on this Mac.")
+        }
         .confirmationDialog(
-            pendingRevoke.map { $0.isCurrent ? "Unpair this Mac?" : "Revoke \($0.name)?" } ?? "",
+            pendingRevoke.map { "Revoke \($0.name)?" } ?? "",
             isPresented: Binding(get: { pendingRevoke != nil }, set: { if !$0 { pendingRevoke = nil } }),
             presenting: pendingRevoke
         ) { device in
-            Button(device.isCurrent ? "Unpair" : "Revoke", role: .destructive) {
+            Button("Revoke", role: .destructive) {
                 Task {
                     await model.revoke(device)
-                    if !device.isCurrent { devices = await model.devices() }
+                    devices = await model.devices()
                 }
             }
         } message: { device in
-            Text(device.isCurrent
-                ? "Sync stops and this Mac is removed from the server. Tasks stay on this Mac."
-                : "\(device.name) stops syncing until it is paired again. Its local data stays on it.")
+            Text("\(device.name) stops syncing until it is paired again. Its local data stays on it.")
+        }
+    }
+
+    @ViewBuilder private var otherSections: some View {
+        Section {
+            if let code {
+                HStack {
+                    Spacer()
+                    QRCodeView(text: pairingLink(serverUrl: info.serverUrl, code: code.code))
+                    Spacer()
+                }
+                LabeledContent("Pairing code") {
+                    Text(code.code).font(.title2.monospaced()).textSelection(.enabled)
+                }
+                Text("Works once, until \(date(code.expiresAt).formatted(date: .omitted, time: .shortened)).")
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("Add Device…") { Task { code = await model.createPairingCode() } }
+            }
+        } header: {
+            Text("Add a device")
+        } footer: {
+            Text("Scan the QR code with the Android app, or enter the code there along with this server's URL.")
+                .foregroundStyle(.secondary)
+        }
+        Section("Devices") {
+            ForEach(devices, id: \.id) { device in
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(device.isCurrent ? "\(device.name) (this Mac)" : device.name)
+                        Text(lastSeen(device)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if !device.isCurrent {
+                        Button("Revoke…", role: .destructive) { pendingRevoke = device }
+                    }
+                }
+            }
         }
     }
 
