@@ -41,10 +41,9 @@ import dev.lysen.not.NotApp
 import dev.lysen.not.QuickAddActivity
 import dev.lysen.not.R
 import dev.lysen.not.SyncWorker
-import dev.lysen.not.TaskRow
-import dev.lysen.not.TasksViewModel
 import dev.lysen.not.core.NotException
 import dev.lysen.not.core.NotStore
+import dev.lysen.not.core.OutlineRow
 
 /** Per-widget setting: which list it shows. Missing means the Inbox. */
 val LIST_KEY = stringPreferencesKey("list_id")
@@ -81,16 +80,15 @@ class CompleteTask : ActionCallback {
     }
 }
 
-private data class WidgetContent(val listId: String, val title: String, val rows: List<TaskRow>) {
+private data class WidgetContent(val listId: String, val title: String, val rows: List<OutlineRow>) {
     companion object {
         fun load(store: NotStore, listId: String): WidgetContent =
             try {
                 val lists = store.lists()
                 // The list may have been deleted on another device: fall back to the Inbox.
                 val list = lists.firstOrNull { it.id == listId } ?: lists.first()
-                val open = store.tasks(list.id).filter { it.completedAt == null }
-                // Subtasks of completed tasks have no visible parent, so flatten leaves them out.
-                WidgetContent(list.id, list.title, TasksViewModel.flatten(open))
+                // Open tasks only: completed subtasks of open tasks are left out too.
+                WidgetContent(list.id, list.title, store.outline(list.id).open.filter { !it.done })
             } catch (_: NotException) {
                 WidgetContent(INBOX_ID, "Inbox", emptyList())
             }
@@ -131,7 +129,7 @@ private fun TasksWidgetContent(content: WidgetContent) {
                         onCheckedChange = actionRunCallback<CompleteTask>(actionParametersOf(TASK_ID to row.task.id)),
                         text = row.task.title,
                         maxLines = 2,
-                        modifier = GlanceModifier.fillMaxWidth().padding(start = (row.depth * 16).dp),
+                        modifier = GlanceModifier.fillMaxWidth().padding(start = (row.depth.toInt() * 16).dp),
                     )
                 }
             }

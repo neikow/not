@@ -1,19 +1,13 @@
 package dev.lysen.not
 
-import android.app.StatusBarManager
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.graphics.drawable.Icon
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.lifecycle.lifecycleScope
-import dev.lysen.not.widget.TasksWidgetReceiver
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -24,7 +18,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
-            NotTheme { TasksScreen(viewModel) }
+            NotTheme { NotAppUi(viewModel) }
         }
     }
 
@@ -56,19 +50,8 @@ class MainActivity : ComponentActivity() {
         val code = intent.getStringExtra("code")
         if (server != null && code != null) viewModel.pair(server, code, viewModel.defaultDeviceName)
         intent.getStringExtra("add")?.let(viewModel::addTask)
-        if (intent.getBooleanExtra("pinWidget", false)) {
-            lifecycleScope.launch {
-                GlanceAppWidgetManager(this@MainActivity).requestPinGlanceAppWidget(TasksWidgetReceiver::class.java)
-            }
-        }
-        if (intent.getBooleanExtra("addTile", false) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            getSystemService(StatusBarManager::class.java).requestAddTileService(
-                ComponentName(this, QuickAddTileService::class.java),
-                getString(R.string.add_task),
-                Icon.createWithResource(this, R.drawable.ic_add_task),
-                mainExecutor,
-            ) {}
-        }
+        if (intent.getBooleanExtra("pinWidget", false)) lifecycleScope.launch { Shortcuts.requestWidget(this@MainActivity) }
+        if (intent.getBooleanExtra("addTile", false)) Shortcuts.requestTile(this)
     }
 
     companion object {

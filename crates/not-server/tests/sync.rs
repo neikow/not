@@ -219,3 +219,22 @@ async fn wait_until(condition: impl Fn() -> bool) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undo_works_while_live_sync_runs() {
+    let server = Server::start().await;
+    let runtime = tokio::runtime::Handle::current();
+    let phone = Arc::new(Store::open_in_memory().unwrap());
+    let mac = Arc::new(Store::open_in_memory().unwrap());
+    let _phone_sync = LiveSync::start(&runtime, phone.clone(), server.client("Phone").await, |_| {});
+    let _mac_sync = LiveSync::start(&runtime, mac.clone(), server.client("Mac").await, |_| {});
+
+    let id = phone.add_task(INBOX, "probe").unwrap();
+    wait_until(|| mac.tasks(INBOX).unwrap().len() == 1).await;
+    phone.delete(&id).unwrap();
+    wait_until(|| mac.tasks(INBOX).unwrap().is_empty()).await;
+
+    assert!(phone.undo().unwrap());
+    assert_eq!(phone.tasks(INBOX).unwrap().len(), 1, "restored on the phone");
+    wait_until(|| mac.tasks(INBOX).unwrap().len() == 1).await;
+}

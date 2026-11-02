@@ -66,6 +66,8 @@ impl From<not_core::Error> for NotError {
 pub struct TaskList {
     pub id: String,
     pub title: String,
+    /// Open top-level tasks, for badges.
+    pub open_count: u32,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -74,8 +76,26 @@ pub struct TaskItem {
     pub list_id: String,
     pub parent_id: Option<String>,
     pub title: String,
+    /// Markdown.
+    pub notes: String,
     /// Unix millis.
     pub completed_at: Option<i64>,
+}
+
+/// A task in display order with its nesting depth.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct OutlineRow {
+    pub task: TaskItem,
+    pub depth: u32,
+    /// The task or one of its ancestors is completed.
+    pub done: bool,
+}
+
+/// A list as shown: open tasks with all their subtasks, then completed ones (latest first).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Outline {
+    pub open: Vec<OutlineRow>,
+    pub completed: Vec<OutlineRow>,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -189,12 +209,53 @@ impl NotStore {
         Ok(self.store.set_completed(&id, completed)?)
     }
 
+    pub fn set_notes(&self, id: String, notes: String) -> Result<(), NotError> {
+        Ok(self.store.set_notes(&id, &notes)?)
+    }
+
     pub fn move_task(&self, id: String, parent_id: String, index: u32) -> Result<(), NotError> {
         Ok(self.store.move_task(&id, &parent_id, index as usize)?)
     }
 
+    /// Moves a task under `parent_id` right before its child `before_id`, or to the end.
+    pub fn move_task_before(
+        &self,
+        id: String,
+        parent_id: String,
+        before_id: Option<String>,
+    ) -> Result<(), NotError> {
+        Ok(self
+            .store
+            .move_task_before(&id, &parent_id, before_id.as_deref())?)
+    }
+
+    /// Moves a list to `index` among the other lists (the Inbox stays first).
+    pub fn move_list(&self, id: String, index: u32) -> Result<(), NotError> {
+        Ok(self.store.move_list(&id, index as usize)?)
+    }
+
+    /// Deletes a list or task and everything under it. Undoable.
     pub fn delete_item(&self, id: String) -> Result<(), NotError> {
         Ok(self.store.delete(&id)?)
+    }
+
+    // ---- undo ----
+
+    /// Reverts this session's last change on this device. False if there was nothing to undo.
+    pub fn undo(&self) -> Result<bool, NotError> {
+        Ok(self.store.undo()?)
+    }
+
+    pub fn redo(&self) -> Result<bool, NotError> {
+        Ok(self.store.redo()?)
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.store.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.store.can_redo()
     }
 
     // ---- queries ----
@@ -207,6 +268,7 @@ impl NotStore {
             .map(|l| TaskList {
                 id: l.id,
                 title: l.title,
+                open_count: l.open_count,
             })
             .collect())
     }
@@ -216,14 +278,25 @@ impl NotStore {
             .store
             .tasks(&list_id)?
             .into_iter()
-            .map(|t| TaskItem {
-                id: t.id,
-                list_id: t.list_id,
-                parent_id: t.parent_id,
-                title: t.title,
-                completed_at: t.completed_at,
-            })
+            .map(TaskItem::from)
             .collect())
+    }
+
+    pub fn outline(&self, list_id: String) -> Result<Outline, NotError> {
+        let outline = self.store.outline(&list_id)?;
+        let rows = |rows: Vec<not_core::OutlineRow>| {
+            rows.into_iter()
+                .map(|r| OutlineRow {
+                    task: r.task.into(),
+                    depth: r.depth,
+                    done: r.done,
+                })
+                .collect()
+        };
+        Ok(Outline {
+            open: rows(outline.open),
+            completed: rows(outline.completed),
+        })
     }
 
     // ---- sync ----
@@ -366,6 +439,19 @@ impl NotStore {
             Err(e) => Err(NotError::Internal {
                 detail: e.to_string(),
             }),
+        }
+    }
+}
+
+impl From<not_core::Task> for TaskItem {
+    fn from(t: not_core::Task) -> Self {
+        Self {
+            id: t.id,
+            list_id: t.list_id,
+            parent_id: t.parent_id,
+            title: t.title,
+            notes: t.notes,
+            completed_at: t.completed_at,
         }
     }
 }

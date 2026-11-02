@@ -1,14 +1,16 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loro::{
-    ContainerTrait, ExportMode, LoroDoc, LoroTree, Subscription, TreeID, TreeParentId, VersionVector,
+    ContainerTrait, ExportMode, LoroDoc, LoroResult, LoroTree, Subscription, TreeID, TreeParentId,
+    UndoManager, VersionVector,
 };
 use rusqlite::Connection;
 
-use crate::projection::{self, COMPLETED_AT, Dirty, KIND, KIND_LIST, KIND_TASK, TITLE};
+use crate::projection::{self, COMPLETED_AT, DELETED_AT, Dirty, KIND, KIND_LIST, KIND_TASK, NOTES, TITLE};
 use crate::{Error, Result, storage};
 
 pub const WORKSPACE: &str = "workspace";
@@ -23,6 +25,8 @@ const INBOX_TITLE: &str = "Inbox";
 pub struct List {
     pub id: String,
     pub title: String,
+    /// Open top-level tasks.
+    pub open_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,8 +36,27 @@ pub struct Task {
     /// Set for subtasks.
     pub parent_id: Option<String>,
     pub title: String,
+    /// Markdown.
+    pub notes: String,
     /// Unix millis.
     pub completed_at: Option<i64>,
+}
+
+/// A task in display order, with its nesting depth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineRow {
+    pub task: Task,
+    pub depth: u32,
+    /// The task or one of its ancestors is completed.
+    pub done: bool,
+}
+
+/// A list as shown: open tasks (with all their subtasks) in user order, then completed tasks,
+/// most recently completed first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Outline {
+    pub open: Vec<OutlineRow>,
+    pub completed: Vec<OutlineRow>,
 }
 
 /// Where a change to the store came from.
@@ -59,6 +82,8 @@ pub struct Store {
     tasks: LoroTree,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
+    /// This session's local edits; remote changes are never undone.
+    history: Mutex<UndoManager>,
     listeners: Mutex<Vec<(ListenerId, Listener)>>,
     next_listener: AtomicU64,
     _subscription: Subscription,
@@ -114,6 +139,9 @@ impl Store {
             }))
         };
 
+        // Created after loading, so stored history isn't undoable.
+        let history = Mutex::new(UndoManager::new(&doc));
+
         Ok(Self {
             inner: Mutex::new(Inner {
                 db,
@@ -123,6 +151,7 @@ impl Store {
             doc,
             tasks,
             dirty,
+            history,
             listeners: Mutex::default(),
             next_listener: AtomicU64::new(0),
             _subscription: subscription,
@@ -161,6 +190,17 @@ impl Store {
         self.write(|tree| Ok(tree.get_meta(id)?.insert(TITLE, title)?))
     }
 
+    /// Replaces the notes; the text CRDT merges concurrent edits from other devices.
+    pub fn set_notes(&self, id: &str, notes: &str) -> Result<()> {
+        let id = self.node(id, &[KIND_TASK])?;
+        self.write(|tree| {
+            // Mergeable: two devices adding the first notes concurrently share one text.
+            let text = tree.get_meta(id)?.ensure_mergeable_text(NOTES)?;
+            text.update(notes, Default::default())
+                .map_err(|e| Error::Invalid(format!("notes: {e}")))
+        })
+    }
+
     pub fn set_completed(&self, id: &str, completed: bool) -> Result<()> {
         let id = self.node(id, &[KIND_TASK])?;
         self.write(|tree| {
@@ -181,16 +221,58 @@ impl Store {
         self.write(|tree| place(tree, id, parent, KIND_TASK, index))
     }
 
+    /// Moves a task under `parent` right before its child `before`, or to the end when `None`.
+    /// Anchoring on a sibling keeps drag-and-drop exact when some siblings (completed ones) are
+    /// shown elsewhere.
+    pub fn move_task_before(&self, id: &str, parent: &str, before: Option<&str>) -> Result<()> {
+        let id = self.node(id, &[KIND_TASK])?;
+        let parent = self.container(parent)?;
+        let before = before.map(|b| self.node(b, &[KIND_TASK])).transpose()?;
+        if let Some(before) = before
+            && self.tasks.parent(before) != Some(parent)
+        {
+            return Err(Error::Invalid("`before` must be a child of `parent`".into()));
+        }
+        self.write(|tree| {
+            match before {
+                Some(before) if before != id => tree.mov_before(id, before)?,
+                Some(_) => {}
+                None => tree.mov(id, parent)?,
+            }
+            Ok(())
+        })
+    }
+
     /// Moves a list to `index` among the other lists. The Inbox always comes first.
     pub fn move_list(&self, id: &str, index: usize) -> Result<()> {
         let id = self.node(id, &[KIND_LIST])?;
         self.write(|tree| place(tree, id, TreeParentId::Root, KIND_LIST, index))
     }
 
-    /// Deletes a list or task together with everything under it.
+    /// Deletes a list or task together with everything under it. Undoable; see [`DELETED_AT`].
     pub fn delete(&self, id: &str) -> Result<()> {
         let id = self.node(id, &[KIND_LIST, KIND_TASK])?;
-        self.write(|tree| Ok(tree.delete(id)?))
+        self.write(|tree| Ok(tree.get_meta(id)?.insert(DELETED_AT, now_millis())?))
+    }
+
+    // ---- undo -----------------------------------------------------------------------------
+
+    /// Reverts this session's last change (from any window or widget of this app). Returns false if
+    /// there was nothing to undo.
+    pub fn undo(&self) -> Result<bool> {
+        self.step_history(UndoManager::undo)
+    }
+
+    pub fn redo(&self) -> Result<bool> {
+        self.step_history(UndoManager::redo)
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.history.lock().unwrap().can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.lock().unwrap().can_redo()
     }
 
     // ---- queries (read model) -------------------------------------------------------------
@@ -198,19 +280,28 @@ impl Store {
     /// The Inbox, then the user's lists in order.
     pub fn lists(&self) -> Result<Vec<List>> {
         let inner = self.lock();
-        let mut stmt = inner
-            .db
-            .prepare_cached("SELECT id, title FROM list ORDER BY position, id")?;
+        let open = |list: &str| -> rusqlite::Result<u32> {
+            inner
+                .db
+                .prepare_cached(OPEN_COUNT)?
+                .query_row([list], |r| r.get(0))
+        };
+        let mut lists = vec![List {
+            id: INBOX.into(),
+            title: INBOX_TITLE.into(),
+            open_count: open(INBOX)?,
+        }];
+        let mut stmt = inner.db.prepare_cached(&format!(
+            "SELECT id, title, ({}) FROM list ORDER BY position, id",
+            OPEN_COUNT.replace("?1", "list.id")
+        ))?;
         let rows = stmt.query_map([], |r| {
             Ok(List {
                 id: r.get(0)?,
                 title: r.get(1)?,
+                open_count: r.get(2)?,
             })
         })?;
-        let mut lists = vec![List {
-            id: INBOX.into(),
-            title: INBOX_TITLE.into(),
-        }];
         for row in rows {
             lists.push(row?);
         }
@@ -221,7 +312,7 @@ impl Store {
     pub fn tasks(&self, list_id: &str) -> Result<Vec<Task>> {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(
-            "SELECT id, list_id, parent_id, title, completed_at FROM task
+            "SELECT id, list_id, parent_id, title, notes, completed_at FROM task
              WHERE list_id = ?1 ORDER BY parent_id IS NOT NULL, parent_id, position, id",
         )?;
         let rows = stmt.query_map([list_id], |r| {
@@ -230,10 +321,35 @@ impl Store {
                 list_id: r.get(1)?,
                 parent_id: r.get(2)?,
                 title: r.get(3)?,
-                completed_at: r.get(4)?,
+                notes: r.get(4)?,
+                completed_at: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The tasks of a list arranged for display. See [`Outline`].
+    pub fn outline(&self, list_id: &str) -> Result<Outline> {
+        let mut children: HashMap<Option<String>, Vec<Task>> = HashMap::new();
+        // `tasks` returns each parent's children in user order.
+        for task in self.tasks(list_id)? {
+            children.entry(task.parent_id.clone()).or_default().push(task);
+        }
+        let (mut completed, open): (Vec<_>, Vec<_>) = children
+            .remove(&None)
+            .unwrap_or_default()
+            .into_iter()
+            .partition(|t| t.completed_at.is_some());
+        completed.sort_by_key(|t| std::cmp::Reverse(t.completed_at));
+
+        let mut outline = Outline::default();
+        for task in open {
+            push_subtree(&mut outline.open, &mut children, task, 0, false);
+        }
+        for task in completed {
+            push_subtree(&mut outline.completed, &mut children, task, 0, true);
+        }
+        Ok(outline)
     }
 
     // ---- change notifications -------------------------------------------------------------
@@ -266,6 +382,19 @@ impl Store {
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap()
+    }
+
+    fn step_history(&self, step: impl FnOnce(&mut UndoManager) -> LoroResult<bool>) -> Result<bool> {
+        let (applied, changed) = {
+            let mut inner = self.lock();
+            let applied = step(&mut self.history.lock().unwrap());
+            self.doc.commit();
+            (applied, self.flush(&mut inner)?)
+        };
+        if changed {
+            self.notify(ChangeOrigin::Local);
+        }
+        Ok(applied?)
     }
 
     fn write<T>(&self, mutate: impl FnOnce(&LoroTree) -> Result<T>) -> Result<T> {
@@ -330,6 +459,25 @@ impl Store {
 }
 
 pub(crate) const SERVER_VV_KEY: &str = "server_vv:workspace";
+
+/// Open top-level tasks of list `?1`.
+const OPEN_COUNT: &str =
+    "SELECT count(*) FROM task WHERE list_id = ?1 AND parent_id IS NULL AND completed_at IS NULL";
+
+fn push_subtree(
+    rows: &mut Vec<OutlineRow>,
+    children: &mut HashMap<Option<String>, Vec<Task>>,
+    task: Task,
+    depth: u32,
+    ancestor_done: bool,
+) {
+    let done = ancestor_done || task.completed_at.is_some();
+    let kids = children.remove(&Some(task.id.clone())).unwrap_or_default();
+    rows.push(OutlineRow { task, depth, done });
+    for kid in kids {
+        push_subtree(rows, children, kid, depth + 1, done);
+    }
+}
 
 /// Moves `id` under `parent` so that it ends up at `index` among siblings of the same kind. The root
 /// holds both lists and Inbox tasks, so a plain child index would count the other kind too.

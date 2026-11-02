@@ -6,7 +6,9 @@
 use std::collections::HashSet;
 
 use loro::event::{Diff, DiffEvent};
-use loro::{ContainerID, Index, LoroMap, LoroTree, LoroValue, TreeID, TreeParentId, ValueOrContainer};
+use loro::{
+    Container, ContainerID, Index, LoroMap, LoroTree, LoroValue, TreeID, TreeParentId, ValueOrContainer,
+};
 use rusqlite::{Connection, params};
 
 use crate::Result;
@@ -17,10 +19,15 @@ pub const KIND_LIST: &str = "list";
 pub const KIND_TASK: &str = "task";
 pub const TITLE: &str = "title";
 pub const COMPLETED_AT: &str = "completed_at";
+/// `LoroText` with the task's markdown notes.
+pub const NOTES: &str = "notes";
+/// Soft delete: set on a list or task to hide it and everything under it. Nodes are never removed
+/// from the tree, so undo (and a later trash) bring back the same node ids.
+pub const DELETED_AT: &str = "deleted_at";
 
 #[derive(Debug, Default)]
 pub struct Dirty {
-    /// Created, moved or deleted: the node and its whole subtree are re-projected.
+    /// Created, moved, deleted or restored: the node and its whole subtree are re-projected.
     structure: HashSet<TreeID>,
     /// Only the node's meta map changed.
     meta: HashSet<TreeID>,
@@ -41,11 +48,19 @@ impl Dirty {
             }
             // Each path entry is (container, its index within the previous container), so a node's
             // meta map appears as `(meta, Node(id))` right after `(tree, _)`.
-            let node = change.path.windows(2).find_map(|pair| match pair {
+            let Some(node) = change.path.windows(2).find_map(|pair| match pair {
                 [(parent, _), (_, Index::Node(id))] if parent == tree => Some(*id),
                 _ => None,
-            });
-            self.meta.extend(node);
+            }) else {
+                continue;
+            };
+            // Deleting or restoring changes what's visible below the node, too.
+            let visibility = matches!(&change.diff, Diff::Map(m) if m.updated.contains_key(DELETED_AT));
+            if visibility {
+                self.structure.insert(node);
+            } else {
+                self.meta.insert(node);
+            }
         }
     }
 }
@@ -68,8 +83,21 @@ pub fn rebuild(tree: &LoroTree, db: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// In the tree and neither it nor an ancestor is soft-deleted.
 pub fn is_alive(tree: &LoroTree, id: TreeID) -> bool {
-    tree.contains(id) && !tree.is_node_deleted(&id).unwrap_or(true)
+    let mut current = id;
+    loop {
+        if !tree.contains(current) || tree.is_node_deleted(&current).unwrap_or(true) {
+            return false;
+        }
+        if tree.get_meta(current).is_ok_and(|m| m.get(DELETED_AT).is_some()) {
+            return false;
+        }
+        match tree.parent(current) {
+            Some(TreeParentId::Node(parent)) => current = parent,
+            _ => return true,
+        }
+    }
 }
 
 pub fn kind(tree: &LoroTree, id: TreeID) -> Option<String> {
@@ -107,16 +135,18 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
                 return remove(db, id);
             };
             db.execute(
-                "INSERT INTO task (id, list_id, parent_id, title, completed_at, position)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "INSERT INTO task (id, list_id, parent_id, title, notes, completed_at, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (id) DO UPDATE SET
                     list_id = excluded.list_id, parent_id = excluded.parent_id, title = excluded.title,
-                    completed_at = excluded.completed_at, position = excluded.position",
+                    notes = excluded.notes, completed_at = excluded.completed_at,
+                    position = excluded.position",
                 params![
                     id.to_string(),
                     list_id,
                     parent_id.map(|p| p.to_string()),
                     title,
+                    meta_text(&meta, NOTES).unwrap_or_default(),
                     meta_i64(&meta, COMPLETED_AT),
                     position
                 ],
@@ -169,6 +199,13 @@ fn remove(db: &Connection, id: TreeID) -> Result<()> {
 pub fn meta_str(meta: &LoroMap, key: &str) -> Option<String> {
     match meta.get(key)? {
         ValueOrContainer::Value(LoroValue::String(s)) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+pub fn meta_text(meta: &LoroMap, key: &str) -> Option<String> {
+    match meta.get(key)? {
+        ValueOrContainer::Container(Container::Text(text)) => Some(text.to_string()),
         _ => None,
     }
 }

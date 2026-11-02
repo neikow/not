@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::Result;
 
 /// Bump when the read-model tables change; a mismatch triggers a full rebuild from the docs.
-pub const READ_MODEL_VERSION: i64 = 2;
+pub const READ_MODEL_VERSION: i64 = 3;
 
 /// Local update rows per doc before they are folded into a snapshot on open.
 const COMPACT_AFTER: i64 = 200;
@@ -55,6 +55,7 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
             list_id      TEXT NOT NULL,
             parent_id    TEXT,
             title        TEXT NOT NULL,
+            notes        TEXT NOT NULL,
             completed_at INTEGER,
             position     TEXT NOT NULL
         );

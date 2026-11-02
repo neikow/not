@@ -340,3 +340,165 @@ fn listeners_see_change_origin() {
     phone.add_task(&list, "x").unwrap();
     assert_eq!(seen.lock().unwrap().len(), 2);
 }
+
+#[test]
+fn undo_restores_a_deleted_subtree() {
+    let s = Store::open_in_memory().unwrap();
+    let parent = s.add_task(INBOX, "trip").unwrap();
+    let child = s.add_task(&parent, "passport").unwrap();
+    s.set_notes(&parent, "check visa").unwrap();
+    assert!(!s.redo().unwrap(), "nothing to redo yet");
+
+    s.delete(&parent).unwrap();
+    assert!(s.tasks(INBOX).unwrap().is_empty());
+
+    assert!(s.undo().unwrap());
+    let tasks = s.tasks(INBOX).unwrap();
+    assert_eq!(titles(&tasks), ["trip", "passport"]);
+    assert_eq!(
+        tasks[0].id, parent,
+        "same identity, so other devices' edits still apply"
+    );
+    assert_eq!(tasks[1].id, child);
+    assert_eq!(tasks[0].notes, "check visa");
+
+    assert!(s.redo().unwrap());
+    assert!(s.tasks(INBOX).unwrap().is_empty());
+}
+
+#[test]
+fn each_command_is_one_undo_step() {
+    let s = Store::open_in_memory().unwrap();
+    let milk = s.add_task(INBOX, "milk").unwrap();
+    s.rename(&milk, "oat milk").unwrap();
+    s.set_completed(&milk, true).unwrap();
+
+    s.undo().unwrap();
+    assert!(s.tasks(INBOX).unwrap()[0].completed_at.is_none());
+    s.undo().unwrap();
+    assert_eq!(s.tasks(INBOX).unwrap()[0].title, "milk");
+    s.undo().unwrap();
+    assert!(s.tasks(INBOX).unwrap().is_empty());
+    assert!(!s.can_undo());
+    assert!(s.can_redo());
+}
+
+#[test]
+fn undo_never_reverts_other_devices() {
+    let mut log = Log::default();
+    let mac = Store::open_in_memory().unwrap();
+    let phone = Store::open_in_memory().unwrap();
+
+    let milk = mac.add_task(INBOX, "milk").unwrap();
+    log.sync(&mac);
+    log.sync(&phone);
+    assert!(!phone.can_undo(), "pulled changes aren't the phone's to undo");
+
+    phone.rename(&milk, "oat milk").unwrap();
+    mac.set_completed(&milk, true).unwrap();
+    log.sync(&mac);
+    log.sync(&phone);
+    assert!(phone.undo().unwrap());
+    let task = &phone.tasks(INBOX).unwrap()[0];
+    assert_eq!(task.title, "milk", "the phone's rename is undone");
+    assert!(task.completed_at.is_some(), "the mac's completion stays");
+}
+
+#[test]
+fn concurrent_notes_merge() {
+    let mut log = Log::default();
+    let mac = Store::open_in_memory().unwrap();
+    let phone = Store::open_in_memory().unwrap();
+    let task = mac.add_task(INBOX, "trip").unwrap();
+    log.sync(&mac);
+    log.sync(&phone);
+
+    // Both devices write the first notes for this task while offline.
+    mac.set_notes(&task, "passport").unwrap();
+    phone.set_notes(&task, "tickets").unwrap();
+    log.sync(&mac);
+    log.sync(&phone);
+    log.sync(&mac);
+    let notes = mac.tasks(INBOX).unwrap()[0].notes.clone();
+    assert_eq!(notes, phone.tasks(INBOX).unwrap()[0].notes);
+    assert!(
+        notes.contains("passport") && notes.contains("tickets"),
+        "{notes:?}"
+    );
+
+    // Later edits are character-level, so both survive too.
+    mac.set_notes(&task, &format!("{notes}\nvisa")).unwrap();
+    phone.set_notes(&task, &format!("hotel\n{notes}")).unwrap();
+    log.sync(&mac);
+    log.sync(&phone);
+    log.sync(&mac);
+    let merged = mac.tasks(INBOX).unwrap()[0].notes.clone();
+    assert_eq!(merged, phone.tasks(INBOX).unwrap()[0].notes);
+    assert!(
+        merged.starts_with("hotel\n") && merged.ends_with("\nvisa"),
+        "{merged:?}"
+    );
+}
+
+#[test]
+fn outline_puts_completed_tasks_last() {
+    let s = Store::open_in_memory().unwrap();
+    let a = s.add_task(INBOX, "a").unwrap();
+    s.add_task(&a, "a.1").unwrap();
+    let a2 = s.add_task(&a, "a.2").unwrap();
+    let b = s.add_task(INBOX, "b").unwrap();
+    let c = s.add_task(INBOX, "c").unwrap();
+    s.add_task(&c, "c.1").unwrap();
+    s.set_completed(&a2, true).unwrap();
+    s.set_completed(&c, true).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    s.set_completed(&b, true).unwrap();
+
+    let outline = s.outline(INBOX).unwrap();
+    let view = |rows: &[not_core::OutlineRow]| -> Vec<(String, u32, bool)> {
+        rows.iter()
+            .map(|r| (r.task.title.clone(), r.depth, r.done))
+            .collect()
+    };
+    assert_eq!(
+        view(&outline.open),
+        [
+            ("a".into(), 0, false),
+            ("a.1".into(), 1, false),
+            ("a.2".into(), 1, true)
+        ]
+    );
+    assert_eq!(
+        view(&outline.completed),
+        [
+            ("b".into(), 0, true),
+            ("c".into(), 0, true),
+            ("c.1".into(), 1, true)
+        ],
+        "most recently completed first, subtasks of completed tasks count as done"
+    );
+
+    let counts: Vec<u32> = s.lists().unwrap().iter().map(|l| l.open_count).collect();
+    assert_eq!(counts, [1], "only open top-level tasks count");
+}
+
+#[test]
+fn move_before_anchors_on_a_sibling() {
+    let s = Store::open_in_memory().unwrap();
+    let a = s.add_task(INBOX, "a").unwrap();
+    let b = s.add_task(INBOX, "b").unwrap();
+    let c = s.add_task(INBOX, "c").unwrap();
+    s.set_completed(&b, true).unwrap();
+
+    // Dragging c above a in the open section; b (completed) is shown elsewhere.
+    s.move_task_before(&c, INBOX, Some(&a)).unwrap();
+    assert_eq!(titles(&s.tasks(INBOX).unwrap()), ["c", "a", "b"]);
+    s.move_task_before(&c, INBOX, None).unwrap();
+    assert_eq!(titles(&s.tasks(INBOX).unwrap()), ["a", "b", "c"]);
+
+    let sub = s.add_task(&a, "a.1").unwrap();
+    assert!(
+        s.move_task_before(&c, INBOX, Some(&sub)).is_err(),
+        "anchor under another parent"
+    );
+}

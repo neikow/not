@@ -58,7 +58,7 @@ All data lives in Loro documents. Two kinds of doc:
 
 | Container | Type | Contents |
 |---|---|---|
-| `tasks` | `LoroTree` | Nodes are lists and tasks. List → task → subtask. Tasks at the root are in the **Inbox**, which is built in (id `inbox`) rather than a node, so two fresh devices can't each create one. Sibling order via Loro fractional index; move indexes count siblings of the same kind. Each node's meta map holds its fields (`kind`, `title`, `completed_at`, `priority`, `due`, `rrule`, …). |
+| `tasks` | `LoroTree` | Nodes are lists and tasks. List → task → subtask. Tasks at the root are in the **Inbox**, which is built in (id `inbox`) rather than a node, so two fresh devices can't each create one. Sibling order via Loro fractional index; move indexes count siblings of the same kind. Each node's meta map holds its fields (`kind`, `title`, `notes` as a mergeable `LoroText`, `completed_at`, `deleted_at`, later `priority`, `due`, `rrule`, …). Deletes are soft (`deleted_at`) so undo restores the same nodes ([ADR 0007](adr/0007-soft-delete-and-undo.md)). |
 | `notes` | `LoroTree` (planned) | Folder → note-ref nodes. Meta holds `title`, `pinned`, `preview`, so note lists render without loading bodies. |
 | `habits` | `LoroMap` (planned) | Habit definitions: schedule, goal, unit. |
 | `habit_log` | `LoroMap` of `LoroCounter` (planned) | Key `habitId:YYYY-MM-DD` (local calendar date, never a timestamp). Counters sum concurrent check-ins. |
@@ -80,7 +80,11 @@ Each client keeps one SQLite file containing:
 - **Sync state** — pull cursor, per-doc version vector the server is known to have, and this device's
   credentials (server URL, device id, token; see [ADR 0006](adr/0006-device-pairing.md)).
 
-The read model is a disposable cache: it can always be rebuilt from the docs.
+The read model is a disposable cache: it can always be rebuilt from the docs. `Store::outline(list)` shapes
+it for display (open tasks with their subtrees, then completed ones, latest first) so both apps, the
+widget and the menu bar panel share one implementation.
+
+Undo/redo is a per-session `UndoManager` in the core covering this device's own changes only.
 
 Write path:
 
@@ -180,7 +184,7 @@ an IndexedDB cache. Online-first; no parity goal.
 |---|---|
 | P0 spike ✅ | core (tasks in Loro + read model), relay server, live sync, uniffi → minimal SwiftUI + Compose apps, verified Mac ⇄ Android end to end incl. offline edits |
 | P0.5 ✅ | Built-in Inbox, device pairing with per-device tokens, revocation |
-| P1 (in progress) | ✅ Android tasks widget (with picker preview), quick add from widget / QS tile / app shortcut, app icons (Mac: Icon Composer / Liquid Glass), Mac menu bar extra, background sync, QR pairing. Next: quick-add parser, recurrence, reminders, hotkey panel, Raycast |
+| P1 (in progress) | ✅ Android tasks widget (with picker preview), quick add from widget / QS tile / app shortcut, app icons (Mac: Icon Composer / Liquid Glass), Mac menu bar extra, background sync, QR pairing; core UX: notes, subtasks, rename, reorder, completed section, undo, soft delete, keyboard flow (Mac), swipe actions + drawer + settings screen (Android). Next: quick-add parser, due dates, Today, reminders, recurrence, hotkey panel, Raycast |
 | P1 | Quick-add parser, recurrence, reminders, hotkey panel, Raycast, Android widgets |
 | P2 | Notes: per-note docs, markdown editors (biggest UX effort) |
 | P3 | Habits |

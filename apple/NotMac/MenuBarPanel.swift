@@ -71,13 +71,13 @@ struct MenuBarPanel: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(model.panelRows) { row in
+                    ForEach(model.panelRows, id: \.task.id) { row in
                         PanelTaskRow(row: row) { model.toggle(row.task) }
                             .transition(.opacity)
                     }
                 }
                 .padding(.vertical, 6)
-                .animation(.snappy, value: model.panelRows.map(\.id))
+                .animation(.snappy, value: model.panelRows.map(\.task.id))
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
             // As tall as the tasks, up to a limit; scrolls beyond it.
@@ -118,7 +118,7 @@ struct MenuBarPanel: View {
 
 /// A row that shows the tick for a moment before the task leaves the list.
 private struct PanelTaskRow: View {
-    let row: TaskRow
+    let row: OutlineRow
     let complete: () -> Void
     @State private var ticked = false
     @State private var hovering = false

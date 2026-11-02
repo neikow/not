@@ -15,6 +15,7 @@ struct NotMacApp: App {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { appDelegate.model.syncNow() }
         }
+        .commands { TaskCommands(model: appDelegate.model) }
 
         MenuBarExtra(isInserted: $showsMenuBarExtra) {
             MenuBarPanel(model: appDelegate.model)
@@ -31,6 +32,42 @@ struct NotMacApp: App {
 
 enum MainWindow {
     static let id = "main"
+}
+
+private struct TaskCommands: Commands {
+    let model: AppModel
+
+    var body: some Commands {
+        CommandGroup(replacing: .undoRedo) {
+            Button("Undo") { undoOrRedo(redo: false) }
+                .keyboardShortcut("z")
+            Button("Redo") { undoOrRedo(redo: true) }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+        }
+        CommandGroup(replacing: .newItem) {
+            Button("New Task") { model.requestAddFieldFocus() }
+                .keyboardShortcut("n")
+        }
+        CommandMenu("Task") {
+            Button(model.selectedTask?.completedAt == nil ? "Complete" : "Mark as Not Completed") {
+                model.toggleSelected()
+            }
+            .keyboardShortcut("k")
+            .disabled(model.selectedTask == nil)
+            Button(model.showsInspector ? "Hide Info" : "Show Info") { model.showsInspector.toggle() }
+                .keyboardShortcut("i")
+        }
+    }
+
+    /// Text being edited gets ⌘Z first; otherwise it undoes the last change to tasks and lists.
+    private func undoOrRedo(redo: Bool) {
+        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, let undo = editor.undoManager,
+           redo ? undo.canRedo : undo.canUndo {
+            redo ? undo.redo() : undo.undo()
+        } else {
+            redo ? model.redo() : model.undo()
+        }
+    }
 }
 
 /// Owns the model, so `not://` URLs work without a window, and keeps the app running (menu bar extra,

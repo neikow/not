@@ -32,6 +32,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.lysen.not
         PRODUCT_NAME: not
+        # Brand mint (Assets.xcassets); macOS still prefers the user's own accent if they picked one.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         # Ad-hoc "sign to run locally" until there is a paid developer account (ADR 0005).
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual

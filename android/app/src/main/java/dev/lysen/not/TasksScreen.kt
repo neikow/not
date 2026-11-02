@@ -1,11 +1,13 @@
 package dev.lysen.not
 
-import androidx.compose.foundation.Image
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,99 +19,163 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import android.text.format.DateUtils
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.lysen.not.core.Device
+import dev.lysen.not.core.OutlineRow
 import dev.lysen.not.core.SyncState
-import dev.lysen.not.core.pairingLink
-import dev.lysen.not.pairing.QrScanner
-import dev.lysen.not.pairing.qrBitmap
+import dev.lysen.not.core.TaskList
+import kotlinx.coroutines.launch
+
+/** Tasks, with Settings as a second screen. */
+@Composable
+fun NotAppUi(viewModel: TasksViewModel) {
+    var showsSettings by rememberSaveable { mutableStateOf(false) }
+    if (showsSettings) {
+        BackHandler { showsSettings = false }
+        SettingsScreen(viewModel, onBack = { showsSettings = false })
+    } else {
+        TasksScreen(viewModel, onOpenSettings = { showsSettings = true })
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TasksScreen(viewModel: TasksViewModel) {
+private fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    var showSettings by remember { mutableStateOf(false) }
-    var showNewList by remember { mutableStateOf(false) }
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
+    var newList by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf<TaskList?>(null) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    ListPicker(
-                        state = state,
-                        onSelect = viewModel::select,
-                        onNewList = { showNewList = true },
-                    )
-                },
-                actions = {
-                    SyncDot(state.sync)
-                    TextButton(onClick = { showSettings = true }) { Text("Sync") }
-                },
-            )
-        },
-        bottomBar = { AddTaskBar(onAdd = viewModel::addTask) },
-    ) { padding ->
-        if (state.rows.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("No tasks", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        } else {
-            LazyColumn(Modifier.fillMaxSize().padding(padding)) {
-                items(state.rows, key = { it.task.id }) { row ->
-                    TaskRowItem(row, onToggle = { viewModel.toggle(row.task) }, onDelete = { viewModel.delete(row.task.id) })
-                    HorizontalDivider()
-                }
-            }
+    // Destructive actions confirm after the fact, with Undo, instead of asking first.
+    LaunchedEffect(Unit) {
+        viewModel.undoables.collect { undoable ->
+            snackbar.currentSnackbarData?.dismiss()
+            val result = snackbar.showSnackbar(undoable.message, actionLabel = "Undo", duration = SnackbarDuration.Short)
+            if (result == SnackbarResult.ActionPerformed) viewModel.undo()
         }
     }
 
-    if (showSettings) {
-        SyncDialog(state, viewModel, onDismiss = { showSettings = false })
+    ModalNavigationDrawer(
+        drawerState = drawer,
+        drawerContent = {
+            ListsDrawer(
+                state = state,
+                onSelect = {
+                    viewModel.select(it)
+                    scope.launch { drawer.close() }
+                },
+                onNewList = { newList = true },
+                onSettings = {
+                    scope.launch { drawer.close() }
+                    onOpenSettings()
+                },
+            )
+        },
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawer.open() } }) {
+                            Icon(painterResource(R.drawable.ic_menu), "Lists")
+                        }
+                    },
+                    title = { Text(state.selectedList?.title ?: "Inbox") },
+                    actions = {
+                        SyncDot(state.sync)
+                        val list = state.selectedList
+                        if (list != null && list.id != INBOX_ID) {
+                            ListMenu(onRename = { renaming = list }, onDelete = { viewModel.deleteList(list) })
+                        } else {
+                            Spacer(Modifier.width(16.dp))
+                        }
+                    },
+                )
+            },
+            snackbarHost = { SnackbarHost(snackbar) },
+            bottomBar = { AddTaskBar(listTitle = state.selectedList?.title ?: "Inbox", onAdd = { viewModel.addTask(it) }) },
+        ) { padding ->
+            TaskList(state, viewModel, Modifier.padding(padding))
+        }
     }
-    if (showNewList) {
+
+    state.openTask?.let { task ->
+        TaskDetailSheet(task, state, viewModel, onDismiss = { viewModel.openTask(null) })
+    }
+    if (newList) {
         TextPromptDialog(
             title = "New list",
+            confirm = "Create",
             onConfirm = {
                 viewModel.addList(it)
-                showNewList = false
+                newList = false
+                scope.launch { drawer.close() }
             },
-            onDismiss = { showNewList = false },
+            onDismiss = { newList = false },
+        )
+    }
+    renaming?.let { list ->
+        TextPromptDialog(
+            title = "Rename list",
+            confirm = "Rename",
+            initial = list.title,
+            onConfirm = {
+                viewModel.rename(list.id, it)
+                renaming = null
+            },
+            onDismiss = { renaming = null },
         )
     }
     state.error?.let {
@@ -123,59 +189,249 @@ fun TasksScreen(viewModel: TasksViewModel) {
 }
 
 @Composable
-private fun ListPicker(state: UiState, onSelect: (String) -> Unit, onNewList: () -> Unit) {
+private fun ListsDrawer(
+    state: UiState,
+    onSelect: (String) -> Unit,
+    onNewList: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    ModalDrawerSheet {
+        Text(
+            "not",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(horizontal = 28.dp, vertical = 20.dp),
+        )
+        state.lists.forEachIndexed { index, list ->
+            if (index == 1) {
+                Text(
+                    "Lists",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 28.dp, top = 16.dp, bottom = 8.dp),
+                )
+            }
+            NavigationDrawerItem(
+                label = { Text(list.title) },
+                icon = {
+                    Icon(painterResource(if (list.id == INBOX_ID) R.drawable.ic_inbox else R.drawable.ic_list), null)
+                },
+                badge = { if (list.openCount > 0u) Text(list.openCount.toString()) },
+                selected = list.id == state.selectedListId,
+                onClick = { onSelect(list.id) },
+                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+            )
+        }
+        NavigationDrawerItem(
+            label = { Text("New list") },
+            icon = { Icon(painterResource(R.drawable.ic_add), null) },
+            selected = false,
+            onClick = onNewList,
+            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+        )
+        HorizontalDivider(Modifier.padding(horizontal = 28.dp, vertical = 8.dp))
+        NavigationDrawerItem(
+            label = { Text("Settings") },
+            icon = { Icon(painterResource(R.drawable.ic_settings), null) },
+            selected = false,
+            onClick = onSettings,
+            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+        )
+    }
+}
+
+@Composable
+private fun ListMenu(onRename: () -> Unit, onDelete: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        TextButton(onClick = { open = true }) {
-            Text(state.selectedList?.title ?: "not", style = MaterialTheme.typography.titleLarge)
-        }
+        IconButton(onClick = { open = true }) { Icon(painterResource(R.drawable.ic_more_vert), "List options") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            state.lists.forEach { list ->
-                DropdownMenuItem(text = { Text(list.title) }, onClick = {
-                    onSelect(list.id)
-                    open = false
-                })
-            }
-            DropdownMenuItem(text = { Text("New list…") }, onClick = {
-                onNewList()
+            DropdownMenuItem(text = { Text("Rename list") }, onClick = {
                 open = false
+                onRename()
+            })
+            DropdownMenuItem(text = { Text("Delete list") }, onClick = {
+                open = false
+                onDelete()
             })
         }
     }
 }
 
 @Composable
-private fun TaskRowItem(row: TaskRow, onToggle: () -> Unit, onDelete: () -> Unit) {
+private fun TaskList(state: UiState, viewModel: TasksViewModel, modifier: Modifier) {
+    var showsCompleted by rememberSaveable { mutableStateOf(false) }
+    val outline = state.outline
+    if (outline.open.isEmpty() && outline.completed.isEmpty()) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(
+                    painterResource(R.drawable.ic_task_alt),
+                    null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(40.dp),
+                )
+                Text("Nothing here yet", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Add a task below",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        return
+    }
+    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 4.dp)) {
+        items(outline.open, key = { it.task.id }) { row ->
+            SwipeableTaskRow(row, viewModel, Modifier.animateItem())
+        }
+        if (outline.completed.isNotEmpty()) {
+            item(key = "completed") {
+                CompletedHeader(
+                    count = outline.completed.count { it.depth == 0u },
+                    expanded = showsCompleted,
+                    onToggle = { showsCompleted = !showsCompleted },
+                    modifier = Modifier.animateItem(),
+                )
+            }
+            if (showsCompleted) {
+                items(outline.completed, key = { it.task.id }) { row ->
+                    SwipeableTaskRow(row, viewModel, Modifier.animateItem())
+                }
+            }
+        }
+    }
+}
+
+/** Swipe right to complete (or reopen), left to delete; tap for details. */
+@Composable
+private fun SwipeableTaskRow(row: OutlineRow, viewModel: TasksViewModel, modifier: Modifier) {
+    val haptics = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val swipe = rememberSwipeToDismissBoxState()
     val done = row.task.completedAt != null
-    Row(
+
+    fun toggle() {
+        haptics.performHapticFeedback(if (done) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
+        viewModel.toggle(row.task)
+    }
+
+    SwipeToDismissBox(
+        state = swipe,
+        modifier = modifier,
+        backgroundContent = { SwipeBackground(swipe.dismissDirection, done) },
+        onDismiss = { direction ->
+            scope.launch {
+                // Reset before acting: the swipe state is saved per row, and a row that comes back
+                // (Undo, or moving to Completed) would otherwise be dismissed again.
+                swipe.reset()
+                when (direction) {
+                    SwipeToDismissBoxValue.StartToEnd -> toggle()
+                    SwipeToDismissBoxValue.EndToStart -> {
+                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                        viewModel.delete(row.task)
+                    }
+                    SwipeToDismissBoxValue.Settled -> {}
+                }
+            }
+        },
+    ) {
+        Surface(color = MaterialTheme.colorScheme.surface) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { viewModel.openTask(row.task.id) }
+                    .padding(start = (4 + row.depth.toInt() * 28).dp, end = 16.dp, top = 2.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(checked = done, onCheckedChange = { toggle() })
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        row.task.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        textDecoration = if (row.done) TextDecoration.LineThrough else null,
+                        color = if (row.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                    )
+                    val preview = row.task.notes.lineSequence().firstOrNull { it.isNotBlank() }
+                    if (preview != null) {
+                        Text(
+                            preview,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SwipeBackground(direction: SwipeToDismissBoxValue, done: Boolean) {
+    val (color, icon, alignment) = when (direction) {
+        SwipeToDismissBoxValue.StartToEnd -> Triple(
+            MaterialTheme.colorScheme.primaryContainer,
+            if (done) R.drawable.ic_add_task else R.drawable.ic_check,
+            Alignment.CenterStart,
+        )
+        SwipeToDismissBoxValue.EndToStart ->
+            Triple(MaterialTheme.colorScheme.errorContainer, R.drawable.ic_delete, Alignment.CenterEnd)
+        SwipeToDismissBoxValue.Settled -> Triple(Color.Transparent, null, Alignment.Center)
+    }
+    Box(
         Modifier
+            .fillMaxSize()
+            .background(color)
+            .padding(horizontal = 24.dp),
+        contentAlignment = alignment,
+    ) {
+        if (icon != null) Icon(painterResource(icon), null)
+    }
+}
+
+@Composable
+private fun CompletedHeader(count: Int, expanded: Boolean, onToggle: () -> Unit, modifier: Modifier) {
+    val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
+    Row(
+        modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onToggle, onLongClick = onDelete)
-            .padding(start = (8 + row.depth * 24).dp, end = 16.dp),
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = done, onCheckedChange = { onToggle() })
         Text(
-            row.task.title,
-            style = MaterialTheme.typography.bodyLarge,
-            textDecoration = if (done) TextDecoration.LineThrough else null,
-            color = if (done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+            "Completed · $count",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            painterResource(R.drawable.ic_expand_more),
+            if (expanded) "Hide completed" else "Show completed",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.rotate(rotation),
         )
     }
 }
 
 @Composable
-private fun AddTaskBar(onAdd: (String) -> Unit) {
+private fun AddTaskBar(listTitle: String, onAdd: (String) -> Unit) {
     var draft by remember { mutableStateOf("") }
     Surface(tonalElevation = 3.dp) {
         OutlinedTextField(
             value = draft,
             onValueChange = { draft = it },
-            placeholder = { Text("Add a task") },
+            placeholder = { Text("Add to $listTitle") },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            shape = MaterialTheme.shapes.extraLarge,
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.Sentences,
+                imeAction = ImeAction.Done,
+            ),
+            // Keeps the keyboard up for the next task.
             keyboardActions = KeyboardActions(onDone = {
-                if (draft.isNotBlank()) onAdd(draft)
+                onAdd(draft)
                 draft = ""
             }),
             modifier = Modifier
@@ -196,174 +452,30 @@ private fun SyncDot(state: SyncState?) {
         is SyncState.Offline -> Color(0xFFFF9800)
         SyncState.Unauthorized -> Color(0xFFF44336)
     }
-    Box(Modifier.size(10.dp).background(color, CircleShape))
+    Box(Modifier.padding(horizontal = 8.dp).size(8.dp).background(color, CircleShape))
 }
 
 @Composable
-private fun SyncDialog(state: UiState, viewModel: TasksViewModel, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (state.syncInfo == null) "Pair this device" else "Sync") },
-        text = {
-            Column(
-                Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (state.syncInfo == null) PairForm(state, viewModel) else PairedInfo(state, viewModel)
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-    )
-}
-
-@Composable
-private fun PairForm(state: UiState, viewModel: TasksViewModel) {
-    var url by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf(viewModel.defaultDeviceName) }
-    var scanning by remember { mutableStateOf(false) }
-    var scanError by remember { mutableStateOf(false) }
-
-    OutlinedButton(onClick = { scanning = true }, enabled = !state.busy) { Text("Scan QR code") }
-    if (scanError) {
-        Text("That QR code isn't a pairing code.", color = MaterialTheme.colorScheme.error)
-    }
-    Text(
-        "Or enter the server and code:",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    OutlinedTextField(url, { url = it }, label = { Text("Server URL") }, singleLine = true)
-    OutlinedTextField(
-        code,
-        { code = it },
-        label = { Text("Pairing code") },
-        placeholder = { Text("XXXXX-XXXXX") },
-        singleLine = true,
-        textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
-    )
-    OutlinedTextField(name, { name = it }, label = { Text("Device name") }, singleLine = true)
-    Text(
-        "Get a code on the server with `not-server pair`, or on a paired device under Sync → Add device.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Button(
-            onClick = { viewModel.pair(url, code, name) },
-            enabled = !state.busy && url.isNotBlank() && code.isNotBlank(),
-        ) { Text("Pair") }
-        if (state.busy) {
-            Spacer(Modifier.width(12.dp))
-            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-        }
-    }
-
-    if (scanning) {
-        QrScanner(
-            onScan = {
-                scanning = false
-                scanError = !viewModel.pairWithLink(it)
-            },
-            onCancel = { scanning = false },
-        )
-    }
-}
-
-@Composable
-private fun PairedInfo(state: UiState, viewModel: TasksViewModel) {
-    val info = state.syncInfo ?: return
-    var pendingRevoke by remember { mutableStateOf<Device?>(null) }
-    LaunchedEffect(info.deviceId) { viewModel.refreshDevices() }
-
-    Text(info.serverUrl, style = MaterialTheme.typography.bodyLarge)
-    Text(
-        "${info.deviceName} · ${syncStatus(state.sync)}",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    HorizontalDivider()
-
-    val code = state.pairingCode
-    if (code == null) {
-        TextButton(onClick = viewModel::createPairingCode, enabled = !state.busy) { Text("Add device") }
-    } else {
-        val qr = remember(info.serverUrl, code.code) { qrBitmap(pairingLink(info.serverUrl, code.code)) }
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Image(
-                bitmap = qr,
-                contentDescription = "Pairing QR code",
-                filterQuality = FilterQuality.None,
-                modifier = Modifier.size(200.dp),
-            )
-        }
-        Text(code.code, style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace))
-        Text(
-            "Scan it with the new device, or enter the code there with this server's URL. Works once, for 10 minutes.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-    HorizontalDivider()
-
-    Text("Devices", style = MaterialTheme.typography.titleSmall)
-    state.devices.forEach { device ->
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(if (device.isCurrent) "${device.name} (this device)" else device.name)
-                Text(
-                    device.lastSeenAt?.let { "Last seen ${ago(it)}" } ?: "Never synced",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            TextButton(onClick = { pendingRevoke = device }, enabled = !state.busy) {
-                Text(if (device.isCurrent) "Unpair" else "Revoke", color = MaterialTheme.colorScheme.error)
-            }
-        }
-    }
-
-    pendingRevoke?.let { device ->
-        AlertDialog(
-            onDismissRequest = { pendingRevoke = null },
-            title = { Text(if (device.isCurrent) "Unpair this device?" else "Revoke ${device.name}?") },
-            text = {
-                Text(
-                    if (device.isCurrent) "Sync stops and this device is removed from the server. Tasks stay here."
-                    else "${device.name} stops syncing until it is paired again. Its local data stays on it.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.revoke(device)
-                    pendingRevoke = null
-                }) { Text(if (device.isCurrent) "Unpair" else "Revoke", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { pendingRevoke = null }) { Text("Cancel") } },
-        )
-    }
-}
-
-private fun ago(millis: Long): CharSequence =
-    if (System.currentTimeMillis() - millis < DateUtils.MINUTE_IN_MILLIS) "just now"
-    else DateUtils.getRelativeTimeSpanString(millis)
-
-private fun syncStatus(state: SyncState?): String = when (state) {
-    null -> "starting…"
-    SyncState.Syncing -> "syncing…"
-    SyncState.Synced -> "up to date"
-    is SyncState.Offline -> "offline: ${state.reason}"
-    SyncState.Unauthorized -> "rejected by the server; unpair, then pair again"
-}
-
-@Composable
-private fun TextPromptDialog(title: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
-    var text by remember { mutableStateOf("") }
+private fun TextPromptDialog(
+    title: String,
+    confirm: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+    initial: String = "",
+) {
+    var text by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
-        text = { OutlinedTextField(text, { text = it }, singleLine = true) },
-        confirmButton = { TextButton(onClick = { if (text.isNotBlank()) onConfirm(text) }) { Text("Create") } },
+        text = {
+            OutlinedTextField(
+                text,
+                { text = it },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            )
+        },
+        confirmButton = { TextButton(onClick = { if (text.isNotBlank()) onConfirm(text) }) { Text(confirm) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
