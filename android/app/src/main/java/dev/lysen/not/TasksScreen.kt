@@ -80,6 +80,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.lysen.not.core.OutlineRow
 import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.TaskList
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -131,7 +132,7 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                     },
                     title = { Text(state.selectedList?.title ?: "Inbox") },
                     actions = {
-                        SyncDot(state.sync)
+                        SyncStatus(state.sync, onClick = onOpenSettings)
                         val list = state.selectedList
                         if (list != null && list.id != INBOX_ID) {
                             ListMenu(onRename = { renaming = list }, onDelete = { viewModel.deleteList(list) })
@@ -422,16 +423,27 @@ private fun CompletedHeader(count: Int, expanded: Boolean, onToggle: () -> Unit,
     }
 }
 
+/**
+ * Quiet unless something needs attention: nothing while synced or unpaired, an icon while offline
+ * or signed out, and a spinner only for syncs that take a while. Tapping opens Settings.
+ */
 @Composable
-private fun SyncDot(state: SyncState?) {
-    val color = when (state) {
-        null -> Color.Gray
-        SyncState.Syncing -> Color(0xFF2196F3)
-        SyncState.Synced -> Color(0xFF4CAF50)
-        is SyncState.Offline -> Color(0xFFFF9800)
-        SyncState.Unauthorized -> Color(0xFFF44336)
+private fun SyncStatus(state: SyncState?, onClick: () -> Unit) {
+    var slow by remember { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        slow = false
+        if (state == SyncState.Syncing) {
+            delay(1500)
+            slow = true
+        }
     }
-    Box(Modifier.padding(horizontal = 8.dp).size(8.dp).background(color, CircleShape))
+    val (icon, label, tint) = when (state) {
+        is SyncState.Offline -> Triple(R.drawable.ic_cloud_off, "Offline", MaterialTheme.colorScheme.onSurfaceVariant)
+        SyncState.Unauthorized -> Triple(R.drawable.ic_error, "Signed out of sync", MaterialTheme.colorScheme.error)
+        SyncState.Syncing -> if (slow) Triple(R.drawable.ic_sync, "Syncing", MaterialTheme.colorScheme.onSurfaceVariant) else return
+        null, SyncState.Synced -> return
+    }
+    IconButton(onClick = onClick) { Icon(painterResource(icon), label, tint = tint) }
 }
 
 @Composable

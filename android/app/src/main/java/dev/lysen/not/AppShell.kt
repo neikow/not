@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -72,7 +73,13 @@ fun NotAppUi(
                             onClick = { tab = item },
                             icon = {
                                 BadgedBox(badge = {
-                                    if (item == Tab.Habits && pendingHabits > 0) Badge { Text(pendingHabits.toString()) }
+                                    if (item == Tab.Habits && pendingHabits > 0) {
+                                        // A reminder, not an alarm: accent colors rather than error red.
+                                        Badge(
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                                        ) { Text(pendingHabits.toString()) }
+                                    }
                                 }) { Icon(painterResource(item.icon), null) }
                             },
                             label = { Text(item.label) },
