@@ -37,7 +37,7 @@ struct ContentView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .status) { SyncBadge(state: model.syncState) }
+            ToolbarItem(placement: .primaryAction) { SyncAlert(state: model.syncState) }
             if !isNotes {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -473,6 +473,34 @@ private struct TaskDetail: View {
 }
 
 // MARK: - Shared
+
+/// The toolbar's sync status: quiet unless something needs attention (offline, signed out, or a
+/// sync that takes a while). Opens Settings. The menu bar panel shows the full `SyncBadge`.
+struct SyncAlert: View {
+    let state: SyncState?
+    @Environment(\.openSettings) private var openSettings
+    @State private var slow = false
+
+    var body: some View {
+        Group {
+            switch state {
+            case .offline, .unauthorized: button
+            case .syncing where slow: button
+            default: EmptyView()
+            }
+        }
+        .task(id: state) {
+            slow = false
+            guard state == .syncing else { return }
+            try? await Task.sleep(for: .seconds(1.5))
+            slow = !Task.isCancelled
+        }
+    }
+
+    private var button: some View {
+        Button { openSettings() } label: { SyncBadge(state: state) }
+    }
+}
 
 struct SyncBadge: View {
     let state: SyncState?

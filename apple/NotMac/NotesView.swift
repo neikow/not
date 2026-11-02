@@ -26,7 +26,13 @@ struct NotesView: View {
         .navigationTitle(model.folderTitle(model.selectedFolderID))
         .searchable(text: $model.noteSearch, placement: .toolbar, prompt: "Search notes")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if let note = model.selectedNote {
+                    Button { model.togglePin(note) } label: {
+                        Label(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin")
+                    }
+                    .help(note.pinned ? "Unpin" : "Pin to the top")
+                }
                 Button(action: model.newNote) {
                     Label("New Note", systemImage: "square.and.pencil")
                 }
@@ -125,14 +131,6 @@ private struct NoteEditor: View {
                 .foregroundStyle(.tertiary)
                 .padding(.top, 10)
             MarkdownEditor(text: $text, focusRequests: model.editorFocusRequests)
-        }
-        .toolbar {
-            ToolbarItem {
-                Button { model.togglePin(note) } label: {
-                    Label(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin")
-                }
-                .help(note.pinned ? "Unpin" : "Pin to the top")
-            }
         }
         .onAppear {
             text = model.noteBody(note.id)

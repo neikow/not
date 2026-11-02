@@ -79,7 +79,11 @@ final class AppModel {
     }
 
     init() {
-        let dir = URL.applicationSupportDirectory.appending(path: "dev.lysen.not", directoryHint: .isDirectory)
+        var dir = URL.applicationSupportDirectory.appending(path: "dev.lysen.not", directoryHint: .isDirectory)
+        #if DEBUG
+        // Dev runs: `-dataDir /tmp/not-demo` keeps a separate, unpaired database.
+        if let path = UserDefaults.standard.string(forKey: "dataDir") { dir = URL(filePath: path, directoryHint: .isDirectory) }
+        #endif
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             store = try NotStore(path: dir.appending(path: "not.db").path)
@@ -105,7 +109,37 @@ final class AppModel {
            let code = defaults.string(forKey: "pairingCode") {
             Task { await pair(serverURL: url, code: code, deviceName: Self.defaultDeviceName) }
         }
+        #if DEBUG
+        applyDevArguments(defaults)
+        #endif
     }
+
+    #if DEBUG
+    /// Dev runs: `-seedDemo YES` fills an empty database with sample data (use with `-dataDir`);
+    /// `-show habits|notes` opens that section, selecting the note titled `-note` or the first one.
+    private func applyDevArguments(_ defaults: UserDefaults) {
+        if defaults.bool(forKey: "seedDemo"), lists.count == 1, outline.open.isEmpty {
+            for title in ["Buy oat milk", "Call the dentist", "Renew passport"] { addTask(title) }
+            if let read = addHabit("Read") { toggleHabit(read) }
+            _ = addHabit("Stretch")
+            _ = addHabit("Water")
+            for body in [
+                "Trip to Lisbon\nPastéis de Belém, tram 28\n\n## Days\n1. Alfama\n2. Belém",
+                "Pancakes\nFor Sunday breakfast\n- [ ] Flour\n- [x] Eggs\n- [ ] Milk\n\n- butter\n- **maple** syrup",
+            ] {
+                if let id = run({ try store.createNote(folderId: nil, body: body) }) { _ = id }
+            }
+        }
+        switch defaults.string(forKey: "show") {
+        case "habits": selection = .habits
+        case "notes":
+            selection = .notes(nil)
+            let title = defaults.string(forKey: "note")
+            selectedNoteID = (notes.first { $0.title == title } ?? notes.first)?.id
+        default: break
+        }
+    }
+    #endif
 
     var selectedList: TaskList? { lists.first { $0.id == selectedListID } }
     var inbox: TaskList? { lists.first { $0.id == inboxID } }
