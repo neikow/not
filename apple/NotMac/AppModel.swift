@@ -24,8 +24,20 @@ final class AppModel {
         didSet { if oldValue != selectedListID { reloadTasks() } }
     }
 
+    /// The list shown in the menu bar extra, remembered across launches.
+    var panelListID: String = UserDefaults.standard.string(forKey: AppModel.panelListKey) ?? inboxId() {
+        didSet {
+            UserDefaults.standard.set(panelListID, forKey: Self.panelListKey)
+            reloadPanel()
+        }
+    }
+    /// Open tasks of `panelListID`.
+    private(set) var panelRows: [TaskRow] = []
+
     @ObservationIgnored private let store: NotStore
     @ObservationIgnored private var observer: ModelObserver?
+
+    private static let panelListKey = "panelList"
 
     /// The computer name from System Settings, e.g. "Vitaly's MacBook Air".
     static var defaultDeviceName: String {
@@ -64,6 +76,7 @@ final class AppModel {
     var selectedList: TaskList? { lists.first { $0.id == selectedListID } }
     var inbox: TaskList? { lists.first { $0.id == inboxID } }
     var userLists: [TaskList] { lists.filter { $0.id != inboxID } }
+    var panelList: TaskList? { lists.first { $0.id == panelListID } }
 
     // MARK: Sync and pairing
 
@@ -110,7 +123,12 @@ final class AppModel {
     }
 
     func addTask(_ title: String) {
-        run { _ = try store.addTask(parentId: selectedListID ?? inboxID, title: title) }
+        addTask(title, to: selectedListID ?? inboxID)
+    }
+
+    func addTask(_ title: String, to listID: String) {
+        guard !title.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        run { _ = try store.addTask(parentId: listID, title: title) }
     }
 
     func toggle(_ task: TaskItem) {
@@ -142,6 +160,18 @@ final class AppModel {
         } else {
             selectedListID = inboxID
         }
+        reloadPanel()
+    }
+
+    private func reloadPanel() {
+        // The list may have been deleted on another device.
+        guard lists.contains(where: { $0.id == panelListID }) else {
+            panelListID = inboxID
+            return
+        }
+        let open = (run { try store.tasks(listId: panelListID) } ?? []).filter { $0.completedAt == nil }
+        // Subtasks of completed tasks have no visible parent, so flatten leaves them out.
+        panelRows = Self.flatten(open)
     }
 
     private func reloadTasks() {

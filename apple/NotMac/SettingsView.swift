@@ -6,15 +6,38 @@ struct SettingsView: View {
     let model: AppModel
 
     var body: some View {
-        Group {
-            if let info = model.syncInfo {
-                PairedView(model: model, info: info)
-            } else {
-                PairForm(model: model)
+        TabView {
+            Tab("General", systemImage: "gearshape") {
+                GeneralSettings()
+            }
+            Tab("Sync", systemImage: "arrow.triangle.2.circlepath.icloud") {
+                Group {
+                    if let info = model.syncInfo {
+                        PairedView(model: model, info: info)
+                    } else {
+                        PairForm(model: model)
+                    }
+                }
             }
         }
         .formStyle(.grouped)
         .frame(width: 460)
+    }
+}
+
+private struct GeneralSettings: View {
+    @AppStorage(MenuBarPanel.visibleKey) private var showsMenuBarExtra = true
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Show in menu bar", isOn: $showsMenuBarExtra)
+            } footer: {
+                Text("Add and tick off tasks from the menu bar without switching apps.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

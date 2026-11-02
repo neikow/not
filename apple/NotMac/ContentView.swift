@@ -99,7 +99,7 @@ private struct TaskRowView: View {
     }
 }
 
-private struct SyncBadge: View {
+struct SyncBadge: View {
     let state: SyncState?
 
     var body: some View {

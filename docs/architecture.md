@@ -145,8 +145,9 @@ without changing the model.
 Reminders are scheduled **on each device** from synced data, never pushed by the server, so they fire
 offline and on time. Completing a task anywhere cancels its reminder everywhere on the next sync.
 
-- macOS: `UNUserNotificationCenter` with Complete / Snooze actions. The menu-bar app stays resident and
-  keeps the WebSocket open.
+- macOS: `UNUserNotificationCenter` with Complete / Snooze actions. The app keeps running after its
+  window closes (menu bar extra, live sync over the WebSocket); `not://` links are handled without
+  opening the window.
 - Android (sideloaded, no Play policy limits): `AlarmManager` exact alarms (`USE_EXACT_ALARM`), WorkManager
   for periodic sync, optional UnifiedPush via self-hosted ntfy for instant wake-ups.
 
@@ -162,7 +163,7 @@ never moves backwards, so a worker and live sync running at once are harmless.
 
 | macOS | Android |
 |---|---|
-| Menu-bar app, global hotkey → quick-add panel with natural-language parsing | Glance tasks widget ✅ (any list, checkboxes, + opens a quick-add dialog); later today list, habit grid |
+| Menu bar extra ✅ (quick add, open tasks of a chosen list); global hotkey → quick-add panel with natural-language parsing | Glance tasks widget ✅ (any list, checkboxes, + opens a quick-add dialog); later today list, habit grid |
 | Raycast extension over a local unix socket (add, search, today, check habit, new note) | Quick Settings tile ✅ and app-icon shortcut ✅ → quick-add dialog |
 | Local notifications with actions | Share target → task or note |
 | `not://` URL scheme, App Intents (Shortcuts), Core Spotlight indexing | Notification actions, app shortcuts |
@@ -179,7 +180,7 @@ an IndexedDB cache. Online-first; no parity goal.
 |---|---|
 | P0 spike ✅ | core (tasks in Loro + read model), relay server, live sync, uniffi → minimal SwiftUI + Compose apps, verified Mac ⇄ Android end to end incl. offline edits |
 | P0.5 ✅ | Built-in Inbox, device pairing with per-device tokens, revocation |
-| P1 (in progress) | ✅ Android tasks widget (with picker preview), quick add from widget / QS tile / app shortcut, app icon, background sync, QR pairing. Next: quick-add parser, recurrence, reminders, hotkey panel, Raycast |
+| P1 (in progress) | ✅ Android tasks widget (with picker preview), quick add from widget / QS tile / app shortcut, app icons (Mac: Icon Composer / Liquid Glass), Mac menu bar extra, background sync, QR pairing. Next: quick-add parser, recurrence, reminders, hotkey panel, Raycast |
 | P1 | Quick-add parser, recurrence, reminders, hotkey panel, Raycast, Android widgets |
 | P2 | Notes: per-note docs, markdown editors (biggest UX effort) |
 | P3 | Habits |
