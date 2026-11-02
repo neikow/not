@@ -1,7 +1,8 @@
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use not_core::{Store, SyncClient};
+use not_core::{LiveSync, Store, SyncClient};
 use not_protocol::Poke;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -82,4 +83,30 @@ async fn websocket_pokes_on_push() {
     store.create_list("Inbox").unwrap();
     SyncClient::new(&base, TOKEN).sync(&store).await.unwrap();
     assert_eq!(next_poke(&mut socket).await, Poke { seq: 1 });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_sync_propagates_both_ways() {
+    let base = serve().await;
+    let runtime = tokio::runtime::Handle::current();
+    let mac = Arc::new(Store::open_in_memory().unwrap());
+    let phone = Arc::new(Store::open_in_memory().unwrap());
+    let _mac_sync = LiveSync::start(&runtime, mac.clone(), SyncClient::new(&base, TOKEN), |_| {});
+    let _phone_sync = LiveSync::start(&runtime, phone.clone(), SyncClient::new(&base, TOKEN), |_| {});
+
+    let inbox = mac.create_list("Inbox").unwrap();
+    mac.add_task(&inbox, "milk").unwrap();
+    wait_until(|| phone.tasks(&inbox).unwrap().len() == 1).await;
+
+    let milk = phone.tasks(&inbox).unwrap()[0].id.clone();
+    phone.set_completed(&milk, true).unwrap();
+    wait_until(|| mac.tasks(&inbox).unwrap()[0].completed_at.is_some()).await;
+}
+
+async fn wait_until(condition: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !condition() {
+        assert!(Instant::now() < deadline, "timed out waiting for sync");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

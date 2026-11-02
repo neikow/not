@@ -1,0 +1,7 @@
+[bindings.kotlin]
+package_name = "dev.lysen.not.core"
+cdylib_name = "not_ffi"
+
+[bindings.swift]
+ffi_module_name = "NotFFI"
+ffi_module_filename = "NotFFI"

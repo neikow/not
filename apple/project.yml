@@ -1,0 +1,38 @@
+# Generate the Xcode project with: xcodegen generate (from this directory).
+name: Not
+options:
+  bundleIdPrefix: dev.lysen
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+packages:
+  NotCore:
+    path: NotCore
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  NotMac:
+    type: application
+    platform: macOS
+    sources: [NotMac]
+    dependencies:
+      - package: NotCore
+    info:
+      path: NotMac/Info.plist
+      properties:
+        CFBundleDisplayName: not
+        LSApplicationCategoryType: public.app-category.productivity
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.lysen.not
+            CFBundleURLSchemes: [not]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.lysen.not
+        PRODUCT_NAME: not
+        # Ad-hoc "sign to run locally" until there is a paid developer account (ADR 0005).
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: NO

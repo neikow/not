@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,6 +31,20 @@ pub struct Task {
     pub completed_at: Option<i64>,
 }
 
+/// Where a change to the store came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeOrigin {
+    /// A command on this device.
+    Local,
+    /// Updates pulled from the server.
+    Remote,
+}
+
+pub type Listener = Arc<dyn Fn(ChangeOrigin) + Send + Sync>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ListenerId(u64);
+
 /// One device's replica: the Loro workspace doc plus its SQLite persistence and read model.
 ///
 /// All mutations go through [`Store::write`], which commits the Loro transaction, appends the update
@@ -40,6 +55,8 @@ pub struct Store {
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
     pub(crate) device_id: String,
+    listeners: Mutex<Vec<(ListenerId, Listener)>>,
+    next_listener: AtomicU64,
     _subscription: Subscription,
 }
 
@@ -111,6 +128,8 @@ impl Store {
             tasks,
             dirty,
             device_id,
+            listeners: Mutex::default(),
+            next_listener: AtomicU64::new(0),
             _subscription: subscription,
         })
     }
@@ -213,6 +232,32 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    // ---- change notifications -------------------------------------------------------------
+
+    /// Called after every committed change, outside the store lock, on the thread that made it.
+    pub fn add_listener(&self, listener: impl Fn(ChangeOrigin) + Send + Sync + 'static) -> ListenerId {
+        let id = ListenerId(self.next_listener.fetch_add(1, Ordering::Relaxed));
+        self.listeners.lock().unwrap().push((id, Arc::new(listener)));
+        id
+    }
+
+    pub fn remove_listener(&self, id: ListenerId) {
+        self.listeners.lock().unwrap().retain(|(l, _)| *l != id);
+    }
+
+    pub(crate) fn notify(&self, origin: ChangeOrigin) {
+        let listeners: Vec<Listener> = self
+            .listeners
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, l)| l.clone())
+            .collect();
+        for listener in listeners {
+            listener(origin);
+        }
+    }
+
     // ---- internals ------------------------------------------------------------------------
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -220,20 +265,26 @@ impl Store {
     }
 
     fn write<T>(&self, mutate: impl FnOnce(&LoroTree) -> Result<T>) -> Result<T> {
-        let mut inner = self.lock();
-        let out = mutate(&self.tasks);
-        // Commit and flush even on error so the read model never lags behind applied ops.
-        self.doc.commit();
-        self.flush(&mut inner)?;
+        let (out, changed) = {
+            let mut inner = self.lock();
+            let out = mutate(&self.tasks);
+            // Commit and flush even on error so the read model never lags behind applied ops.
+            self.doc.commit();
+            (out, self.flush(&mut inner)?)
+        };
+        if changed {
+            self.notify(ChangeOrigin::Local);
+        }
         out
     }
 
     /// Persists ops not yet saved and applies pending read-model changes, atomically.
-    pub(crate) fn flush(&self, inner: &mut Inner) -> Result<()> {
+    /// Returns whether anything changed.
+    pub(crate) fn flush(&self, inner: &mut Inner) -> Result<bool> {
         let dirty = std::mem::take(&mut *self.dirty.lock().unwrap());
         let vv = self.doc.oplog_vv();
         if vv == inner.saved_vv && dirty.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let Inner { db, saved_vv, .. } = inner;
         let tx = db.transaction()?;
@@ -244,7 +295,7 @@ impl Store {
         projection::apply(&self.tasks, &tx, dirty)?;
         tx.commit()?;
         *saved_vv = vv;
-        Ok(())
+        Ok(true)
     }
 
     fn node(&self, id: &str, kinds: &[&str]) -> Result<TreeID> {

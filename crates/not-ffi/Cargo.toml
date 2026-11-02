@@ -1,0 +1,13 @@
+[package]
+name = "not-ffi"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+not-core = { version = "0.1.0", path = "../not-core", features = ["net"] }
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time"] }
+uniffi = "0.32.2"
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]

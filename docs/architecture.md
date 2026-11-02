@@ -25,9 +25,11 @@ crates/
   not-core       Rust: Loro docs, SQLite read model, commands, quick-add parser, rrule, sync client
   not-protocol   Rust: wire types shared by core and server
   not-server     Rust (axum): sync relay, device auth, serves the web app
-  not-ffi        (planned) uniffi bindings → Swift / Kotlin
-apple/           (planned) SwiftUI macOS app, later widget + share extensions
-android/         (planned) Compose app, Glance widgets, QS tile, share target
+  not-ffi        uniffi bindings → Swift / Kotlin (`NotStore`, `StoreObserver` callback)
+  uniffi-bindgen bindings generator used by scripts/
+apple/           SwiftUI macOS app (xcodegen `project.yml`) + `NotCore` SwiftPM wrapper; later widgets
+android/         Compose app; later Glance widgets, QS tile, share target
+scripts/         build-apple.sh (xcframework + Swift bindings), build-android.sh (cargo-ndk + Kotlin bindings)
 raycast/         (planned) Raycast extension (TypeScript)
 web/             (planned) light web companion (TypeScript + core compiled to wasm)
 ```
@@ -105,9 +107,15 @@ The server is an append-only log of opaque updates with a global sequence number
 | `GET /v1/pull?since=<seq>` | Returns updates with `seq > since`, paged. Client imports them; importing a known update is a no-op. |
 | `GET /v1/ws` | Server sends `{"seq": n}` after every push so clients pull immediately. |
 
-Client sync loop: push (export updates since the server-known version vector) → pull (import since cursor)
-→ advance cursor. Triggered by local commits (debounced), WebSocket pokes, app foreground, and periodic
-background work.
+Client sync loop (`LiveSync` in `not-core`): push (export updates since the server-known version vector)
+→ pull (import since cursor) → advance cursor. Triggered by local commits (150 ms debounce), WebSocket
+pokes, app foreground (`sync_now`), and every 60 s as a safety net. Failures back off from 1 s to 30 s.
+The server sends its head on WebSocket connect, so a reconnect always catches up.
+
+Client transport: `reqwest` + `tokio-tungstenite` over rustls with the ring provider and Mozilla's root
+store (`webpki-roots`). No platform verifier means no JNI setup on Android and no aws-lc cross-compile;
+the trade-off is that the server needs a publicly trusted certificate (Tailscale/Caddy/Let's Encrypt are
+fine; a private CA is not, yet).
 
 Compaction (planned): a client uploads a snapshot `PUT /v1/docs/<doc>/snapshot?upto=<seq>`; the server
 drops older updates for that doc and serves the snapshot to clients whose cursor is behind it.
@@ -151,7 +159,7 @@ an IndexedDB cache. Online-first; no parity goal.
 
 | Phase | Scope |
 |---|---|
-| P0 spike | core (tasks in Loro + read model), relay server, two-device convergence test, uniffi → minimal SwiftUI + Compose apps |
+| P0 spike ✅ | core (tasks in Loro + read model), relay server, live sync, uniffi → minimal SwiftUI + Compose apps, verified Mac ⇄ Android end to end incl. offline edits |
 | P1 | Quick-add parser, recurrence, reminders, hotkey panel, Raycast, Android widgets |
 | P2 | Notes: per-note docs, markdown editors (biggest UX effort) |
 | P3 | Habits |

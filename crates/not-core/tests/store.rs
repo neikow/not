@@ -218,3 +218,32 @@ fn pulled_ops_are_not_pushed_back() {
     log.sync(&phone);
     assert!(phone.outgoing().unwrap().is_none(), "phone only has server ops");
 }
+
+#[test]
+fn listeners_see_change_origin() {
+    use std::sync::{Arc, Mutex};
+
+    use not_core::ChangeOrigin;
+
+    let mut log = Log::default();
+    let mac = Store::open_in_memory().unwrap();
+    let phone = Store::open_in_memory().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let id = phone.add_listener({
+        let seen = seen.clone();
+        move |origin| seen.lock().unwrap().push(origin)
+    });
+
+    let list = phone.create_list("Inbox").unwrap();
+    mac.create_list("Work").unwrap();
+    log.sync(&mac);
+    log.sync(&phone);
+    assert_eq!(*seen.lock().unwrap(), [ChangeOrigin::Local, ChangeOrigin::Remote]);
+
+    // Rejected commands and empty pulls don't notify.
+    assert!(phone.add_task(&list, "  ").is_err());
+    log.sync(&phone);
+    phone.remove_listener(id);
+    phone.add_task(&list, "x").unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}

@@ -16,6 +16,9 @@ pub enum Error {
     #[cfg(feature = "net")]
     #[error("server responded {0}")]
     Status(u16),
+    #[cfg(feature = "net")]
+    #[error("websocket: {0}")]
+    WebSocket(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
