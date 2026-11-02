@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::Result;
 
 /// Bump when the read-model tables change; a mismatch triggers a full rebuild from the docs.
-pub const READ_MODEL_VERSION: i64 = 4;
+pub const READ_MODEL_VERSION: i64 = 5;
 
 /// Local update rows per doc before they are folded into a snapshot on open.
 const COMPACT_AFTER: i64 = 200;
@@ -46,6 +46,8 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
         DROP TABLE IF EXISTS task;
         DROP TABLE IF EXISTS habit;
         DROP TABLE IF EXISTS habit_log;
+        DROP TABLE IF EXISTS folder;
+        DROP TABLE IF EXISTS note;
 
         CREATE TABLE list (
             id       TEXT PRIMARY KEY,
@@ -75,6 +77,21 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
             count    INTEGER NOT NULL,
             PRIMARY KEY (habit_id, date)
         );
+        CREATE TABLE folder (
+            id        TEXT PRIMARY KEY,
+            parent_id TEXT,
+            title     TEXT NOT NULL
+        );
+        CREATE TABLE note (
+            id         TEXT PRIMARY KEY,
+            folder_id  TEXT,
+            title      TEXT NOT NULL,
+            preview    TEXT NOT NULL,
+            body       TEXT NOT NULL,
+            pinned     INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX note_by_folder ON note (folder_id, pinned, updated_at);
         ",
     )?;
     kv_set(db, "read_model_version", &READ_MODEL_VERSION.to_le_bytes())?;

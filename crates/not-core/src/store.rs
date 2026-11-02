@@ -13,12 +13,13 @@ use rusqlite::Connection;
 use crate::projection::{
     self, COMPLETED_AT, DELETED_AT, Dirty, KIND, KIND_LIST, KIND_TASK, NOTES, Roots, TITLE,
 };
-use crate::{Error, Result, habits, storage};
+use crate::{Error, Result, habits, notes, storage};
 
 pub const WORKSPACE: &str = "workspace";
 const TASKS_TREE: &str = "tasks";
 const HABITS_TREE: &str = "habits";
 const HABIT_LOG: &str = "habit_log";
+const NOTES_TREE: &str = "notes";
 
 /// Id of the built-in Inbox list. It isn't a node: tasks at the root of the tree are in the Inbox,
 /// so there is nothing to create and two fresh devices can't end up with an Inbox each.
@@ -86,6 +87,7 @@ pub struct Store {
     tasks: LoroTree,
     pub(crate) habits: LoroTree,
     pub(crate) habit_log: LoroMap,
+    pub(crate) notes: LoroTree,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
     /// This session's local edits; remote changes are never undone.
@@ -124,6 +126,7 @@ impl Store {
         let habits = doc.get_tree(HABITS_TREE);
         habits.enable_fractional_index(0);
         let habit_log = doc.get_map(HABIT_LOG);
+        let notes = doc.get_tree(NOTES_TREE);
 
         let tx = db.transaction()?;
         if storage::needs_compaction(&tx, WORKSPACE)? {
@@ -132,6 +135,7 @@ impl Store {
         if storage::ensure_read_model(&tx)? {
             projection::rebuild(&tasks, &tx)?;
             habits::rebuild(&habits, &habit_log, &tx)?;
+            notes::rebuild(&notes, &tx)?;
         }
         let server_vv = storage::kv_get(&tx, SERVER_VV_KEY)?
             .map(|b| VersionVector::decode(&b))
@@ -147,6 +151,7 @@ impl Store {
                 tasks: tasks.id(),
                 habits: habits.id(),
                 habit_log: habit_log.id(),
+                notes: notes.id(),
             };
             doc.subscribe_root(Arc::new(move |event| {
                 dirty.lock().unwrap().record(&roots, &event);
@@ -166,6 +171,7 @@ impl Store {
             tasks,
             habits,
             habit_log,
+            notes,
             dirty,
             history,
             listeners: Mutex::default(),
@@ -451,6 +457,7 @@ impl Store {
             habits::project_habits(&self.habits, &tx)?;
         }
         habits::project_log(&self.habit_log, &tx, &dirty.habit_log)?;
+        notes::apply(&self.notes, &tx, dirty.notes)?;
         tx.commit()?;
         *saved_vv = vv;
         Ok(true)

@@ -48,7 +48,7 @@ private struct TaskCommands: Commands {
                 .keyboardShortcut("z", modifiers: [.command, .shift])
         }
         CommandGroup(replacing: .newItem) {
-            Button("New Task") { model.requestAddFieldFocus() }
+            Button(newItemTitle) { model.newItem() }
                 .keyboardShortcut("n")
         }
         CommandMenu("Task") {
@@ -59,6 +59,14 @@ private struct TaskCommands: Commands {
             .disabled(model.selectedTask == nil)
             Button(model.showsInspector ? "Hide Info" : "Show Info") { model.showsInspector.toggle() }
                 .keyboardShortcut("i")
+        }
+    }
+
+    private var newItemTitle: String {
+        switch model.selection {
+        case .habits: "New Habit"
+        case .notes: "New Note"
+        default: "New Task"
         }
     }
 

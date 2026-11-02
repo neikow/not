@@ -76,17 +76,20 @@ import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.TaskList
 import kotlinx.coroutines.launch
 
-enum class Screen { Tasks, Habits, Settings }
+enum class Screen { Tasks, Habits, Notes, Settings }
 
 /** Tasks, with Habits and Settings as further screens. */
 @Composable
-fun NotAppUi(viewModel: TasksViewModel, habits: HabitsViewModel) {
+fun NotAppUi(viewModel: TasksViewModel, habits: HabitsViewModel, notes: NotesViewModel) {
     var screen by rememberSaveable { mutableStateOf(Screen.Tasks) }
     val habitsState by habits.state.collectAsStateWithLifecycle()
     if (screen != Screen.Tasks) BackHandler { screen = Screen.Tasks }
     when (screen) {
         Screen.Tasks -> TasksScreen(viewModel, habitsState.pending, onOpen = { screen = it })
         Screen.Habits -> HabitsScreen(habits, navigationIcon = {
+            IconButton(onClick = { screen = Screen.Tasks }) { Icon(painterResource(R.drawable.ic_arrow_back), "Back") }
+        })
+        Screen.Notes -> NotesScreen(notes, navigationIcon = {
             IconButton(onClick = { screen = Screen.Tasks }) { Icon(painterResource(R.drawable.ic_arrow_back), "Back") }
         })
         Screen.Settings -> SettingsScreen(viewModel, onBack = { screen = Screen.Tasks })
@@ -242,6 +245,13 @@ private fun ListsDrawer(
             badge = { if (pendingHabits > 0) Text(pendingHabits.toString()) },
             selected = false,
             onClick = { onOpen(Screen.Habits) },
+            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+        )
+        NavigationDrawerItem(
+            label = { Text("Notes") },
+            icon = { Icon(painterResource(R.drawable.ic_note), null) },
+            selected = false,
+            onClick = { onOpen(Screen.Notes) },
             modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
         )
         NavigationDrawerItem(
@@ -428,7 +438,7 @@ private fun SyncDot(state: SyncState?) {
 }
 
 @Composable
-private fun TextPromptDialog(
+fun TextPromptDialog(
     title: String,
     confirm: String,
     onConfirm: (String) -> Unit,

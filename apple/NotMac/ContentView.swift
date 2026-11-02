@@ -4,19 +4,28 @@ import SwiftUI
 struct ContentView: View {
     @Bindable var model: AppModel
 
+    private var isNotes: Bool {
+        if case .notes = model.selection { true } else { false }
+    }
+
+    /// Notes have no inspector; the editor takes the room.
+    private var showsInspector: Binding<Bool> {
+        isNotes ? .constant(false) : $model.showsInspector
+    }
+
     var body: some View {
         NavigationSplitView {
             Sidebar(model: model)
                 .navigationSplitViewColumnWidth(min: 190, ideal: 220)
         } detail: {
             Group {
-                if model.selection == .habits {
-                    HabitsView(model: model)
-                } else {
-                    TaskListView(model: model)
+                switch model.selection {
+                case .habits: HabitsView(model: model)
+                case .notes: NotesView(model: model)
+                default: TaskListView(model: model)
                 }
             }
-            .inspector(isPresented: $model.showsInspector) {
+            .inspector(isPresented: showsInspector) {
                 Group {
                     if model.selection == .habits {
                         HabitInspector(model: model)
@@ -29,13 +38,15 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .status) { SyncBadge(state: model.syncState) }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    model.showsInspector.toggle()
-                } label: {
-                    Label("Info", systemImage: "sidebar.trailing")
+            if !isNotes {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        model.showsInspector.toggle()
+                    } label: {
+                        Label("Info", systemImage: "sidebar.trailing")
+                    }
+                    .help("Show details (⌘I)")
                 }
-                .help("Show details (⌘I)")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
@@ -65,6 +76,41 @@ private struct Sidebar: View {
             Label("Habits", systemImage: "repeat")
                 .badge(model.habits.count { $0.due && $0.count < $0.habit.goal })
                 .tag(SidebarItem.habits)
+            Section("Notes") {
+                Label("All Notes", systemImage: "note.text")
+                    .badge(model.noteCount)
+                    .tag(SidebarItem.notes(nil))
+                    .dropDestination(for: String.self) { ids, _ in
+                        ids.forEach { model.moveNote($0, to: nil) }
+                        return true
+                    }
+                ForEach(model.folders, id: \.id) { folder in
+                    FolderRow(folder: folder, renamingID: $renamingID, model: model)
+                        .badge(Int(folder.noteCount))
+                        .padding(.leading, CGFloat(folder.depth) * 14)
+                        .tag(SidebarItem.notes(folder.id))
+                        .dropDestination(for: String.self) { ids, _ in
+                            for id in ids {
+                                if model.folders.contains(where: { $0.id == id }) {
+                                    model.moveFolder(id, into: folder.id)
+                                } else {
+                                    model.moveNote(id, to: folder.id)
+                                }
+                            }
+                            return true
+                        }
+                        .draggable(folder.id)
+                        .contextMenu {
+                            Button("Rename") { renamingID = folder.id }
+                            Button("New Folder Inside") { renamingID = model.addFolder(in: folder.id) }
+                            if folder.parentId != nil {
+                                Button("Move to Top Level") { model.moveFolder(folder.id, into: nil) }
+                            }
+                            Divider()
+                            Button("Delete Folder", role: .destructive) { model.deleteFolder(folder.id) }
+                        }
+                }
+            }
             Section("Lists") {
                 ForEach(model.userLists, id: \.id) { list in
                     ListRow(list: list, renamingID: $renamingID, model: model)
@@ -84,16 +130,55 @@ private struct Sidebar: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            Button {
-                renamingID = model.addList("New List")
-            } label: {
-                Label("New List", systemImage: "plus")
+            HStack {
+                Button {
+                    renamingID = model.addList("New List")
+                } label: {
+                    Label("New List", systemImage: "plus")
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                Spacer()
+                Button {
+                    renamingID = model.addFolder()
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
+                }
+                .labelStyle(.iconOnly)
+                .help("New notes folder")
             }
             .buttonStyle(.borderless)
-            .keyboardShortcut("n", modifiers: [.command, .shift])
-            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
         }
+    }
+}
+
+private struct FolderRow: View {
+    let folder: Folder
+    @Binding var renamingID: String?
+    let model: AppModel
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        if renamingID == folder.id {
+            TextField("Folder name", text: $draft)
+                .focused($focused)
+                .onAppear {
+                    draft = folder.title
+                    focused = true
+                }
+                .onSubmit(commit)
+                .onExitCommand { renamingID = nil }
+                .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
+        } else {
+            Label(folder.title, systemImage: "folder")
+        }
+    }
+
+    private func commit() {
+        guard renamingID == folder.id else { return }
+        if draft != folder.title { model.renameFolder(folder.id, to: draft) }
+        renamingID = nil
     }
 }
 

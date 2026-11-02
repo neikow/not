@@ -23,6 +23,60 @@ pub fn every_day() -> u8 {
     not_core::EVERY_DAY
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MarkdownStyle {
+    /// Level 1–3.
+    Heading {
+        level: u8,
+    },
+    Bold,
+    Italic,
+    Code,
+    Strike,
+    Quote,
+    Bullet,
+    Checkbox {
+        checked: bool,
+    },
+    /// Text of a checked checklist item.
+    Done,
+    /// Markup characters, drawn dimmed.
+    Syntax,
+}
+
+/// A range to style, in UTF-16 code units.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MarkdownSpan {
+    pub start: u32,
+    pub end: u32,
+    pub style: MarkdownStyle,
+}
+
+/// Styling for live markdown editing: the text stays markdown, the editor styles it in place.
+#[uniffi::export]
+pub fn markdown_spans(text: String) -> Vec<MarkdownSpan> {
+    use not_core::markdown::Style;
+    not_core::markdown::spans(&text)
+        .into_iter()
+        .map(|s| MarkdownSpan {
+            start: s.start,
+            end: s.end,
+            style: match s.style {
+                Style::Heading(level) => MarkdownStyle::Heading { level },
+                Style::Bold => MarkdownStyle::Bold,
+                Style::Italic => MarkdownStyle::Italic,
+                Style::Code => MarkdownStyle::Code,
+                Style::Strike => MarkdownStyle::Strike,
+                Style::Quote => MarkdownStyle::Quote,
+                Style::Bullet => MarkdownStyle::Bullet,
+                Style::Checkbox { checked } => MarkdownStyle::Checkbox { checked },
+                Style::Done => MarkdownStyle::Done,
+                Style::Syntax => MarkdownStyle::Syntax,
+            },
+        })
+        .collect()
+}
+
 /// Server URL and one-time code, as carried by a pairing QR code.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PairingLink {
@@ -134,6 +188,31 @@ pub struct HabitDay {
     /// `YYYY-MM-DD`.
     pub date: String,
     pub count: u32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Folder {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub title: String,
+    /// Below the top level, for indenting.
+    pub depth: u32,
+    /// Notes directly inside.
+    pub note_count: u32,
+}
+
+/// A note without its body.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NoteSummary {
+    pub id: String,
+    pub folder_id: Option<String>,
+    /// First line of the body, without markdown.
+    pub title: String,
+    /// Following text, shortened.
+    pub preview: String,
+    pub pinned: bool,
+    /// Unix millis.
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -327,6 +406,83 @@ impl NotStore {
                 count: d.count,
             })
             .collect())
+    }
+
+    // ---- notes ----
+    // `folder_id` `None` means the top level (for queries: all notes).
+
+    pub fn create_folder(&self, parent_id: Option<String>, title: String) -> Result<String, NotError> {
+        Ok(self.store.create_folder(parent_id.as_deref(), &title)?)
+    }
+
+    pub fn rename_folder(&self, id: String, title: String) -> Result<(), NotError> {
+        Ok(self.store.rename_folder(&id, &title)?)
+    }
+
+    pub fn move_folder(&self, id: String, parent_id: Option<String>) -> Result<(), NotError> {
+        Ok(self.store.move_folder(&id, parent_id.as_deref())?)
+    }
+
+    pub fn create_note(&self, folder_id: Option<String>, body: String) -> Result<String, NotError> {
+        Ok(self.store.create_note(folder_id.as_deref(), &body)?)
+    }
+
+    /// Replaces the markdown body; merges with concurrent edits from other devices.
+    pub fn set_note_body(&self, id: String, body: String) -> Result<(), NotError> {
+        Ok(self.store.set_note_body(&id, &body)?)
+    }
+
+    pub fn set_note_pinned(&self, id: String, pinned: bool) -> Result<(), NotError> {
+        Ok(self.store.set_note_pinned(&id, pinned)?)
+    }
+
+    pub fn move_note(&self, id: String, folder_id: Option<String>) -> Result<(), NotError> {
+        Ok(self.store.move_note(&id, folder_id.as_deref())?)
+    }
+
+    /// Deletes a note, or a folder with everything in it. Undoable.
+    pub fn delete_note(&self, id: String) -> Result<(), NotError> {
+        Ok(self.store.delete_note_or_folder(&id)?)
+    }
+
+    /// Depth-first, each level by title.
+    pub fn folders(&self) -> Result<Vec<Folder>, NotError> {
+        Ok(self
+            .store
+            .folders()?
+            .into_iter()
+            .map(|f| Folder {
+                id: f.id,
+                parent_id: f.parent_id,
+                title: f.title,
+                depth: f.depth,
+                note_count: f.note_count,
+            })
+            .collect())
+    }
+
+    /// Notes directly in `folder_id`, or all notes when `None`. Pinned first, then latest edit.
+    pub fn notes(&self, folder_id: Option<String>) -> Result<Vec<NoteSummary>, NotError> {
+        Ok(self
+            .store
+            .notes(folder_id.as_deref())?
+            .into_iter()
+            .map(NoteSummary::from)
+            .collect())
+    }
+
+    /// Notes containing every word of `query`, ignoring case.
+    pub fn search_notes(&self, query: String) -> Result<Vec<NoteSummary>, NotError> {
+        Ok(self
+            .store
+            .search_notes(&query)?
+            .into_iter()
+            .map(NoteSummary::from)
+            .collect())
+    }
+
+    pub fn note_body(&self, id: String) -> Result<String, NotError> {
+        Ok(self.store.note_body(&id)?)
     }
 
     // ---- undo ----
@@ -560,6 +716,19 @@ impl From<not_core::HabitSummary> for HabitSummary {
             streak: s.streak,
             best_streak: s.best_streak,
             week: s.week,
+        }
+    }
+}
+
+impl From<not_core::NoteSummary> for NoteSummary {
+    fn from(n: not_core::NoteSummary) -> Self {
+        Self {
+            id: n.id,
+            folder_id: n.folder_id,
+            title: n.title,
+            preview: n.preview,
+            pinned: n.pinned,
+            updated_at: n.updated_at,
         }
     }
 }

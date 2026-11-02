@@ -23,7 +23,9 @@ final class AppModel {
             selectedTaskID = nil
             editingTaskID = nil
             selectedHabitID = nil
+            selectedNoteID = nil
             reloadTasks()
+            reloadNotes()
         }
     }
 
@@ -54,6 +56,17 @@ final class AppModel {
     var selectedHabitID: String?
     /// The user's local date; habits are checked in on it.
     private(set) var today = AppModel.dayString(.now)
+
+    private(set) var folders: [Folder] = []
+    /// Notes of the selected folder (or all notes), or search results.
+    private(set) var notes: [NoteSummary] = []
+    private(set) var noteCount = 0
+    var selectedNoteID: String?
+    var noteSearch = "" {
+        didSet { if oldValue != noteSearch { reloadNotes() } }
+    }
+    /// Bumped to move keyboard focus to the note editor.
+    private(set) var editorFocusRequests = 0
 
     @ObservationIgnored private let store: NotStore
     @ObservationIgnored private var observer: ModelObserver?
@@ -291,6 +304,82 @@ final class AppModel {
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
     }
 
+    // MARK: Notes
+
+    /// The folder shown, if any (`nil` for All Notes too).
+    var selectedFolderID: String? {
+        if case let .notes(id) = selection { id } else { nil }
+    }
+
+    var selectedNote: NoteSummary? { notes.first { $0.id == selectedNoteID } }
+
+    func folderTitle(_ id: String?) -> String {
+        id.flatMap { id in folders.first { $0.id == id }?.title } ?? "Notes"
+    }
+
+    func newNote() {
+        noteSearch = ""
+        guard let id = run({ try store.createNote(folderId: selectedFolderID, body: "") }) else { return }
+        selectedNoteID = id
+        editorFocusRequests += 1
+    }
+
+    func noteBody(_ id: String) -> String {
+        run { try store.noteBody(id: id) } ?? ""
+    }
+
+    func setNoteBody(_ id: String, _ body: String) {
+        run { try store.setNoteBody(id: id, body: body) }
+    }
+
+    func togglePin(_ note: NoteSummary) {
+        run { try store.setNotePinned(id: note.id, pinned: !note.pinned) }
+    }
+
+    func moveNote(_ id: String, to folderID: String?) {
+        run { try store.moveNote(id: id, folderId: folderID) }
+    }
+
+    func deleteNote(_ id: String) {
+        if selectedNoteID == id { selectedNoteID = nil }
+        run { try store.deleteNote(id: id) }
+    }
+
+    /// Leaving a note nobody typed into removes it, like Notes does.
+    func discardIfEmpty(_ id: String) {
+        guard notes.contains(where: { $0.id == id }),
+              noteBody(id).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+        run { try store.deleteNote(id: id) }
+    }
+
+    @discardableResult
+    func addFolder(in parentID: String? = nil) -> String? {
+        guard let id = run({ try store.createFolder(parentId: parentID, title: "New Folder") }) else { return nil }
+        selection = .notes(id)
+        return id
+    }
+
+    func renameFolder(_ id: String, to title: String) {
+        let title = title.trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { return }
+        run { try store.renameFolder(id: id, title: title) }
+    }
+
+    func moveFolder(_ id: String, into parentID: String?) {
+        run { try store.moveFolder(id: id, parentId: parentID) }
+    }
+
+    func deleteFolder(_ id: String) {
+        if selectedFolderID == id { selection = .notes(nil) }
+        run { try store.deleteNote(id: id) }
+    }
+
+    /// ⌘N: a new task, habit or note, depending on what is shown.
+    func newItem() {
+        if case .notes = selection { newNote() } else { requestAddFieldFocus() }
+    }
+
     // MARK: Undo
 
     func undo() { run { _ = try store.undo() } }
@@ -317,6 +406,8 @@ final class AppModel {
         switch selection {
         case .habits:
             break
+        case .notes:
+            break // reloadNotes() handles deleted folders.
         case let .list(id) where lists.contains(where: { $0.id == id }):
             reloadTasks()
         default:
@@ -324,6 +415,24 @@ final class AppModel {
         }
         reloadPanel()
         reloadHabits()
+        reloadNotes()
+    }
+
+    private func reloadNotes() {
+        folders = run { try store.folders() } ?? []
+        if case let .notes(id?) = selection, !folders.contains(where: { $0.id == id }) {
+            // The folder was deleted, possibly on another device.
+            selection = .notes(nil)
+            return
+        }
+        guard case let .notes(folder) = selection else {
+            noteCount = (run { try store.notes(folderId: nil) } ?? []).count
+            return
+        }
+        let query = noteSearch.trimmingCharacters(in: .whitespaces)
+        notes = (query.isEmpty ? run { try store.notes(folderId: folder) } : run { try store.searchNotes(query: query) }) ?? []
+        noteCount = folder == nil && query.isEmpty ? notes.count : (run { try store.notes(folderId: nil) } ?? []).count
+        if selectedNote == nil { selectedNoteID = nil }
     }
 
     private func reloadHabits() {
@@ -385,6 +494,8 @@ final class AppModel {
 enum SidebarItem: Hashable {
     case list(String)
     case habits
+    /// A notes folder, or all notes for `nil`.
+    case notes(String?)
 }
 
 /// Bridges Rust callbacks (background threads) onto the main actor.

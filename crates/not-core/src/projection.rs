@@ -31,6 +31,7 @@ pub struct Roots {
     pub tasks: ContainerID,
     pub habits: ContainerID,
     pub habit_log: ContainerID,
+    pub notes: ContainerID,
 }
 
 #[derive(Debug, Default)]
@@ -40,11 +41,12 @@ pub struct Dirty {
     pub habits: bool,
     /// `habit_log` keys whose counter changed.
     pub habit_log: HashSet<String>,
+    pub notes: TreeDirty,
 }
 
 impl Dirty {
     pub fn is_empty(&self) -> bool {
-        self.tasks.is_empty() && !self.habits && self.habit_log.is_empty()
+        self.tasks.is_empty() && !self.habits && self.habit_log.is_empty() && self.notes.is_empty()
     }
 
     pub fn record(&mut self, roots: &Roots, event: &DiffEvent) {
@@ -65,6 +67,8 @@ impl Dirty {
                         }
                         _ => None,
                     }));
+            } else if under(&roots.notes) {
+                self.notes.record(&roots.notes, change);
             } else {
                 self.tasks.record(&roots.tasks, change);
             }
@@ -86,7 +90,11 @@ impl TreeDirty {
         self.structure.is_empty() && self.meta.is_empty()
     }
 
-    fn record(&mut self, tree: &ContainerID, change: &ContainerDiff<'_>) {
+    pub fn into_parts(self) -> (HashSet<TreeID>, HashSet<TreeID>) {
+        (self.structure, self.meta)
+    }
+
+    pub(crate) fn record(&mut self, tree: &ContainerID, change: &ContainerDiff<'_>) {
         if let Diff::Tree(diff) = &change.diff {
             if change.target == tree {
                 self.structure.extend(diff.diff.iter().map(|item| item.target));

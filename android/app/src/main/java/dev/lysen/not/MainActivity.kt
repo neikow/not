@@ -13,13 +13,14 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val viewModel: TasksViewModel by viewModels()
     private val habits: HabitsViewModel by viewModels()
+    private val notes: NotesViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
-            NotTheme { NotAppUi(viewModel, habits) }
+            NotTheme { NotAppUi(viewModel, habits, notes) }
         }
     }
 
