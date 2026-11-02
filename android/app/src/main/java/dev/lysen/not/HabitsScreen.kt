@@ -45,7 +45,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -75,15 +77,15 @@ import dev.lysen.not.core.everyDay
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
 import java.time.format.TextStyle
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HabitsScreen(viewModel: HabitsViewModel, navigationIcon: @Composable () -> Unit) {
+fun HabitsScreen(viewModel: HabitsViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     LaunchedEffect(Unit) {
         viewModel.undoables.collect { undoable ->
@@ -94,21 +96,8 @@ fun HabitsScreen(viewModel: HabitsViewModel, navigationIcon: @Composable () -> U
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                navigationIcon = navigationIcon,
-                title = {
-                    Column {
-                        Text("Habits")
-                        Text(
-                            state.today.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL)),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-            )
-        },
+        modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
+        topBar = { LargeTopAppBar(title = { Text("Habits") }, scrollBehavior = scroll) },
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = { AddBar("New habit", onAdd = viewModel::add) },
     ) { padding ->
@@ -122,8 +111,9 @@ fun HabitsScreen(viewModel: HabitsViewModel, navigationIcon: @Composable () -> U
         } else {
             LazyColumn(
                 Modifier.fillMaxSize().padding(padding),
-                contentPadding = PaddingValues(vertical = 8.dp),
+                contentPadding = PaddingValues(bottom = 8.dp),
             ) {
+                item(key = "today") { TodayHeader(state) }
                 items(state.habits, key = { it.habit.id }) { summary ->
                     HabitRow(summary, state.today, viewModel, Modifier.animateItem())
                 }
@@ -140,6 +130,24 @@ fun HabitsScreen(viewModel: HabitsViewModel, navigationIcon: @Composable () -> U
             text = { Text(it) },
         )
     }
+}
+
+/** "Monday, November 2 · 1 of 3 done". */
+@Composable
+private fun TodayHeader(state: HabitsState) {
+    val due = state.habits.filter { it.due }
+    val done = due.count { it.count >= it.habit.goal }
+    val progress = when {
+        due.isEmpty() -> "Nothing due"
+        done == due.size -> "All done"
+        else -> "$done of ${due.size} done"
+    }
+    Text(
+        "${state.today.format(DateTimeFormatter.ofPattern("EEEE, MMMM d"))} · $progress",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+    )
 }
 
 @Composable

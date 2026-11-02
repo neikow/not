@@ -41,7 +41,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -67,7 +71,7 @@ import kotlinx.coroutines.delay
 
 /** Notes of a folder (or all), with search; opening a note shows the editor. */
 @Composable
-fun NotesScreen(viewModel: NotesViewModel, navigationIcon: @Composable () -> Unit) {
+fun NotesScreen(viewModel: NotesViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
@@ -84,7 +88,7 @@ fun NotesScreen(viewModel: NotesViewModel, navigationIcon: @Composable () -> Uni
         BackHandler { viewModel.open(null) }
         NoteEditor(open, state, viewModel, snackbar)
     } else {
-        NoteList(state, viewModel, snackbar, navigationIcon)
+        NoteList(state, viewModel, snackbar)
     }
 
     state.error?.let {
@@ -103,20 +107,32 @@ private fun NoteList(
     state: NotesState,
     viewModel: NotesViewModel,
     snackbar: SnackbarHostState,
-    navigationIcon: @Composable () -> Unit,
 ) {
     var newFolder by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Folder?>(null) }
     var moving by remember { mutableStateOf<NoteSummary?>(null) }
     val searching = state.query != null
     if (searching) BackHandler { viewModel.search(null) }
+    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
-            TopAppBar(
-                navigationIcon = navigationIcon,
-                title = {
-                    if (searching) {
+            val actions: @Composable RowScope.() -> Unit = {
+                if (searching) {
+                    IconButton(onClick = { viewModel.search(null) }) { Icon(painterResource(R.drawable.ic_close), "Close search") }
+                } else {
+                    IconButton(onClick = { viewModel.search("") }) { Icon(painterResource(R.drawable.ic_search), "Search") }
+                    state.folder?.let { folder ->
+                        FolderMenu(onRename = { renaming = folder }, onDelete = { viewModel.deleteFolder(folder) })
+                    }
+                }
+            }
+            if (!searching) {
+                LargeTopAppBar(title = { Text(state.folder?.title ?: "Notes") }, actions = actions, scrollBehavior = scroll)
+            } else {
+                TopAppBar(
+                    title = {
                         val focus = remember { FocusRequester() }
                         TextField(
                             state.query.orEmpty(),
@@ -132,21 +148,10 @@ private fun NoteList(
                             modifier = Modifier.fillMaxWidth().focusRequester(focus),
                         )
                         LaunchedEffect(Unit) { focus.requestFocus() }
-                    } else {
-                        Text(state.folder?.title ?: "Notes")
-                    }
-                },
-                actions = {
-                    if (searching) {
-                        IconButton(onClick = { viewModel.search(null) }) { Icon(painterResource(R.drawable.ic_close), "Close search") }
-                    } else {
-                        IconButton(onClick = { viewModel.search("") }) { Icon(painterResource(R.drawable.ic_search), "Search") }
-                        state.folder?.let { folder ->
-                            FolderMenu(onRename = { renaming = folder }, onDelete = { viewModel.deleteFolder(folder) })
-                        }
-                    }
-                },
-            )
+                    },
+                    actions = actions,
+                )
+            }
         },
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {

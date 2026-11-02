@@ -23,7 +23,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -47,7 +46,8 @@ import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
@@ -60,7 +60,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -76,35 +82,16 @@ import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.TaskList
 import kotlinx.coroutines.launch
 
-enum class Screen { Tasks, Habits, Notes, Settings }
-
-/** Tasks, with Habits and Settings as further screens. */
-@Composable
-fun NotAppUi(viewModel: TasksViewModel, habits: HabitsViewModel, notes: NotesViewModel) {
-    var screen by rememberSaveable { mutableStateOf(Screen.Tasks) }
-    val habitsState by habits.state.collectAsStateWithLifecycle()
-    if (screen != Screen.Tasks) BackHandler { screen = Screen.Tasks }
-    when (screen) {
-        Screen.Tasks -> TasksScreen(viewModel, habitsState.pending, onOpen = { screen = it })
-        Screen.Habits -> HabitsScreen(habits, navigationIcon = {
-            IconButton(onClick = { screen = Screen.Tasks }) { Icon(painterResource(R.drawable.ic_arrow_back), "Back") }
-        })
-        Screen.Notes -> NotesScreen(notes, navigationIcon = {
-            IconButton(onClick = { screen = Screen.Tasks }) { Icon(painterResource(R.drawable.ic_arrow_back), "Back") }
-        })
-        Screen.Settings -> SettingsScreen(viewModel, onBack = { screen = Screen.Tasks })
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TasksScreen(viewModel: TasksViewModel, pendingHabits: Int, onOpen: (Screen) -> Unit) {
+fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var newList by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<TaskList?>(null) }
+    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     // Destructive actions confirm after the fact, with Undo, instead of asking first.
     LaunchedEffect(Unit) {
@@ -124,18 +111,19 @@ private fun TasksScreen(viewModel: TasksViewModel, pendingHabits: Int, onOpen: (
                     viewModel.select(it)
                     scope.launch { drawer.close() }
                 },
-                pendingHabits = pendingHabits,
                 onNewList = { newList = true },
-                onOpen = {
+                onSettings = {
                     scope.launch { drawer.close() }
-                    onOpen(it)
+                    onOpenSettings()
                 },
             )
         },
     ) {
         Scaffold(
+            modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
             topBar = {
-                TopAppBar(
+                LargeTopAppBar(
+                    scrollBehavior = scroll,
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawer.open() } }) {
                             Icon(painterResource(R.drawable.ic_menu), "Lists")
@@ -200,10 +188,9 @@ private fun TasksScreen(viewModel: TasksViewModel, pendingHabits: Int, onOpen: (
 @Composable
 private fun ListsDrawer(
     state: UiState,
-    pendingHabits: Int,
     onSelect: (String) -> Unit,
     onNewList: () -> Unit,
-    onOpen: (Screen) -> Unit,
+    onSettings: () -> Unit,
 ) {
     ModalDrawerSheet {
         Text(
@@ -240,25 +227,10 @@ private fun ListsDrawer(
         )
         HorizontalDivider(Modifier.padding(horizontal = 28.dp, vertical = 8.dp))
         NavigationDrawerItem(
-            label = { Text("Habits") },
-            icon = { Icon(painterResource(R.drawable.ic_repeat), null) },
-            badge = { if (pendingHabits > 0) Text(pendingHabits.toString()) },
-            selected = false,
-            onClick = { onOpen(Screen.Habits) },
-            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-        )
-        NavigationDrawerItem(
-            label = { Text("Notes") },
-            icon = { Icon(painterResource(R.drawable.ic_note), null) },
-            selected = false,
-            onClick = { onOpen(Screen.Notes) },
-            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-        )
-        NavigationDrawerItem(
             label = { Text("Settings") },
             icon = { Icon(painterResource(R.drawable.ic_settings), null) },
             selected = false,
-            onClick = { onOpen(Screen.Settings) },
+            onClick = onSettings,
             modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
         )
     }
@@ -350,11 +322,12 @@ private fun SwipeableTaskRow(row: OutlineRow, viewModel: TasksViewModel, modifie
                 Modifier
                     .fillMaxWidth()
                     .clickable { viewModel.openTask(row.task.id) }
-                    .padding(start = (4 + row.depth.toInt() * 28).dp, end = 16.dp, top = 2.dp, bottom = 2.dp),
+                    .heightIn(min = 56.dp)
+                    .padding(start = (8 + row.depth.toInt() * 32).dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Checkbox(checked = done, onCheckedChange = { toggle() })
-                Column(Modifier.weight(1f)) {
+                RoundCheck(checked = done, onClick = ::toggle, small = row.depth > 0u)
+                Column(Modifier.weight(1f).padding(start = 8.dp)) {
                     Text(
                         row.task.title,
                         style = MaterialTheme.typography.bodyLarge,
@@ -373,6 +346,30 @@ private fun SwipeableTaskRow(row: OutlineRow, viewModel: TasksViewModel, modifie
                     }
                 }
             }
+        }
+    }
+}
+
+/** A round checkbox, filled when checked. 48dp touch target. */
+@Composable
+private fun RoundCheck(checked: Boolean, onClick: () -> Unit, small: Boolean = false) {
+    val colors = MaterialTheme.colorScheme
+    val size = if (small) 20.dp else 24.dp
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .toggleable(value = checked, role = Role.Checkbox, onValueChange = { onClick() }),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(size)
+                .border(2.dp, if (checked) colors.primary else colors.outline, CircleShape)
+                .background(if (checked) colors.primary else Color.Transparent, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (checked) Icon(painterResource(R.drawable.ic_check), null, tint = colors.onPrimary, modifier = Modifier.size(size - 6.dp))
         }
     }
 }
