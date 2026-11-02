@@ -1,25 +1,145 @@
+import NotCore
 import SwiftUI
 
 struct SettingsView: View {
     let model: AppModel
-    // TODO: move the token to the Keychain once device pairing replaces the shared token.
-    @AppStorage(AppModel.serverURLKey) private var serverURL = ""
-    @AppStorage(AppModel.tokenKey) private var token = ""
 
     var body: some View {
-        Form {
-            Section("Sync server") {
-                TextField("URL", text: $serverURL, prompt: Text("https://not.example.ts.net"))
-                SecureField("Token", text: $token)
-                Button("Connect") { model.connect(serverURL: serverURL, token: token) }
-                    .keyboardShortcut(.defaultAction)
-            }
-            Section("This device") {
-                LabeledContent("Device ID", value: model.deviceID)
-                    .textSelection(.enabled)
+        Group {
+            if let info = model.syncInfo {
+                PairedView(model: model, info: info)
+            } else {
+                PairForm(model: model)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420)
+        .frame(width: 460)
     }
+}
+
+private struct PairForm: View {
+    let model: AppModel
+    @State private var serverURL = ""
+    @State private var code = ""
+    @State private var deviceName = AppModel.defaultDeviceName
+    @State private var pairing = false
+
+    private var canPair: Bool {
+        !pairing && !serverURL.trimmingCharacters(in: .whitespaces).isEmpty
+            && !code.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Server", text: $serverURL, prompt: Text("https://not.example.ts.net"))
+                TextField("Pairing code", text: $code, prompt: Text("XXXXX-XXXXX"))
+                    .font(.body.monospaced())
+                TextField("Device name", text: $deviceName)
+            } header: {
+                Text("Pair this Mac")
+            } footer: {
+                Text("Get a code on the server with `not-server pair`, or on a paired device under Sync → Add Device.")
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                if pairing { ProgressView().controlSize(.small) }
+                Button("Pair") {
+                    pairing = true
+                    Task {
+                        await model.pair(serverURL: serverURL, code: code, deviceName: deviceName)
+                        pairing = false
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canPair)
+            }
+        }
+    }
+}
+
+private struct PairedView: View {
+    let model: AppModel
+    let info: SyncInfo
+    @State private var devices: [Device] = []
+    @State private var code: PairingCode?
+    @State private var pendingRevoke: Device?
+
+    var body: some View {
+        Form {
+            Section("Sync") {
+                LabeledContent("Server", value: info.serverUrl)
+                LabeledContent("This Mac", value: info.deviceName)
+                LabeledContent("Status", value: status)
+            }
+            Section {
+                if let code {
+                    LabeledContent("Pairing code") {
+                        Text(code.code).font(.title2.monospaced()).textSelection(.enabled)
+                    }
+                    Text("Works once, until \(date(code.expiresAt).formatted(date: .omitted, time: .shortened)).")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("Add Device…") { Task { code = await model.createPairingCode() } }
+                }
+            } header: {
+                Text("Add a device")
+            } footer: {
+                Text("Enter the code on the new device along with this server's URL.")
+                    .foregroundStyle(.secondary)
+            }
+            Section("Devices") {
+                ForEach(devices, id: \.id) { device in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(device.isCurrent ? "\(device.name) (this Mac)" : device.name)
+                            Text(lastSeen(device)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button(device.isCurrent ? "Unpair…" : "Revoke…", role: .destructive) {
+                            pendingRevoke = device
+                        }
+                    }
+                }
+            }
+        }
+        .frame(minHeight: 640)
+        .task(id: info.deviceId) { devices = await model.devices() }
+        .confirmationDialog(
+            pendingRevoke.map { $0.isCurrent ? "Unpair this Mac?" : "Revoke \($0.name)?" } ?? "",
+            isPresented: Binding(get: { pendingRevoke != nil }, set: { if !$0 { pendingRevoke = nil } }),
+            presenting: pendingRevoke
+        ) { device in
+            Button(device.isCurrent ? "Unpair" : "Revoke", role: .destructive) {
+                Task {
+                    await model.revoke(device)
+                    if !device.isCurrent { devices = await model.devices() }
+                }
+            }
+        } message: { device in
+            Text(device.isCurrent
+                ? "Sync stops and this Mac is removed from the server. Tasks stay on this Mac."
+                : "\(device.name) stops syncing until it is paired again. Its local data stays on it.")
+        }
+    }
+
+    private var status: String {
+        switch model.syncState {
+        case nil: "Starting…"
+        case .syncing: "Syncing…"
+        case .synced: "Up to date"
+        case let .offline(reason): "Offline: \(reason)"
+        case .unauthorized: "Rejected by the server. Unpair, then pair again."
+        }
+    }
+
+    private func lastSeen(_ device: Device) -> String {
+        guard let seen = device.lastSeenAt else { return "Never synced" }
+        return "Last seen " + date(seen).formatted(.relative(presentation: .named))
+    }
+}
+
+private func date(_ millis: Int64) -> Date {
+    Date(timeIntervalSince1970: TimeInterval(millis) / 1000)
 }

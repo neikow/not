@@ -36,22 +36,25 @@ cd apple && xcodegen generate && open Not.xcodeproj      # run the NotMac scheme
 cd android && ./gradlew installDebug
 ```
 
-Point both at a server in their sync settings. For local testing the emulator reaches the host at
-`http://10.0.2.2:8080`. Dev shortcuts:
+Pair each app with the server (below) in its sync settings: macOS Settings (⌘,), Android "Sync". For
+local testing the emulator reaches the host at `http://10.0.2.2:8080`. Dev shortcuts:
 
 ```sh
-open "not://add?title=Milk"                                  # macOS: quick add via URL scheme
-open not.app --args -serverURL http://127.0.0.1:8080 -token T  # macOS: sync settings as launch args
-adb shell am start -n dev.lysen.not/.MainActivity --es server http://10.0.2.2:8080 --es token T  # debug builds only
+open "not://add?title=Milk"                                       # macOS: quick add to the Inbox
+open not.app --args -serverURL http://127.0.0.1:8080 -pairingCode CODE   # macOS: pair on launch
+adb shell am start -n dev.lysen.not/.MainActivity --es server http://10.0.2.2:8080 --es code CODE  # debug builds only
 ```
 
 ## Run the server
 
 ```sh
-cp .env.example .env              # set NOT_TOKEN (openssl rand -hex 32)
 docker compose up -d --build
 curl localhost:8080/healthz
+docker compose exec not not-server pair      # one-time code for the first device (valid 10 min)
 ```
 
+Enter the server URL and code in the app. Further devices get codes from a paired one (Add device) or
+from `not-server pair` again. `not-server devices` and `not-server revoke <id>` manage them from the host.
+
 Data lives in the `not-data` volume (`/data/not.db`). Put the server behind your reverse proxy or Tailscale
-for TLS.
+for TLS: the apps only trust publicly trusted certificates.

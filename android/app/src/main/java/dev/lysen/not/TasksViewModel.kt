@@ -1,15 +1,19 @@
 package dev.lysen.not
 
 import android.app.Application
-import android.content.Context
-import androidx.core.content.edit
+import android.os.Build
+import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.lysen.not.core.Device
 import dev.lysen.not.core.NotException
+import dev.lysen.not.core.PairingCode
 import dev.lysen.not.core.StoreObserver
+import dev.lysen.not.core.SyncInfo
 import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.TaskItem
 import dev.lysen.not.core.TaskList
+import dev.lysen.not.core.inboxId
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,21 +25,30 @@ data class TaskRow(val task: TaskItem, val depth: Int)
 
 data class UiState(
     val lists: List<TaskList> = emptyList(),
-    val selectedListId: String? = null,
+    val selectedListId: String = INBOX_ID,
     val rows: List<TaskRow> = emptyList(),
     val sync: SyncState? = null,
-    val serverUrl: String = "",
+    /** Null until this device is paired with a server. */
+    val syncInfo: SyncInfo? = null,
+    val devices: List<Device> = emptyList(),
+    val pairingCode: PairingCode? = null,
+    /** A pairing or device call is in flight. */
+    val busy: Boolean = false,
     val error: String? = null,
 ) {
     val selectedList: TaskList? get() = lists.firstOrNull { it.id == selectedListId }
 }
 
+val INBOX_ID: String = inboxId()
+
 class TasksViewModel(app: Application) : AndroidViewModel(app) {
     private val store = (app as NotApp).store
-    // TODO: move the token to the Android Keystore once device pairing replaces the shared token.
-    private val prefs = app.getSharedPreferences("sync", Context.MODE_PRIVATE)
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    /** The name from Settings → About phone, e.g. "Galaxy S24". */
+    val defaultDeviceName: String =
+        Settings.Global.getString(app.contentResolver, Settings.Global.DEVICE_NAME) ?: Build.MODEL
 
     // Called from Rust threads.
     private val observer = object : StoreObserver {
@@ -49,28 +62,52 @@ class TasksViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
+        // Before pairing, the shared server token was kept here in plain text.
+        app.deleteSharedPreferences("sync")
         store.setObserver(observer)
         reload()
-        connect(prefs.getString(KEY_URL, "").orEmpty(), prefs.getString(KEY_TOKEN, "").orEmpty())
-    }
-
-    fun connect(serverUrl: String, token: String) {
-        val url = serverUrl.trim()
-        val secret = token.trim()
-        prefs.edit {
-            putString(KEY_URL, url)
-            putString(KEY_TOKEN, secret)
-        }
-        _state.update { it.copy(serverUrl = url) }
-        if (url.isEmpty() || secret.isEmpty()) {
-            store.stopSync()
-            _state.update { it.copy(sync = null) }
-        } else {
-            store.startSync(url, secret)
-        }
+        _state.update { it.copy(syncInfo = run { store.syncInfo() }) }
+        run { store.startSync() }
     }
 
     fun syncNow() = store.syncNow()
+
+    // ---- pairing ----
+
+    fun pair(serverUrl: String, code: String, deviceName: String) = launchBusy {
+        store.pair(serverUrl.trim(), code, deviceName).let { info -> _state.update { it.copy(syncInfo = info) } }
+        loadDevices()
+    }
+
+    fun unpair() = launchBusy {
+        try {
+            store.unpair()
+        } finally {
+            _state.update { it.copy(syncInfo = null, sync = null, devices = emptyList(), pairingCode = null) }
+        }
+    }
+
+    fun createPairingCode() = launchBusy {
+        val code = store.createPairingCode()
+        _state.update { it.copy(pairingCode = code) }
+    }
+
+    fun refreshDevices() = launchBusy { loadDevices() }
+
+    fun revoke(device: Device) {
+        if (device.isCurrent) return unpair()
+        launchBusy {
+            store.revokeDevice(device.id)
+            loadDevices()
+        }
+    }
+
+    private suspend fun loadDevices() {
+        val devices = store.devices()
+        _state.update { it.copy(devices = devices) }
+    }
+
+    // ---- tasks ----
 
     fun select(listId: String) {
         _state.update { it.copy(selectedListId = listId) }
@@ -82,8 +119,7 @@ class TasksViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addTask(title: String) {
-        val list = _state.value.selectedListId ?: ensureInbox() ?: return
-        run { store.addTask(list, title) }
+        run { store.addTask(_state.value.selectedListId, title) }
     }
 
     fun toggle(task: TaskItem) {
@@ -99,34 +135,39 @@ class TasksViewModel(app: Application) : AndroidViewModel(app) {
     private fun reload() {
         val lists = run { store.lists() } ?: return
         _state.update { s ->
-            val selected = s.selectedListId?.takeIf { id -> lists.any { it.id == id } } ?: lists.firstOrNull()?.id
+            val selected = s.selectedListId.takeIf { id -> lists.any { it.id == id } } ?: INBOX_ID
             s.copy(lists = lists, selectedListId = selected)
         }
         reloadTasks()
     }
 
     private fun reloadTasks() {
-        val list = _state.value.selectedListId
-        val tasks = if (list == null) emptyList() else run { store.tasks(list) } ?: return
+        val tasks = run { store.tasks(_state.value.selectedListId) } ?: return
         _state.update { it.copy(rows = flatten(tasks)) }
     }
-
-    /** Creates a list when there is none yet. TODO: a real Inbox must be a well-known node. */
-    private fun ensureInbox(): String? =
-        _state.value.lists.firstOrNull()?.id ?: run { store.createList("Inbox") }
 
     private fun <T> run(body: () -> T): T? =
         try {
             body()
         } catch (e: NotException) {
-            _state.update { it.copy(error = e.message) }
+            _state.update { it.copy(error = e.userMessage) }
             null
         }
 
-    companion object {
-        private const val KEY_URL = "url"
-        private const val KEY_TOKEN = "token"
+    private fun launchBusy(body: suspend () -> Unit) {
+        _state.update { it.copy(busy = true) }
+        viewModelScope.launch {
+            try {
+                body()
+            } catch (e: NotException) {
+                _state.update { it.copy(error = e.userMessage) }
+            } finally {
+                _state.update { it.copy(busy = false) }
+            }
+        }
+    }
 
+    companion object {
         /** Depth-first order: each task followed by its subtasks. */
         fun flatten(tasks: List<TaskItem>): List<TaskRow> {
             val children = tasks.groupBy { it.parentId }
@@ -142,3 +183,10 @@ class TasksViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 }
+
+private val NotException.userMessage: String
+    get() = when (this) {
+        is NotException.NotFound -> detail
+        is NotException.Invalid -> detail
+        is NotException.Internal -> detail
+    }

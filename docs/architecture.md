@@ -58,7 +58,7 @@ All data lives in Loro documents. Two kinds of doc:
 
 | Container | Type | Contents |
 |---|---|---|
-| `tasks` | `LoroTree` | Nodes are lists and tasks. List → task → subtask. Sibling order via Loro fractional index. Each node's meta map holds its fields (`kind`, `title`, `completed_at`, `priority`, `due`, `rrule`, …). |
+| `tasks` | `LoroTree` | Nodes are lists and tasks. List → task → subtask. Tasks at the root are in the **Inbox**, which is built in (id `inbox`) rather than a node, so two fresh devices can't each create one. Sibling order via Loro fractional index; move indexes count siblings of the same kind. Each node's meta map holds its fields (`kind`, `title`, `completed_at`, `priority`, `due`, `rrule`, …). |
 | `notes` | `LoroTree` (planned) | Folder → note-ref nodes. Meta holds `title`, `pinned`, `preview`, so note lists render without loading bodies. |
 | `habits` | `LoroMap` (planned) | Habit definitions: schedule, goal, unit. |
 | `habit_log` | `LoroMap` of `LoroCounter` (planned) | Key `habitId:YYYY-MM-DD` (local calendar date, never a timestamp). Counters sum concurrent check-ins. |
@@ -77,7 +77,8 @@ Each client keeps one SQLite file containing:
 - **Doc storage** — Loro snapshot + appended update blobs per doc, compacted periodically.
 - **Read model** — plain tables (`list`, `task`, later `note_meta`, `habit`, FTS5 indexes) projected from
   the docs. UI queries, widgets and Raycast read only these tables.
-- **Sync state** — pull cursor, per-doc version vector the server is known to have.
+- **Sync state** — pull cursor, per-doc version vector the server is known to have, and this device's
+  credentials (server URL, device id, token; see [ADR 0006](adr/0006-device-pairing.md)).
 
 The read model is a disposable cache: it can always be rebuilt from the docs.
 
@@ -99,18 +100,24 @@ extensions) read the read model and send writes to the app over IPC.
 
 ## Sync protocol
 
-The server is an append-only log of opaque updates with a global sequence number.
+The server is an append-only log of opaque updates with a global sequence number. Every endpoint but
+`/pair` needs `Authorization: Bearer <device token>`, which also tells the server who is calling.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/push` | Client sends `{device, updates: [{doc, data}]}`. Server appends each, returns last `seq`, pokes WebSocket listeners. |
-| `GET /v1/pull?since=<seq>` | Returns updates with `seq > since`, paged. Client imports them; importing a known update is a no-op. |
+| `POST /v1/push` | Client sends `{updates: [{doc, data}]}`. Server appends each, returns last `seq`, pokes WebSocket listeners. |
+| `GET /v1/pull?since=<seq>` | Returns other devices' updates with `seq > since`, paged. Client imports them; importing a known update is a no-op. |
 | `GET /v1/ws` | Server sends `{"seq": n}` after every push so clients pull immediately. |
+| `POST /v1/pair` | No token. Trades a one-time pairing code and a device name for a device token. |
+| `POST /v1/pairings` | Mints a pairing code for another device. |
+| `GET /v1/devices`, `DELETE /v1/devices/{id}` | List paired devices; revoke one. |
 
 Client sync loop (`LiveSync` in `not-core`): push (export updates since the server-known version vector)
 → pull (import since cursor) → advance cursor. Triggered by local commits (150 ms debounce), WebSocket
-pokes, app foreground (`sync_now`), and every 60 s as a safety net. Failures back off from 1 s to 30 s.
-The server sends its head on WebSocket connect, so a reconnect always catches up.
+pokes, app foreground (`sync_now`), and every 60 s as a safety net. Failures back off from 1 s to 30 s;
+a 401 (device revoked) pauses sync until the user pairs again. The server sends its head on WebSocket
+connect, so a reconnect always catches up. Pairing (again) resets the cursor and server version vector,
+so a new or reset server receives the full history.
 
 Client transport: `reqwest` + `tokio-tungstenite` over rustls with the ring provider and Mozilla's root
 store (`webpki-roots`). No platform verifier means no JNI setup on Android and no aws-lc cross-compile;
@@ -126,8 +133,10 @@ without changing the model.
 ## Server
 
 - One container: `not-server` binary + SQLite volume. Litestream optional for continuous backup.
-- Single user. Auth: admin secret from the environment; devices pair via QR code and get revocable
-  per-device tokens (spike uses one static bearer token).
+- Single user, no secrets in the environment. Devices pair with one-time codes and get revocable
+  per-device tokens (stored hashed). The first code comes from the CLI on the host
+  (`not-server pair`); paired devices mint more. See [ADR 0006](adr/0006-device-pairing.md).
+- CLI: `not-server [serve]`, `pair`, `devices`, `revoke <id>`.
 - Runs behind the user's reverse proxy or Tailscale; TLS is terminated there.
 
 ## Reminders and notifications
@@ -160,10 +169,11 @@ an IndexedDB cache. Online-first; no parity goal.
 | Phase | Scope |
 |---|---|
 | P0 spike ✅ | core (tasks in Loro + read model), relay server, live sync, uniffi → minimal SwiftUI + Compose apps, verified Mac ⇄ Android end to end incl. offline edits |
+| P0.5 ✅ | Built-in Inbox, device pairing with per-device tokens, revocation |
 | P1 | Quick-add parser, recurrence, reminders, hotkey panel, Raycast, Android widgets |
 | P2 | Notes: per-note docs, markdown editors (biggest UX effort) |
 | P3 | Habits |
-| P4 | Web companion, TickTick CSV import, compaction, device pairing |
+| P4 | Web companion, TickTick CSV import, compaction, QR pairing |
 
 ## Decision records
 

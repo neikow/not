@@ -1,72 +1,159 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use not_core::{LiveSync, Store, SyncClient};
+use not_core::{Credentials, Error, INBOX, LiveSync, Store, SyncClient, SyncStatus};
 use not_protocol::Poke;
+use not_server::AppState;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-const TOKEN: &str = "test-token-test-token-test-token";
+struct Server {
+    base: String,
+    state: AppState,
+}
 
-async fn serve() -> String {
-    let state = not_server::AppState::in_memory(TOKEN).unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, not_server::router(state)).await.unwrap() });
-    format!("http://{addr}")
+impl Server {
+    async fn start() -> Self {
+        let state = AppState::in_memory().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = not_server::router(state.clone());
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        Self {
+            base: format!("http://{addr}"),
+            state,
+        }
+    }
+
+    /// Pairs like a new device would, with a code from `not-server pair`.
+    async fn pair(&self, name: &str) -> Credentials {
+        let code = self.state.create_pairing_code().unwrap();
+        SyncClient::pair(&self.base, &code.code, name).await.unwrap()
+    }
+
+    async fn client(&self, name: &str) -> SyncClient {
+        SyncClient::from_credentials(&self.pair(name).await)
+    }
 }
 
 #[tokio::test]
 async fn two_devices_converge_through_server() {
-    let base = serve().await;
-    let client = SyncClient::new(&base, TOKEN);
+    let server = Server::start().await;
+    let mac_client = server.client("Mac").await;
+    let phone_client = server.client("Phone").await;
     let mac = Store::open_in_memory().unwrap();
     let phone = Store::open_in_memory().unwrap();
 
-    let inbox = mac.create_list("Inbox").unwrap();
-    let milk = mac.add_task(&inbox, "milk").unwrap();
-    let report = client.sync(&mac).await.unwrap();
+    let milk = mac.add_task(INBOX, "milk").unwrap();
+    let report = mac_client.sync(&mac).await.unwrap();
     assert!(report.pushed);
     assert_eq!(report.pulled, 0, "own updates are not echoed back");
 
-    client.sync(&phone).await.unwrap();
-    assert_eq!(phone.tasks(&inbox).unwrap(), mac.tasks(&inbox).unwrap());
+    phone_client.sync(&phone).await.unwrap();
+    assert_eq!(phone.tasks(INBOX).unwrap(), mac.tasks(INBOX).unwrap());
 
     mac.rename(&milk, "oat milk").unwrap();
     phone.set_completed(&milk, true).unwrap();
-    client.sync(&mac).await.unwrap();
-    client.sync(&phone).await.unwrap();
-    client.sync(&mac).await.unwrap();
+    mac_client.sync(&mac).await.unwrap();
+    phone_client.sync(&phone).await.unwrap();
+    mac_client.sync(&mac).await.unwrap();
 
-    let tasks = mac.tasks(&inbox).unwrap();
-    assert_eq!(tasks, phone.tasks(&inbox).unwrap());
+    let tasks = mac.tasks(INBOX).unwrap();
+    assert_eq!(tasks, phone.tasks(INBOX).unwrap());
     assert_eq!(tasks[0].title, "oat milk");
     assert!(tasks[0].completed_at.is_some());
 
     // Nothing left to exchange.
-    let idle = client.sync(&phone).await.unwrap();
+    let idle = phone_client.sync(&phone).await.unwrap();
     assert!(!idle.pushed);
     assert_eq!(idle.pulled, 0);
 }
 
 #[tokio::test]
-async fn rejects_wrong_token() {
-    let base = serve().await;
+async fn pairing_codes_are_single_use() {
+    let server = Server::start().await;
+    let code = server.state.create_pairing_code().unwrap();
+    assert_eq!(code.code.len(), 11, "XXXXX-XXXXX");
+
+    let mac = SyncClient::pair(&server.base, &code.code.to_lowercase(), "  Mac  ")
+        .await
+        .unwrap();
+    assert_eq!(mac.device_name, "Mac");
+    assert_eq!(mac.server_url, server.base);
+
+    let reused = SyncClient::pair(&server.base, &code.code, "Phone")
+        .await
+        .unwrap_err();
+    assert!(matches!(reused, Error::Invalid(_)), "{reused}");
+    let wrong = SyncClient::pair(&server.base, "00000-00000", "Phone")
+        .await
+        .unwrap_err();
+    assert!(matches!(wrong, Error::Invalid(_)), "{wrong}");
+    let bad_url = SyncClient::pair("example.com", &code.code, "Phone")
+        .await
+        .unwrap_err();
+    assert!(matches!(bad_url, Error::Invalid(_)), "{bad_url}");
+
+    // A paired device can hand out codes too.
+    let code = SyncClient::from_credentials(&mac)
+        .create_pairing_code()
+        .await
+        .unwrap();
+    let phone = SyncClient::pair(&server.base, &code.code, "Phone").await.unwrap();
+    assert_ne!(phone.device_id, mac.device_id);
+    assert_ne!(phone.token, mac.token);
+}
+
+#[tokio::test]
+async fn rejects_unknown_token() {
+    let server = Server::start().await;
     let store = Store::open_in_memory().unwrap();
-    store.create_list("Inbox").unwrap();
-    let err = SyncClient::new(&base, "nope").sync(&store).await.unwrap_err();
-    assert!(matches!(err, not_core::Error::Status(401)), "{err}");
+    store.add_task(INBOX, "x").unwrap();
+    let err = SyncClient::new(&server.base, "nope")
+        .sync(&store)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Unauthorized), "{err}");
+}
+
+#[tokio::test]
+async fn revoked_devices_lose_access() {
+    let server = Server::start().await;
+    let mac = server.pair("Mac").await;
+    let phone = server.client("Phone").await;
+
+    let names: Vec<String> = phone
+        .devices()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    assert_eq!(names, ["Mac", "Phone"]);
+
+    phone.revoke(mac.device_id).await.unwrap();
+    let store = Store::open_in_memory().unwrap();
+    store.add_task(INBOX, "x").unwrap();
+    let err = SyncClient::from_credentials(&mac).sync(&store).await.unwrap_err();
+    assert!(matches!(err, Error::Unauthorized), "{err}");
+    assert_eq!(phone.devices().await.unwrap().len(), 1);
+    assert!(matches!(
+        phone.revoke(mac.device_id).await,
+        Err(Error::NotFound(_))
+    ));
 }
 
 #[tokio::test]
 async fn websocket_pokes_on_push() {
-    let base = serve().await;
-    let mut request = format!("{}/v1/ws", base.replace("http", "ws"))
+    let server = Server::start().await;
+    let credentials = server.pair("Mac").await;
+    let mut request = format!("{}/v1/ws", server.base.replace("http", "ws"))
         .into_client_request()
         .unwrap();
-    request
-        .headers_mut()
-        .insert("authorization", format!("Bearer {TOKEN}").parse().unwrap());
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {}", credentials.token).parse().unwrap(),
+    );
     let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
 
     let next_poke = async |socket: &mut tokio_tungstenite::WebSocketStream<_>| -> Poke {
@@ -80,27 +167,49 @@ async fn websocket_pokes_on_push() {
     assert_eq!(next_poke(&mut socket).await, Poke { seq: 0 }, "head on connect");
 
     let store = Store::open_in_memory().unwrap();
-    store.create_list("Inbox").unwrap();
-    SyncClient::new(&base, TOKEN).sync(&store).await.unwrap();
+    store.add_task(INBOX, "x").unwrap();
+    server.client("Phone").await.sync(&store).await.unwrap();
     assert_eq!(next_poke(&mut socket).await, Poke { seq: 1 });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_sync_propagates_both_ways() {
-    let base = serve().await;
+    let server = Server::start().await;
     let runtime = tokio::runtime::Handle::current();
     let mac = Arc::new(Store::open_in_memory().unwrap());
     let phone = Arc::new(Store::open_in_memory().unwrap());
-    let _mac_sync = LiveSync::start(&runtime, mac.clone(), SyncClient::new(&base, TOKEN), |_| {});
-    let _phone_sync = LiveSync::start(&runtime, phone.clone(), SyncClient::new(&base, TOKEN), |_| {});
+    let _mac_sync = LiveSync::start(&runtime, mac.clone(), server.client("Mac").await, |_| {});
+    let _phone_sync = LiveSync::start(&runtime, phone.clone(), server.client("Phone").await, |_| {});
 
-    let inbox = mac.create_list("Inbox").unwrap();
-    mac.add_task(&inbox, "milk").unwrap();
-    wait_until(|| phone.tasks(&inbox).unwrap().len() == 1).await;
+    mac.add_task(INBOX, "milk").unwrap();
+    wait_until(|| phone.tasks(INBOX).unwrap().len() == 1).await;
 
-    let milk = phone.tasks(&inbox).unwrap()[0].id.clone();
+    let milk = phone.tasks(INBOX).unwrap()[0].id.clone();
     phone.set_completed(&milk, true).unwrap();
-    wait_until(|| mac.tasks(&inbox).unwrap()[0].completed_at.is_some()).await;
+    wait_until(|| mac.tasks(INBOX).unwrap()[0].completed_at.is_some()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_sync_reports_revocation() {
+    let server = Server::start().await;
+    let runtime = tokio::runtime::Handle::current();
+    let credentials = server.pair("Mac").await;
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    let last = Arc::new(Mutex::new(None));
+    let live = LiveSync::start(
+        &runtime,
+        store.clone(),
+        SyncClient::from_credentials(&credentials),
+        {
+            let last = last.clone();
+            move |status| *last.lock().unwrap() = Some(status)
+        },
+    );
+    wait_until(|| *last.lock().unwrap() == Some(SyncStatus::Synced)).await;
+
+    assert!(server.state.revoke(credentials.device_id).unwrap());
+    live.sync_now();
+    wait_until(|| *last.lock().unwrap() == Some(SyncStatus::Unauthorized)).await;
 }
 
 async fn wait_until(condition: impl Fn() -> bool) {

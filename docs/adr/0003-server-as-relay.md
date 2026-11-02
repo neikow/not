@@ -7,8 +7,8 @@ With CRDTs the server does not need to merge. A self-hosted single-user server s
 
 ## Decision
 `not-server` (Rust, axum) stores an append-only log of `(seq, doc, device, bytes)` in SQLite, serves
-`push`/`pull`/`ws`, and hosts the web app. It never decodes the bytes. Compaction is driven by clients
-uploading snapshots.
+`push`/`pull`/`ws` (plus device pairing, [0006](0006-device-pairing.md)), and hosts the web app. It
+never decodes the bytes. Compaction is driven by clients uploading snapshots.
 
 ## Consequences
 - One small container + one SQLite file to back up.

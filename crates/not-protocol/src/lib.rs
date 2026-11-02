@@ -1,6 +1,7 @@
 //! Wire types shared by `not-core` (client) and `not-server`.
 //!
-//! The server treats `data` as opaque bytes: it never decodes Loro updates.
+//! The server treats `data` as opaque bytes: it never decodes Loro updates. Every endpoint except
+//! `/pair` needs `Authorization: Bearer <device token>`; the server knows which device is calling.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +12,6 @@ pub const API_PREFIX: &str = "/v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushRequest {
-    /// Stable id of the pushing device; lets the server skip echoing updates back.
-    pub device: String,
     pub updates: Vec<DocUpdate>,
 }
 
@@ -33,15 +32,13 @@ pub struct PushResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullQuery {
     pub since: Seq,
-    /// Updates pushed by this device are omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullResponse {
+    /// Updates pushed by the calling device are omitted.
     pub updates: Vec<LoggedUpdate>,
     /// Cursor to resume from. Can be ahead of the last returned update when updates were skipped.
     pub seq: Seq,
@@ -60,6 +57,41 @@ pub struct LoggedUpdate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Poke {
     pub seq: Seq,
+}
+
+/// `POST /pair` (no token): trades a one-time pairing code for a device token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairRequest {
+    /// As shown to the user, e.g. `7KQ2M-X9CHD`. Case, dashes and spaces don't matter.
+    pub code: String,
+    /// Shown in the device list, e.g. "MacBook Air".
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairResponse {
+    pub device: DeviceInfo,
+    /// Secret bearer token for this device. The server only keeps its hash.
+    pub token: String,
+}
+
+/// `POST /pairings`: a fresh code another device can pair with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingCode {
+    pub code: String,
+    /// Unix millis.
+    pub expires_at: i64,
+}
+
+/// `GET /devices` returns all paired devices; `DELETE /devices/{id}` revokes one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub id: i64,
+    pub name: String,
+    /// Unix millis.
+    pub created_at: i64,
+    /// Unix millis; updated at most once a minute.
+    pub last_seen_at: Option<i64>,
 }
 
 mod b64 {

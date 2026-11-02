@@ -1,12 +1,21 @@
 //! uniffi surface of `not-core` for the Swift (macOS) and Kotlin (Android) apps.
 //!
 //! Naming avoids Swift's `Task`: records are `TaskList` / `TaskItem`.
+//!
+//! Network calls are `async` (Swift `async`, Kotlin `suspend`). They run on the store's own tokio
+//! runtime; the foreign side only awaits the result.
 
 use std::sync::{Arc, Mutex};
 
-use not_core::{LiveSync, Store, SyncClient, SyncStatus};
+use not_core::{Credentials, LiveSync, Store, SyncClient, SyncStatus};
 
 uniffi::setup_scaffolding!();
+
+/// Id of the built-in Inbox list: always first in `lists()`, can't be renamed or deleted.
+#[uniffi::export]
+pub fn inbox_id() -> String {
+    not_core::INBOX.into()
+}
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 // Variant fields can't be called `message`: it would clash with Kotlin's `Throwable.message`.
@@ -51,7 +60,39 @@ pub struct TaskItem {
 pub enum SyncState {
     Syncing,
     Synced,
-    Offline { reason: String },
+    Offline {
+        reason: String,
+    },
+    /// The server rejected this device (revoked or server reset). Pair again.
+    Unauthorized,
+}
+
+/// The pairing of this device. The token never leaves the core.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SyncInfo {
+    pub server_url: String,
+    pub device_id: i64,
+    pub device_name: String,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PairingCode {
+    /// Formatted for display, e.g. `7KQ2M-X9CHD`.
+    pub code: String,
+    /// Unix millis.
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Device {
+    pub id: i64,
+    pub name: String,
+    /// Unix millis.
+    pub created_at: i64,
+    /// Unix millis.
+    pub last_seen_at: Option<i64>,
+    /// This device.
+    pub is_current: bool,
 }
 
 /// Implemented by the app. Called from background threads: hop to the UI thread yourself.
@@ -105,10 +146,6 @@ impl NotStore {
 
     pub fn set_observer(&self, observer: Arc<dyn StoreObserver>) {
         *self.observer.lock().unwrap() = Some(observer);
-    }
-
-    pub fn device_id(&self) -> String {
-        self.store.device_id().to_owned()
     }
 
     // ---- commands ----
@@ -169,21 +206,30 @@ impl NotStore {
 
     // ---- sync ----
 
-    /// Starts (or restarts with new settings) background sync with the server.
-    pub fn start_sync(&self, server_url: String, token: String) {
+    /// `None` until this device is paired.
+    pub fn sync_info(&self) -> Result<Option<SyncInfo>, NotError> {
+        Ok(self.store.credentials()?.as_ref().map(SyncInfo::from))
+    }
+
+    /// Starts (or restarts) background sync if this device is paired. Call once at launch.
+    pub fn start_sync(&self) -> Result<(), NotError> {
         let mut live = self.live.lock().unwrap();
         live.take();
+        let Some(credentials) = self.store.credentials()? else {
+            return Ok(());
+        };
         let observer = self.observer.clone();
         *live = Some(LiveSync::start(
             self.runtime.handle(),
             self.store.clone(),
-            SyncClient::new(&server_url, &token),
+            SyncClient::from_credentials(&credentials),
             move |status| {
                 if let Some(o) = current(&observer) {
                     o.on_sync_state(status.into());
                 }
             },
         ));
+        Ok(())
     }
 
     pub fn stop_sync(&self) {
@@ -196,6 +242,108 @@ impl NotStore {
             live.sync_now();
         }
     }
+
+    // ---- pairing ----
+
+    /// Pairs with a server using a code from `not-server pair` or another device's "Add device",
+    /// then starts syncing. Replaces any previous pairing; local data is kept and merged.
+    pub async fn pair(
+        &self,
+        server_url: String,
+        code: String,
+        device_name: String,
+    ) -> Result<SyncInfo, NotError> {
+        let credentials = self
+            .on_runtime(async move { SyncClient::pair(&server_url, &code, &device_name).await })
+            .await?;
+        self.stop_sync();
+        self.store.set_credentials(&credentials)?;
+        self.start_sync()?;
+        Ok(SyncInfo::from(&credentials))
+    }
+
+    /// Stops syncing and forgets the pairing. Local data stays. Also revokes this device on the
+    /// server when reachable; otherwise revoke it later from another device.
+    pub async fn unpair(&self) -> Result<(), NotError> {
+        self.stop_sync();
+        if let Some(credentials) = self.store.credentials()? {
+            let client = SyncClient::from_credentials(&credentials);
+            let _ = self
+                .on_runtime(async move { client.revoke(credentials.device_id).await })
+                .await;
+        }
+        Ok(self.store.clear_credentials()?)
+    }
+
+    /// A one-time code (valid 10 minutes) for pairing another device.
+    pub async fn create_pairing_code(&self) -> Result<PairingCode, NotError> {
+        let client = SyncClient::from_credentials(&self.paired()?);
+        let code = self
+            .on_runtime(async move { client.create_pairing_code().await })
+            .await?;
+        Ok(PairingCode {
+            code: code.code,
+            expires_at: code.expires_at,
+        })
+    }
+
+    pub async fn devices(&self) -> Result<Vec<Device>, NotError> {
+        let credentials = self.paired()?;
+        let client = SyncClient::from_credentials(&credentials);
+        let devices = self.on_runtime(async move { client.devices().await }).await?;
+        Ok(devices
+            .into_iter()
+            .map(|d| Device {
+                is_current: d.id == credentials.device_id,
+                id: d.id,
+                name: d.name,
+                created_at: d.created_at,
+                last_seen_at: d.last_seen_at,
+            })
+            .collect())
+    }
+
+    /// Unpairs another device. Revoking this device is the same as [`Self::unpair`].
+    pub async fn revoke_device(&self, id: i64) -> Result<(), NotError> {
+        let credentials = self.paired()?;
+        if id == credentials.device_id {
+            return self.unpair().await;
+        }
+        let client = SyncClient::from_credentials(&credentials);
+        self.on_runtime(async move { client.revoke(id).await }).await
+    }
+}
+
+impl NotStore {
+    fn paired(&self) -> Result<Credentials, NotError> {
+        self.store.credentials()?.ok_or_else(|| NotError::Invalid {
+            detail: "this device isn't paired with a server".into(),
+        })
+    }
+
+    /// Runs `work` on the store's runtime (reqwest needs tokio). The returned future doesn't, so
+    /// the Swift/Kotlin executors can poll it.
+    async fn on_runtime<T: Send + 'static>(
+        &self,
+        work: impl Future<Output = not_core::Result<T>> + Send + 'static,
+    ) -> Result<T, NotError> {
+        match self.runtime.spawn(work).await {
+            Ok(result) => Ok(result?),
+            Err(e) => Err(NotError::Internal {
+                detail: e.to_string(),
+            }),
+        }
+    }
+}
+
+impl From<&Credentials> for SyncInfo {
+    fn from(c: &Credentials) -> Self {
+        Self {
+            server_url: c.server_url.clone(),
+            device_id: c.device_id,
+            device_name: c.device_name.clone(),
+        }
+    }
 }
 
 impl From<SyncStatus> for SyncState {
@@ -204,6 +352,7 @@ impl From<SyncStatus> for SyncState {
             SyncStatus::Syncing => Self::Syncing,
             SyncStatus::Synced => Self::Synced,
             SyncStatus::Offline(reason) => Self::Offline { reason },
+            SyncStatus::Unauthorized => Self::Unauthorized,
         }
     }
 }

@@ -14,6 +14,11 @@ use crate::{Error, Result, storage};
 pub const WORKSPACE: &str = "workspace";
 const TASKS_TREE: &str = "tasks";
 
+/// Id of the built-in Inbox list. It isn't a node: tasks at the root of the tree are in the Inbox,
+/// so there is nothing to create and two fresh devices can't end up with an Inbox each.
+pub const INBOX: &str = "inbox";
+const INBOX_TITLE: &str = "Inbox";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct List {
     pub id: String,
@@ -54,7 +59,6 @@ pub struct Store {
     tasks: LoroTree,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
-    pub(crate) device_id: String,
     listeners: Mutex<Vec<(ListenerId, Listener)>>,
     next_listener: AtomicU64,
     _subscription: Subscription,
@@ -94,14 +98,6 @@ impl Store {
         if storage::ensure_read_model(&tx)? {
             projection::rebuild(&tasks, &tx)?;
         }
-        let device_id = match storage::kv_get(&tx, "device_id")? {
-            Some(id) => String::from_utf8(id).map_err(|e| Error::Invalid(e.to_string()))?,
-            None => {
-                let id = format!("{:016x}", doc.peer_id());
-                storage::kv_set(&tx, "device_id", id.as_bytes())?;
-                id
-            }
-        };
         let server_vv = storage::kv_get(&tx, SERVER_VV_KEY)?
             .map(|b| VersionVector::decode(&b))
             .transpose()?
@@ -127,7 +123,6 @@ impl Store {
             doc,
             tasks,
             dirty,
-            device_id,
             listeners: Mutex::default(),
             next_listener: AtomicU64::new(0),
             _subscription: subscription,
@@ -147,10 +142,10 @@ impl Store {
         })
     }
 
-    /// Adds a task at the end of `parent`, which is a list or (for a subtask) a task.
+    /// Adds a task at the end of `parent`: a list, [`INBOX`], or a task (for a subtask).
     pub fn add_task(&self, parent: &str, title: &str) -> Result<String> {
         let title = clean_title(title)?;
-        let parent = self.node(parent, &[KIND_LIST, KIND_TASK])?;
+        let parent = self.container(parent)?;
         self.write(|tree| {
             let id = tree.create(parent)?;
             let meta = tree.get_meta(id)?;
@@ -179,16 +174,17 @@ impl Store {
         })
     }
 
-    /// Moves a task under `parent` (a list or a task) at `index` among its siblings.
+    /// Moves a task under `parent` (a list, [`INBOX`] or a task) to `index` among its sibling tasks.
     pub fn move_task(&self, id: &str, parent: &str, index: usize) -> Result<()> {
         let id = self.node(id, &[KIND_TASK])?;
-        let parent = self.node(parent, &[KIND_LIST, KIND_TASK])?;
-        self.write(|tree| Ok(tree.mov_to(id, parent, index)?))
+        let parent = self.container(parent)?;
+        self.write(|tree| place(tree, id, parent, KIND_TASK, index))
     }
 
+    /// Moves a list to `index` among the other lists. The Inbox always comes first.
     pub fn move_list(&self, id: &str, index: usize) -> Result<()> {
         let id = self.node(id, &[KIND_LIST])?;
-        self.write(|tree| Ok(tree.mov_to(id, TreeParentId::Root, index)?))
+        self.write(|tree| place(tree, id, TreeParentId::Root, KIND_LIST, index))
     }
 
     /// Deletes a list or task together with everything under it.
@@ -199,6 +195,7 @@ impl Store {
 
     // ---- queries (read model) -------------------------------------------------------------
 
+    /// The Inbox, then the user's lists in order.
     pub fn lists(&self) -> Result<Vec<List>> {
         let inner = self.lock();
         let mut stmt = inner
@@ -210,10 +207,17 @@ impl Store {
                 title: r.get(1)?,
             })
         })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let mut lists = vec![List {
+            id: INBOX.into(),
+            title: INBOX_TITLE.into(),
+        }];
+        for row in rows {
+            lists.push(row?);
+        }
+        Ok(lists)
     }
 
-    /// All tasks of a list, top-level first, each level in user order.
+    /// All tasks of a list (or [`INBOX`]), top-level first, each level in user order.
     pub fn tasks(&self, list_id: &str) -> Result<Vec<Task>> {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(
@@ -298,7 +302,20 @@ impl Store {
         Ok(true)
     }
 
+    /// Where tasks can go: the Inbox (the tree root), a list, or a task.
+    fn container(&self, id: &str) -> Result<TreeParentId> {
+        if id == INBOX {
+            return Ok(TreeParentId::Root);
+        }
+        Ok(TreeParentId::Node(self.node(id, &[KIND_LIST, KIND_TASK])?))
+    }
+
     fn node(&self, id: &str, kinds: &[&str]) -> Result<TreeID> {
+        if id == INBOX {
+            return Err(Error::Invalid(
+                "the Inbox is built in and can't be changed".into(),
+            ));
+        }
         let tree_id = TreeID::try_from(id).map_err(|_| Error::Invalid(format!("bad id {id:?}")))?;
         if !projection::is_alive(&self.tasks, tree_id) {
             return Err(Error::NotFound(id.to_owned()));
@@ -313,6 +330,23 @@ impl Store {
 }
 
 pub(crate) const SERVER_VV_KEY: &str = "server_vv:workspace";
+
+/// Moves `id` under `parent` so that it ends up at `index` among siblings of the same kind. The root
+/// holds both lists and Inbox tasks, so a plain child index would count the other kind too.
+fn place(tree: &LoroTree, id: TreeID, parent: TreeParentId, kind: &str, index: usize) -> Result<()> {
+    let siblings: Vec<TreeID> = tree
+        .children(parent)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|&s| s != id && projection::kind(tree, s).as_deref() == Some(kind))
+        .collect();
+    match (siblings.get(index), siblings.last()) {
+        (Some(&next), _) => tree.mov_before(id, next)?,
+        (None, Some(&last)) => tree.mov_after(id, last)?,
+        (None, None) => tree.mov(id, parent)?,
+    }
+    Ok(())
+}
 
 fn clean_title(title: &str) -> Result<String> {
     let title = title.trim();

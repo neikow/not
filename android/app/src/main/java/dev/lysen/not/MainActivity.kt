@@ -36,14 +36,14 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Debug builds only, for scripted testing:
-     * `adb shell am start -n dev.lysen.not/.MainActivity --es server URL --es token T --es add TITLE`.
-     * Never honoured in release builds: any app could otherwise point sync at another server.
+     * `adb shell am start -n dev.lysen.not/.MainActivity --es server URL --es code CODE --es add TITLE`.
+     * Never honoured in release builds: any app could otherwise pair this device with its own server.
      */
     private fun handleDevIntent(intent: Intent) {
         if (!BuildConfig.DEBUG) return
         val server = intent.getStringExtra("server")
-        val token = intent.getStringExtra("token")
-        if (server != null && token != null) viewModel.connect(server, token)
+        val code = intent.getStringExtra("code")
+        if (server != null && code != null) viewModel.pair(server, code, viewModel.defaultDeviceName)
         intent.getStringExtra("add")?.let(viewModel::addTask)
     }
 }

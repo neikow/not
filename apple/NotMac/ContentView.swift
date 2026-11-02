@@ -8,8 +8,11 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $model.selectedListID) {
+                if let inbox = model.inbox {
+                    Label(inbox.title, systemImage: "tray").tag(inbox.id)
+                }
                 Section("Lists") {
-                    ForEach(model.lists, id: \.id) { list in
+                    ForEach(model.userLists, id: \.id) { list in
                         Label(list.title, systemImage: "list.bullet")
                             .tag(list.id)
                             .contextMenu {
@@ -102,13 +105,16 @@ private struct SyncBadge: View {
     var body: some View {
         switch state {
         case nil:
-            Image(systemName: "icloud.slash").help("Sync is off — set a server in Settings (⌘,)")
+            Image(systemName: "icloud.slash").help("Not paired — pair with a server in Settings (⌘,)")
         case .syncing:
             Image(systemName: "arrow.triangle.2.circlepath.icloud").help("Syncing…")
         case .synced:
             Image(systemName: "checkmark.icloud").help("Up to date")
         case let .offline(reason):
             Image(systemName: "exclamationmark.icloud").foregroundStyle(.orange).help("Offline: \(reason)")
+        case .unauthorized:
+            Image(systemName: "xmark.icloud").foregroundStyle(.red)
+                .help("The server no longer accepts this Mac — pair again in Settings (⌘,)")
         }
     }
 }

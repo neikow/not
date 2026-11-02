@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::Result;
 
 /// Bump when the read-model tables change; a mismatch triggers a full rebuild from the docs.
-pub const READ_MODEL_VERSION: i64 = 1;
+pub const READ_MODEL_VERSION: i64 = 2;
 
 /// Local update rows per doc before they are folded into a snapshot on open.
 const COMPACT_AFTER: i64 = 200;
@@ -110,6 +110,11 @@ pub fn kv_get(db: &Connection, key: &str) -> Result<Option<Vec<u8>>> {
     Ok(db
         .query_row("SELECT value FROM kv WHERE key = ?1", [key], |r| r.get(0))
         .optional()?)
+}
+
+pub fn kv_delete(db: &Connection, key: &str) -> Result<()> {
+    db.execute("DELETE FROM kv WHERE key = ?1", [key])?;
+    Ok(())
 }
 
 pub fn kv_set(db: &Connection, key: &str, value: &[u8]) -> Result<()> {

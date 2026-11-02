@@ -7,7 +7,7 @@ mod store;
 mod sync;
 
 pub use error::{Error, Result};
-pub use store::{ChangeOrigin, List, ListenerId, Store, Task, WORKSPACE};
-pub use sync::Outgoing;
+pub use store::{ChangeOrigin, INBOX, List, ListenerId, Store, Task, WORKSPACE};
+pub use sync::{Credentials, Outgoing};
 #[cfg(feature = "net")]
-pub use sync::{LiveSync, SyncClient, SyncReport, SyncStatus};
+pub use sync::{DeviceInfo, LiveSync, PairingCode, SyncClient, SyncReport, SyncStatus};

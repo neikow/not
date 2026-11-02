@@ -1,12 +1,38 @@
 //! Transport-agnostic sync state on [`Store`], plus an HTTP client behind the `net` feature.
 
+use std::fmt;
+
 use loro::{ExportMode, VersionVector};
 use not_protocol::{DocUpdate, PullResponse, PushRequest, Seq};
+use serde::{Deserialize, Serialize};
 
 use crate::store::{ChangeOrigin, Inner, SERVER_VV_KEY, WORKSPACE};
 use crate::{Error, Result, Store, storage};
 
 const PULL_SEQ_KEY: &str = "pull_seq";
+const CREDENTIALS_KEY: &str = "sync_credentials";
+
+/// What a paired device needs to reach its server. Stored in the local database next to the replica
+/// it belongs to, so wiping the database also unpairs (see `docs/adr/0006-device-pairing.md`).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Credentials {
+    pub server_url: String,
+    pub token: String,
+    /// Server-assigned id, as listed by `GET /devices`.
+    pub device_id: i64,
+    pub device_name: String,
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Credentials")
+            .field("server_url", &self.server_url)
+            .field("token", &"<redacted>")
+            .field("device_id", &self.device_id)
+            .field("device_name", &self.device_name)
+            .finish()
+    }
+}
 
 /// Updates ready to push. Pass back to [`Store::ack_push`] once the server accepted them.
 #[derive(Debug)]
@@ -16,8 +42,31 @@ pub struct Outgoing {
 }
 
 impl Store {
-    pub fn device_id(&self) -> &str {
-        &self.device_id
+    pub fn credentials(&self) -> Result<Option<Credentials>> {
+        let inner = self.lock();
+        storage::kv_get(&inner.db, CREDENTIALS_KEY)?
+            .map(|json| serde_json::from_slice(&json).map_err(|e| Error::Invalid(e.to_string())))
+            .transpose()
+    }
+
+    /// Saves credentials from a new pairing and forgets what the previous server had: it may be a
+    /// different or reset server, so the next sync pushes all history and pulls from the start.
+    /// Re-sending ops a server already has is harmless. Stop any [`LiveSync`] on this store first.
+    pub fn set_credentials(&self, credentials: &Credentials) -> Result<()> {
+        let json = serde_json::to_vec(credentials).map_err(|e| Error::Invalid(e.to_string()))?;
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let tx = inner.db.transaction()?;
+        storage::kv_set(&tx, CREDENTIALS_KEY, &json)?;
+        storage::kv_delete(&tx, SERVER_VV_KEY)?;
+        storage::kv_delete(&tx, PULL_SEQ_KEY)?;
+        tx.commit()?;
+        inner.server_vv = VersionVector::default();
+        Ok(())
+    }
+
+    pub fn clear_credentials(&self) -> Result<()> {
+        storage::kv_delete(&self.lock().db, CREDENTIALS_KEY)
     }
 
     /// Everything the server doesn't have yet, or `None` when it is up to date.
@@ -30,7 +79,6 @@ impl Store {
         let data = self.doc.export(ExportMode::updates(&inner.server_vv))?;
         Ok(Some(Outgoing {
             request: PushRequest {
-                device: self.device_id.clone(),
                 updates: vec![DocUpdate {
                     doc: WORKSPACE.into(),
                     data,
@@ -103,6 +151,8 @@ fn covers(a: &VersionVector, b: &VersionVector) -> bool {
 
 #[cfg(feature = "net")]
 pub use client::{LiveSync, SyncClient, SyncReport, SyncStatus};
+#[cfg(feature = "net")]
+pub use not_protocol::{DeviceInfo, PairingCode};
 
 #[cfg(feature = "net")]
 mod client {
@@ -110,7 +160,10 @@ mod client {
     use std::time::{Duration, Instant};
 
     use futures_util::StreamExt;
-    use not_protocol::{API_PREFIX, PullQuery, PullResponse, PushResponse};
+    use not_protocol::{
+        API_PREFIX, DeviceInfo, PairRequest, PairResponse, PairingCode, PullQuery, PullResponse, PushResponse,
+    };
+    use reqwest::StatusCode;
     use tokio::sync::Notify;
     use tokio::task::JoinHandle;
     use tokio_tungstenite::Connector;
@@ -118,6 +171,7 @@ mod client {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::http::HeaderValue;
 
+    use super::Credentials;
     use crate::{ChangeOrigin, Error, ListenerId, Result, Store};
 
     /// Coalesces bursts of local edits (typing, drag reorders) into one push.
@@ -139,6 +193,9 @@ mod client {
         Syncing,
         Synced,
         Offline(String),
+        /// The server no longer accepts this device's token (revoked, or the server was reset).
+        /// Sync pauses until the next local change or [`LiveSync::sync_now`]; pair again to fix.
+        Unauthorized,
     }
 
     #[derive(Clone)]
@@ -166,6 +223,77 @@ mod client {
             }
         }
 
+        pub fn from_credentials(credentials: &Credentials) -> Self {
+            Self::new(&credentials.server_url, &credentials.token)
+        }
+
+        /// Trades a pairing code (from `not-server pair` or another device) for credentials.
+        /// Doesn't touch any store: save them with [`Store::set_credentials`].
+        pub async fn pair(server_url: &str, code: &str, device_name: &str) -> Result<Credentials> {
+            let server_url = server_url.trim().trim_end_matches('/');
+            if !(server_url.starts_with("https://") || server_url.starts_with("http://")) {
+                return Err(Error::Invalid(
+                    "server URL must start with https:// or http://".into(),
+                ));
+            }
+            let client = Self::new(server_url, "");
+            let response = client
+                .http
+                .post(format!("{}/pair", client.base))
+                .json(&PairRequest {
+                    code: code.to_owned(),
+                    name: device_name.to_owned(),
+                })
+                .send()
+                .await?;
+            if response.status() == StatusCode::UNAUTHORIZED {
+                return Err(Error::Invalid("pairing code is wrong, used or expired".into()));
+            }
+            let paired: PairResponse = checked(response)?.json().await?;
+            Ok(Credentials {
+                server_url: server_url.to_owned(),
+                token: paired.token,
+                device_id: paired.device.id,
+                device_name: paired.device.name,
+            })
+        }
+
+        /// A one-time code for pairing another device with this server.
+        pub async fn create_pairing_code(&self) -> Result<PairingCode> {
+            let response = self
+                .http
+                .post(format!("{}/pairings", self.base))
+                .bearer_auth(&self.token)
+                .send()
+                .await?;
+            Ok(checked(response)?.json().await?)
+        }
+
+        pub async fn devices(&self) -> Result<Vec<DeviceInfo>> {
+            let response = self
+                .http
+                .get(format!("{}/devices", self.base))
+                .bearer_auth(&self.token)
+                .send()
+                .await?;
+            Ok(checked(response)?.json().await?)
+        }
+
+        /// Unpairs a device (possibly this one); its token stops working immediately.
+        pub async fn revoke(&self, device_id: i64) -> Result<()> {
+            let response = self
+                .http
+                .delete(format!("{}/devices/{device_id}", self.base))
+                .bearer_auth(&self.token)
+                .send()
+                .await?;
+            if response.status() == StatusCode::NOT_FOUND {
+                return Err(Error::NotFound(format!("device {device_id}")));
+            }
+            checked(response)?;
+            Ok(())
+        }
+
         /// One round: push local changes, then pull until caught up.
         pub async fn sync(&self, store: &Store) -> Result<SyncReport> {
             let mut report = SyncReport::default();
@@ -184,7 +312,6 @@ mod client {
             loop {
                 let query = PullQuery {
                     since: store.pull_cursor()?,
-                    device: Some(store.device_id().to_owned()),
                     limit: None,
                 };
                 let response = self
@@ -281,16 +408,27 @@ mod client {
                             Ok(_) => {
                                 backoff.reset();
                                 on_status(SyncStatus::Synced);
-                                PERIODIC_SYNC
+                                Some(PERIODIC_SYNC)
+                            }
+                            // Retrying on a timer won't help; only re-pairing will.
+                            Err(Error::Unauthorized) => {
+                                on_status(SyncStatus::Unauthorized);
+                                None
                             }
                             Err(e) => {
                                 on_status(SyncStatus::Offline(e.to_string()));
-                                backoff.next()
+                                Some(backoff.next())
+                            }
+                        };
+                        let timer = async {
+                            match wait {
+                                Some(wait) => tokio::time::sleep(wait).await,
+                                None => std::future::pending().await,
                             }
                         };
                         tokio::select! {
                             _ = trigger.notified() => tokio::time::sleep(PUSH_DEBOUNCE).await,
-                            _ = tokio::time::sleep(wait) => {}
+                            _ = timer => {}
                         }
                     }
                 }
@@ -349,6 +487,7 @@ mod client {
     fn checked(response: reqwest::Response) -> Result<reqwest::Response> {
         match response.status() {
             s if s.is_success() => Ok(response),
+            StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
             s => Err(Error::Status(s.as_u16())),
         }
     }

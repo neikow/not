@@ -6,19 +6,25 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,11 +45,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import android.text.format.DateUtils
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.lysen.not.core.Device
 import dev.lysen.not.core.SyncState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -85,14 +94,7 @@ fun TasksScreen(viewModel: TasksViewModel) {
     }
 
     if (showSettings) {
-        SettingsDialog(
-            serverUrl = state.serverUrl,
-            onConnect = { url, token ->
-                viewModel.connect(url, token)
-                showSettings = false
-            },
-            onDismiss = { showSettings = false },
-        )
+        SyncDialog(state, viewModel, onDismiss = { showSettings = false })
     }
     if (showNewList) {
         TextPromptDialog(
@@ -186,32 +188,135 @@ private fun SyncDot(state: SyncState?) {
         SyncState.Syncing -> Color(0xFF2196F3)
         SyncState.Synced -> Color(0xFF4CAF50)
         is SyncState.Offline -> Color(0xFFFF9800)
+        SyncState.Unauthorized -> Color(0xFFF44336)
     }
     Box(Modifier.size(10.dp).background(color, CircleShape))
 }
 
 @Composable
-private fun SettingsDialog(serverUrl: String, onConnect: (String, String) -> Unit, onDismiss: () -> Unit) {
-    var url by remember { mutableStateOf(serverUrl) }
-    var token by remember { mutableStateOf("") }
+private fun SyncDialog(state: UiState, viewModel: TasksViewModel, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Sync server") },
+        title = { Text(if (state.syncInfo == null) "Pair this device" else "Sync") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(url, { url = it }, label = { Text("URL") }, singleLine = true)
-                OutlinedTextField(
-                    token,
-                    { token = it },
-                    label = { Text("Token") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                )
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (state.syncInfo == null) PairForm(state, viewModel) else PairedInfo(state, viewModel)
             }
         },
-        confirmButton = { TextButton(onClick = { onConnect(url, token) }) { Text("Connect") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
+}
+
+@Composable
+private fun PairForm(state: UiState, viewModel: TasksViewModel) {
+    var url by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf(viewModel.defaultDeviceName) }
+    OutlinedTextField(url, { url = it }, label = { Text("Server URL") }, singleLine = true)
+    OutlinedTextField(
+        code,
+        { code = it },
+        label = { Text("Pairing code") },
+        placeholder = { Text("XXXXX-XXXXX") },
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
+    )
+    OutlinedTextField(name, { name = it }, label = { Text("Device name") }, singleLine = true)
+    Text(
+        "Get a code on the server with `not-server pair`, or on a paired device under Sync → Add device.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Button(
+            onClick = { viewModel.pair(url, code, name) },
+            enabled = !state.busy && url.isNotBlank() && code.isNotBlank(),
+        ) { Text("Pair") }
+        if (state.busy) {
+            Spacer(Modifier.width(12.dp))
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+    }
+}
+
+@Composable
+private fun PairedInfo(state: UiState, viewModel: TasksViewModel) {
+    val info = state.syncInfo ?: return
+    var pendingRevoke by remember { mutableStateOf<Device?>(null) }
+    LaunchedEffect(info.deviceId) { viewModel.refreshDevices() }
+
+    Text(info.serverUrl, style = MaterialTheme.typography.bodyLarge)
+    Text(
+        "${info.deviceName} · ${syncStatus(state.sync)}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    HorizontalDivider()
+
+    val code = state.pairingCode
+    if (code == null) {
+        TextButton(onClick = viewModel::createPairingCode, enabled = !state.busy) { Text("Add device") }
+    } else {
+        Text(code.code, style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace))
+        Text(
+            "Enter on the new device with this server's URL. Works once, for 10 minutes.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    HorizontalDivider()
+
+    Text("Devices", style = MaterialTheme.typography.titleSmall)
+    state.devices.forEach { device ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(if (device.isCurrent) "${device.name} (this device)" else device.name)
+                Text(
+                    device.lastSeenAt?.let { "Last seen ${ago(it)}" } ?: "Never synced",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = { pendingRevoke = device }, enabled = !state.busy) {
+                Text(if (device.isCurrent) "Unpair" else "Revoke", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+
+    pendingRevoke?.let { device ->
+        AlertDialog(
+            onDismissRequest = { pendingRevoke = null },
+            title = { Text(if (device.isCurrent) "Unpair this device?" else "Revoke ${device.name}?") },
+            text = {
+                Text(
+                    if (device.isCurrent) "Sync stops and this device is removed from the server. Tasks stay here."
+                    else "${device.name} stops syncing until it is paired again. Its local data stays on it.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.revoke(device)
+                    pendingRevoke = null
+                }) { Text(if (device.isCurrent) "Unpair" else "Revoke", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { pendingRevoke = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+private fun ago(millis: Long): CharSequence =
+    if (System.currentTimeMillis() - millis < DateUtils.MINUTE_IN_MILLIS) "just now"
+    else DateUtils.getRelativeTimeSpanString(millis)
+
+private fun syncStatus(state: SyncState?): String = when (state) {
+    null -> "starting…"
+    SyncState.Syncing -> "syncing…"
+    SyncState.Synced -> "up to date"
+    is SyncState.Offline -> "offline: ${state.reason}"
+    SyncState.Unauthorized -> "rejected by the server; unpair, then pair again"
 }
 
 @Composable

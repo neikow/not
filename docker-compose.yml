@@ -4,7 +4,6 @@ services:
     image: not-server:dev
     restart: unless-stopped
     environment:
-      NOT_TOKEN: ${NOT_TOKEN:?set NOT_TOKEN in .env (openssl rand -hex 32)}
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - not-data:/data

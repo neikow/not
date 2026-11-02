@@ -10,6 +10,7 @@ use loro::{ContainerID, Index, LoroMap, LoroTree, LoroValue, TreeID, TreeParentI
 use rusqlite::{Connection, params};
 
 use crate::Result;
+use crate::store::INBOX;
 
 pub const KIND: &str = "kind";
 pub const KIND_LIST: &str = "list";
@@ -102,7 +103,7 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
         }
         Some(KIND_TASK) => {
             let Some((list_id, parent_id)) = locate_task(tree, id) else {
-                // Not under any list (shouldn't happen through the public API): keep it out of the UI.
+                // Under something that isn't a list or task (not possible through the public API).
                 return remove(db, id);
             };
             db.execute(
@@ -113,7 +114,7 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
                     completed_at = excluded.completed_at, position = excluded.position",
                 params![
                     id.to_string(),
-                    list_id.to_string(),
+                    list_id,
                     parent_id.map(|p| p.to_string()),
                     title,
                     meta_i64(&meta, COMPLETED_AT),
@@ -126,20 +127,24 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
     Ok(())
 }
 
-/// Returns the owning list and, for subtasks, the parent task.
-fn locate_task(tree: &LoroTree, id: TreeID) -> Option<(TreeID, Option<TreeID>)> {
-    let TreeParentId::Node(parent) = tree.parent(id)? else {
-        return None;
+/// Returns the owning list id ([`INBOX`] for tasks outside any list) and, for subtasks, the parent
+/// task.
+fn locate_task(tree: &LoroTree, id: TreeID) -> Option<(String, Option<TreeID>)> {
+    let parent = match tree.parent(id)? {
+        TreeParentId::Root => return Some((INBOX.into(), None)),
+        TreeParentId::Node(parent) => parent,
+        _ => return None,
     };
     let mut current = parent;
     loop {
         match kind(tree, current).as_deref() {
             Some(KIND_LIST) => {
                 let parent_task = (current != parent).then_some(parent);
-                return Some((current, parent_task));
+                return Some((current.to_string(), parent_task));
             }
             Some(KIND_TASK) => match tree.parent(current)? {
                 TreeParentId::Node(next) => current = next,
+                TreeParentId::Root => return Some((INBOX.into(), Some(parent))),
                 _ => return None,
             },
             _ => return None,

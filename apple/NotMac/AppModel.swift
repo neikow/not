@@ -1,6 +1,7 @@
 import Foundation
 import NotCore
 import Observation
+import SystemConfiguration
 
 /// A task plus its nesting depth, in display order.
 struct TaskRow: Identifiable {
@@ -12,9 +13,12 @@ struct TaskRow: Identifiable {
 @MainActor
 @Observable
 final class AppModel {
+    let inboxID = inboxId()
     private(set) var lists: [TaskList] = []
     private(set) var rows: [TaskRow] = []
     private(set) var syncState: SyncState?
+    /// `nil` until this Mac is paired with a server.
+    private(set) var syncInfo: SyncInfo?
     var errorMessage: String?
     var selectedListID: String? {
         didSet { if oldValue != selectedListID { reloadTasks() } }
@@ -23,8 +27,10 @@ final class AppModel {
     @ObservationIgnored private let store: NotStore
     @ObservationIgnored private var observer: ModelObserver?
 
-    static let serverURLKey = "serverURL"
-    static let tokenKey = "token"
+    /// The computer name from System Settings, e.g. "Vitaly's MacBook Air".
+    static var defaultDeviceName: String {
+        (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? "Mac"
+    }
 
     init() {
         let dir = URL.applicationSupportDirectory.appending(path: "dev.lysen.not", directoryHint: .isDirectory)
@@ -37,33 +43,65 @@ final class AppModel {
         let observer = ModelObserver(model: self)
         store.setObserver(observer: observer)
         self.observer = observer
+        selectedListID = inboxID
         reload()
-        // UserDefaults also reads `-serverURL … -token …` launch arguments, handy for dev runs.
-        let defaults = UserDefaults.standard
-        connect(serverURL: defaults.string(forKey: Self.serverURLKey) ?? "",
-                token: defaults.string(forKey: Self.tokenKey) ?? "")
-    }
 
-    var deviceID: String { store.deviceId() }
+        let defaults = UserDefaults.standard
+        // Before pairing, the shared server token was kept here in plain text.
+        defaults.removeObject(forKey: "token")
+        defaults.removeObject(forKey: "serverURL")
+
+        syncInfo = run { try store.syncInfo() } ?? nil
+        run { try store.startSync() }
+        // Dev runs: `-serverURL http://127.0.0.1:8080 -pairingCode XXXXX-XXXXX` pairs on launch.
+        if syncInfo == nil,
+           let url = defaults.string(forKey: "serverURL"),
+           let code = defaults.string(forKey: "pairingCode") {
+            Task { await pair(serverURL: url, code: code, deviceName: Self.defaultDeviceName) }
+        }
+    }
 
     var selectedList: TaskList? { lists.first { $0.id == selectedListID } }
+    var inbox: TaskList? { lists.first { $0.id == inboxID } }
+    var userLists: [TaskList] { lists.filter { $0.id != inboxID } }
 
-    // MARK: Sync
-
-    func connect(serverURL: String, token: String) {
-        let url = serverURL.trimmingCharacters(in: .whitespaces)
-        let token = token.trimmingCharacters(in: .whitespaces)
-        guard !url.isEmpty, !token.isEmpty else {
-            store.stopSync()
-            syncState = nil
-            return
-        }
-        store.startSync(serverUrl: url, token: token)
-    }
+    // MARK: Sync and pairing
 
     func syncNow() { store.syncNow() }
 
     fileprivate func didChangeSyncState(_ state: SyncState) { syncState = state }
+
+    @discardableResult
+    func pair(serverURL: String, code: String, deviceName: String) async -> Bool {
+        let store = store
+        guard let info = await runAsync({ try await store.pair(serverUrl: serverURL, code: code, deviceName: deviceName) })
+        else { return false }
+        syncInfo = info
+        return true
+    }
+
+    func unpair() async {
+        let store = store
+        await runAsync { try await store.unpair() }
+        syncInfo = nil
+        syncState = nil
+    }
+
+    func createPairingCode() async -> PairingCode? {
+        let store = store
+        return await runAsync { try await store.createPairingCode() }
+    }
+
+    func devices() async -> [Device] {
+        let store = store
+        return await runAsync { try await store.devices() } ?? []
+    }
+
+    func revoke(_ device: Device) async {
+        guard !device.isCurrent else { return await unpair() }
+        let store = store
+        await runAsync { try await store.revokeDevice(id: device.id) }
+    }
 
     // MARK: Commands
 
@@ -72,8 +110,7 @@ final class AppModel {
     }
 
     func addTask(_ title: String) {
-        guard let list = selectedListID ?? ensureInbox() else { return }
-        run { _ = try store.addTask(parentId: list, title: title) }
+        run { _ = try store.addTask(parentId: selectedListID ?? inboxID, title: title) }
     }
 
     func toggle(_ task: TaskItem) {
@@ -84,16 +121,14 @@ final class AppModel {
         run { try store.deleteItem(id: id) }
     }
 
-    /// `not://add?title=Milk[&list=Groceries]` — the list is matched by title, else the selected one.
+    /// `not://add?title=Milk[&list=Groceries]` — the list is matched by title, else the Inbox.
     func handle(url: URL) {
         guard url.scheme == "not", url.host() == "add",
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
               let title = items.first(where: { $0.name == "title" })?.value
         else { return }
-        let listName = items.first { $0.name == "list" }?.value
-        let target = lists.first { $0.title.caseInsensitiveCompare(listName ?? "") == .orderedSame }?.id
-            ?? selectedListID ?? ensureInbox()
-        guard let target else { return }
+        let listName = items.first { $0.name == "list" }?.value ?? ""
+        let target = lists.first { $0.title.caseInsensitiveCompare(listName) == .orderedSame }?.id ?? inboxID
         run { _ = try store.addTask(parentId: target, title: title) }
     }
 
@@ -105,8 +140,7 @@ final class AppModel {
         if let selected = selectedListID, lists.contains(where: { $0.id == selected }) {
             reloadTasks()
         } else {
-            selectedListID = lists.first?.id
-            if selectedListID == nil { rows = [] }
+            selectedListID = inboxID
         }
     }
 
@@ -132,19 +166,30 @@ final class AppModel {
         return rows
     }
 
-    /// Creates a list when there is none yet, so quick-add always has somewhere to go.
-    /// TODO: a real Inbox must be a well-known node, or two fresh devices each create one.
-    private func ensureInbox() -> String? {
-        lists.first?.id ?? run { try store.createList(title: "Inbox") }
-    }
-
     @discardableResult
     private func run<T>(_ body: () throws -> T) -> T? {
         do {
             return try body()
         } catch {
-            errorMessage = "\(error)"
+            errorMessage = Self.describe(error)
             return nil
+        }
+    }
+
+    @discardableResult
+    private func runAsync<T: Sendable>(_ body: @Sendable () async throws -> T) async -> T? {
+        do {
+            return try await body()
+        } catch {
+            errorMessage = Self.describe(error)
+            return nil
+        }
+    }
+
+    private static func describe(_ error: Error) -> String {
+        switch error as? NotError {
+        case let .NotFound(detail), let .Invalid(detail), let .Internal(detail): detail
+        case nil: error.localizedDescription
         }
     }
 }
