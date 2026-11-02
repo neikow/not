@@ -1,7 +1,11 @@
 package dev.lysen.not
 
+import android.app.StatusBarManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -42,7 +46,8 @@ class MainActivity : ComponentActivity() {
     /**
      * Debug builds only, for scripted testing:
      * `adb shell am start -n dev.lysen.not/.MainActivity --es server URL --es code CODE --es add TITLE`,
-     * `--ez pinWidget true` asks the launcher to place the tasks widget.
+     * `--ez pinWidget true` asks the launcher to place the tasks widget, `--ez addTile true` offers the
+     * Quick Settings tile (Android 13+).
      * Never honoured in release builds: any app could otherwise pair this device with its own server.
      */
     private fun handleDevIntent(intent: Intent) {
@@ -55,6 +60,14 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 GlanceAppWidgetManager(this@MainActivity).requestPinGlanceAppWidget(TasksWidgetReceiver::class.java)
             }
+        }
+        if (intent.getBooleanExtra("addTile", false) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getSystemService(StatusBarManager::class.java).requestAddTileService(
+                ComponentName(this, QuickAddTileService::class.java),
+                getString(R.string.add_task),
+                Icon.createWithResource(this, R.drawable.ic_add_task),
+                mainExecutor,
+            ) {}
         }
     }
 

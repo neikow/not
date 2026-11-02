@@ -9,10 +9,17 @@
         android:name="android.hardware.camera.any"
         android:required="false" />
 
-    <!-- No backups: the database holds this device's sync token, and the server already has the data. -->
+    <!--
+    No backups and no device-to-device transfer: the database holds this device's sync identity and
+    token, and a copy on a second phone would make the server hide each phone's updates from the
+    other. The server already has the data; pair the new phone instead.
+    -->
     <application
         android:name=".NotApp"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Not">
@@ -25,6 +32,9 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <activity
@@ -45,6 +55,17 @@
                 <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".QuickAddTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_add_task"
+            android:label="@string/add_task"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <receiver
             android:name=".widget.TasksWidgetReceiver"

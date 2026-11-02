@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press the app icon → "Add task". -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:icon="@drawable/ic_shortcut_add_task"
+        android:shortcutId="add_task"
+        android:shortcutShortLabel="@string/add_task">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="dev.lysen.not.QuickAddActivity"
+            android:targetPackage="dev.lysen.not" />
+    </shortcut>
+</shortcuts>

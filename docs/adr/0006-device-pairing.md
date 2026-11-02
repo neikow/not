@@ -37,8 +37,10 @@ rotating the secret everywhere, and the server's environment held a long-lived c
 - The macOS app is ad-hoc signed ([0005](0005-macos-without-paid-developer-account.md)): every rebuild
   changes its code signature, and the login keychain would ask for the user's password on each update.
 
-Android backups are disabled (`allowBackup="false"`) so the token isn't copied off the device; the
-server is the backup.
+On Android nothing leaves the device through backups: `allowBackup="false"` covers cloud backup, and
+data extraction rules also exclude device-to-device transfer (Android 12+), which `allowBackup` doesn't
+stop. A cloned database on a second phone would share this device's identity, and the server would
+hide each phone's updates from the other. The server is the backup; a new phone pairs as a new device.
 
 ## Consequences
 - A stolen unlocked Mac (or a process running as the user) can read the token; revoke the device from

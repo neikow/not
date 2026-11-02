@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#FF23263A</color>
+    <color name="ic_launcher_check">#FF8BE9A8</color>
+
+    <!-- Widget picker preview (Android 12+ overrides these with wallpaper colors). -->
+    <color name="widget_preview_background">#FFEEF0FF</color>
+    <color name="widget_preview_content">#FF1B1B21</color>
+</resources>

@@ -19,15 +19,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import dev.lysen.not.core.NotException
+import kotlinx.coroutines.flow.first
 
-/** A one-field "add task" dialog over whatever is on screen, opened from the widget's + button. */
+/**
+ * A one-field "add task" dialog over whatever is on screen. Opened from the widget's + button, the
+ * Quick Settings tile and the app icon's long-press shortcut.
+ */
 class QuickAddActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,16 +75,20 @@ class QuickAddActivity : ComponentActivity() {
 private fun QuickAddDialog(listTitle: String, onAdd: (String) -> Unit, onDismiss: () -> Unit) {
     var text by remember { mutableStateOf("") }
     val focus = remember { FocusRequester() }
-    val keyboard = LocalSoftwareKeyboardController.current
-    LaunchedEffect(Unit) {
-        focus.requestFocus()
-        keyboard?.show()
-    }
     val submit = { if (text.isNotBlank()) onAdd(text) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add to $listTitle") },
         text = {
+            // The dialog's own window: opened from the Quick Settings shade, it only gets focus once
+            // the shade has collapsed, and asking for the keyboard any earlier is ignored.
+            val window = LocalWindowInfo.current
+            val keyboard = LocalSoftwareKeyboardController.current
+            LaunchedEffect(window) {
+                snapshotFlow { window.isWindowFocused }.first { it }
+                focus.requestFocus()
+                keyboard?.show()
+            }
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },

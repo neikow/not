@@ -163,7 +163,7 @@ never moves backwards, so a worker and live sync running at once are harmless.
 | macOS | Android |
 |---|---|
 | Menu-bar app, global hotkey → quick-add panel with natural-language parsing | Glance tasks widget ✅ (any list, checkboxes, + opens a quick-add dialog); later today list, habit grid |
-| Raycast extension over a local unix socket (add, search, today, check habit, new note) | Quick Settings tile → quick-add sheet |
+| Raycast extension over a local unix socket (add, search, today, check habit, new note) | Quick Settings tile ✅ and app-icon shortcut ✅ → quick-add dialog |
 | Local notifications with actions | Share target → task or note |
 | `not://` URL scheme, App Intents (Shortcuts), Core Spotlight indexing | Notification actions, app shortcuts |
 | Later (needs paid Apple Developer account): WidgetKit widgets, share extension, notarized builds | |
@@ -179,7 +179,7 @@ an IndexedDB cache. Online-first; no parity goal.
 |---|---|
 | P0 spike ✅ | core (tasks in Loro + read model), relay server, live sync, uniffi → minimal SwiftUI + Compose apps, verified Mac ⇄ Android end to end incl. offline edits |
 | P0.5 ✅ | Built-in Inbox, device pairing with per-device tokens, revocation |
-| P1 (in progress) | ✅ Android tasks widget + quick add, background sync, QR pairing. Next: quick-add parser, recurrence, reminders, hotkey panel, Raycast |
+| P1 (in progress) | ✅ Android tasks widget (with picker preview), quick add from widget / QS tile / app shortcut, app icon, background sync, QR pairing. Next: quick-add parser, recurrence, reminders, hotkey panel, Raycast |
 | P1 | Quick-add parser, recurrence, reminders, hotkey panel, Raycast, Android widgets |
 | P2 | Notes: per-note docs, markdown editors (biggest UX effort) |
 | P3 | Habits |

@@ -1,6 +1,8 @@
 [bindings.kotlin]
 package_name = "dev.lysen.not.core"
 cdylib_name = "not_ffi"
+# Android-specific code: picks the object cleaner by SDK level (lint-clean on minSdk < 33).
+android = true
 
 [bindings.swift]
 ffi_module_name = "NotFFI"

@@ -3,4 +3,11 @@
     <string name="widget_tasks">Tasks</string>
     <string name="widget_tasks_description">Open tasks of one list, with checkboxes and quick add</string>
     <string name="add_task">Add task</string>
+    <string name="add_task_subtitle">Inbox</string>
+
+    <!-- Sample content for the widget picker preview. -->
+    <string name="widget_preview_list">Inbox</string>
+    <string name="widget_preview_task_1">Buy oat milk</string>
+    <string name="widget_preview_task_2">Call the dentist</string>
+    <string name="widget_preview_task_3">Renew passport</string>
 </resources>

@@ -44,6 +44,7 @@ open "not://add?title=Milk"                                       # macOS: quick
 open not.app --args -serverURL http://127.0.0.1:8080 -pairingCode CODE   # macOS: pair on launch
 adb shell am start -n dev.lysen.not/.MainActivity --es server http://10.0.2.2:8080 --es code CODE  # debug builds only
 adb shell am start -n dev.lysen.not/.MainActivity --ez pinWidget true   # debug: ask the launcher to place the widget
+adb shell am start -n dev.lysen.not/.MainActivity --ez addTile true     # debug: offer the Quick Settings tile
 ```
 
 ## Run the server
