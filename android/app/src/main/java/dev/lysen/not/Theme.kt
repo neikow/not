@@ -1,40 +1,61 @@
 package dev.lysen.not
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.TextStyle
+import dev.lysen.not.ui.Bricolage
+import dev.lysen.not.ui.Inter
+import dev.lysen.not.ui.NotColors
+import dev.lysen.not.ui.NotDesign
+import dev.lysen.not.ui.Not
 
-/** Material You colors from the wallpaper (Android 12+), following the system dark mode. */
+/**
+ * The app's design (see `ui/`), following the system dark mode. Screens not yet moved off
+ * Material get a Material theme in the same colors and fonts meanwhile.
+ */
 @Composable
 fun NotTheme(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val dark = isSystemInDarkTheme()
-    val colors = when {
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        dark -> darkColorScheme()
-        else -> lightColorScheme()
+    NotDesign(dark = isSystemInDarkTheme()) {
+        MaterialTheme(colorScheme = Not.colors.toMaterial(), typography = BridgeTypography, content = content)
     }
-    MaterialTheme(colorScheme = colors, typography = NotTypography, content = content)
 }
 
-/** Material's scale with firmer headings: screen titles read as titles, body text stays calm. */
-private val NotTypography = Typography().run {
+private fun NotColors.toMaterial() = (if (isDark) darkColorScheme() else lightColorScheme()).copy(
+    primary = accentInk,
+    onPrimary = if (isDark) onAccent else surface,
+    primaryContainer = accentSoft,
+    onPrimaryContainer = ink,
+    secondaryContainer = accentSoft,
+    onSecondaryContainer = ink,
+    background = background,
+    onBackground = ink,
+    surface = background,
+    onSurface = ink,
+    surfaceVariant = sunken,
+    onSurfaceVariant = inkMuted,
+    surfaceContainerLowest = surface,
+    surfaceContainerLow = surface,
+    surfaceContainer = surface,
+    surfaceContainerHigh = surface,
+    surfaceContainerHighest = sunken,
+    outline = inkFaint,
+    outlineVariant = line,
+    error = danger,
+    errorContainer = dangerSoft,
+)
+
+private val BridgeTypography = Typography().run {
+    fun TextStyle.inter() = copy(fontFamily = Inter)
+    fun TextStyle.bricolage() = copy(fontFamily = Bricolage)
     copy(
-        headlineLarge = headlineLarge.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.5).sp),
-        headlineMedium = headlineMedium.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.4).sp),
-        headlineSmall = headlineSmall.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
-        titleLarge = titleLarge.copy(fontWeight = FontWeight.Medium, letterSpacing = (-0.1).sp),
-        titleMedium = titleMedium.copy(fontWeight = FontWeight.SemiBold),
-        titleSmall = titleSmall.copy(fontWeight = FontWeight.SemiBold),
+        displayLarge = displayLarge.bricolage(), displayMedium = displayMedium.bricolage(), displaySmall = displaySmall.bricolage(),
+        headlineLarge = headlineLarge.bricolage(), headlineMedium = headlineMedium.bricolage(), headlineSmall = headlineSmall.bricolage(),
+        titleLarge = titleLarge.bricolage(), titleMedium = titleMedium.inter(), titleSmall = titleSmall.inter(),
+        bodyLarge = bodyLarge.inter(), bodyMedium = bodyMedium.inter(), bodySmall = bodySmall.inter(),
+        labelLarge = labelLarge.inter(), labelMedium = labelMedium.inter(), labelSmall = labelSmall.inter(),
     )
 }
