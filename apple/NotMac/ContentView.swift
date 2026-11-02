@@ -114,7 +114,7 @@ private struct ListRow: View {
 private struct TaskListView: View {
     @Bindable var model: AppModel
     @State private var draft = ""
-    @State private var showsCompleted = false
+    @AppStorage("showsCompleted") private var showsCompleted = false
     @FocusState private var addFieldFocused: Bool
 
     private var isEmpty: Bool { model.outline.open.isEmpty && model.outline.completed.isEmpty }
@@ -166,12 +166,27 @@ private struct TaskListView: View {
             }
 
             if !model.outline.completed.isEmpty {
-                Section(isExpanded: $showsCompleted) {
-                    ForEach(model.outline.completed, id: \.task.id) { row in
-                        TaskRowView(row: row, model: model)
+                // `Section(isExpanded:)` only gets a disclosure control in sidebar lists, so the
+                // header toggles it itself.
+                Section {
+                    if showsCompleted {
+                        ForEach(model.outline.completed, id: \.task.id) { row in
+                            TaskRowView(row: row, model: model)
+                        }
                     }
                 } header: {
-                    Text("Completed · \(model.outline.completed.count { $0.depth == 0 })")
+                    Button {
+                        withAnimation(.snappy) { showsCompleted.toggle() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.right")
+                                .rotationEffect(.degrees(showsCompleted ? 90 : 0))
+                                .imageScale(.small)
+                            Text("Completed · \(model.outline.completed.count { $0.depth == 0 })")
+                        }
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
