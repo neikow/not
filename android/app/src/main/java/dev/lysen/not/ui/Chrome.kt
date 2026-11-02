@@ -1,7 +1,7 @@
 package dev.lysen.not.ui
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -114,8 +115,8 @@ fun LargeTitleScreen(
 class TabItem(val label: String, val icon: Int, val badge: Int = 0)
 
 /**
- * The floating pill at the bottom. The selected tab grows into a mint capsule with its label;
- * the others are just icons.
+ * The floating pill at the bottom. The selected tab is a wide mint capsule with its label, the
+ * others narrow icons. Slots grow and shrink together, so the pill itself never changes width.
  */
 @Composable
 fun FloatingTabBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
@@ -126,59 +127,48 @@ fun FloatingTabBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, 
             .clip(CircleShape)
             .background(colors.surface)
             .padding(6.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         tabs.forEachIndexed { index, tab ->
             val isSelected = index == selected
+            val spec = spring<Dp>(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
+            val width by animateDpAsState(if (isSelected) SelectedTabWidth else TabWidth, spec, label = "tab width")
             val bg by animateColorAsState(if (isSelected) colors.accent else Color.Transparent, label = "tab")
-            Row(
+            val label by animateFloatAsState(if (isSelected) 1f else 0f, label = "tab label")
+            Box(
                 Modifier
+                    .width(width)
+                    .height(48.dp)
                     .clip(CircleShape)
                     .background(bg)
-                    .pressable({ onSelect(index) }, pressedScale = 0.92f, onClickLabel = tab.label)
-                    .animateContentSize(spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow))
-                    .height(48.dp)
-                    .padding(horizontal = if (isSelected) 18.dp else 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .pressable({ onSelect(index) }, pressedScale = 0.92f, onClickLabel = tab.label),
+                contentAlignment = Alignment.Center,
             ) {
-                Box {
-                    Icon(tab.icon, if (isSelected) null else tab.label, tint = if (isSelected) colors.onAccent else colors.inkMuted)
-                    if (tab.badge > 0 && !isSelected) {
-                        Badge(tab.badge, Modifier.align(Alignment.TopEnd).offset(x = 11.dp, y = (-8).dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box {
+                        Icon(tab.icon, tab.label, tint = if (isSelected) colors.onAccent else colors.inkMuted)
+                        if (tab.badge > 0 && !isSelected) {
+                            Badge(tab.badge, Modifier.align(Alignment.TopEnd).offset(x = 11.dp, y = (-8).dp))
+                        }
+                    }
+                    // The label only takes room while there is room for it.
+                    if (label > 0.05f) {
+                        Text(
+                            tab.label,
+                            style = Not.type.label,
+                            color = colors.onAccent,
+                            maxLines = 1,
+                            modifier = Modifier.padding(start = 8.dp * label).alpha(label),
+                        )
                     }
                 }
-                if (isSelected) Text(tab.label, style = Not.type.label, color = colors.onAccent, maxLines = 1)
             }
         }
     }
 }
 
-/** The tab bar and, when the screen has one, its + button, centred together above the system bar. */
-@Composable
-fun BottomBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
-    val add = LocalAddAction.current
-    Row(
-        modifier.padding(bottom = 12.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        FloatingTabBar(tabs, selected, onSelect)
-        val action = add.action
-        androidx.compose.animation.AnimatedVisibility(
-            action != null,
-            enter = androidx.compose.animation.scaleIn(spring(0.6f)) + androidx.compose.animation.fadeIn(),
-            exit = androidx.compose.animation.scaleOut() + androidx.compose.animation.fadeOut(),
-        ) {
-            FloatingAddButton(add.label, { add.action?.invoke() })
-        }
-    }
-}
-
-/** Height the tab bar occupies, including its bottom gap and the system navigation bar. */
-@Composable
-fun floatingTabBarHeight(): Dp = 60.dp + 12.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+private val TabWidth = 60.dp
+private val SelectedTabWidth = 112.dp
 
 /** What the + beside the tab bar does on the current screen; screens set it with [AddAction]. */
 @Stable
@@ -217,3 +207,22 @@ fun FloatingAddButton(label: String, onClick: () -> Unit, modifier: Modifier = M
         Icon(dev.lysen.not.R.drawable.ic_add, label, tint = colors.onAccent, size = 28.dp)
     }
 }
+
+/** The tab bar and its + button, centred together above the system bar. */
+@Composable
+fun BottomBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val add = LocalAddAction.current
+    Row(
+        modifier.padding(bottom = 12.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FloatingTabBar(tabs, selected, onSelect)
+        // Always there, so the bar never re-centres; screens without an action leave it inert.
+        FloatingAddButton(add.label.ifEmpty { "Add" }, { add.action?.invoke() })
+    }
+}
+
+/** Height the bottom bar occupies, including its gap and the system navigation bar. */
+@Composable
+fun floatingTabBarHeight(): Dp = 60.dp + 12.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()

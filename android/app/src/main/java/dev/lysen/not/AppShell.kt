@@ -83,9 +83,8 @@ fun NotAppUi(
         CompositionLocalProvider(LocalBottomBarHeight provides barHeight) {
             when (tab) {
                 Tab.Tasks -> TasksScreen(tasks, onOpenSettings = { showsSettings = true })
-                // Not yet on the new design: they keep their own bottom bars above ours.
-                Tab.Habits -> Box(Modifier.padding(bottom = barHeight)) { HabitsScreen(habits) }
-                Tab.Notes -> Box(Modifier.padding(bottom = barHeight)) { NotesScreen(notes) }
+                Tab.Habits -> HabitsScreen(habits)
+                Tab.Notes -> NotesScreen(notes)
             }
         }
         AnimatedVisibility(

@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.border
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +37,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
@@ -50,6 +52,7 @@ import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.TaskList
 import dev.lysen.not.ui.Button
 import dev.lysen.not.ui.CardDialog
+import dev.lysen.not.ui.Composer
 import dev.lysen.not.ui.Divider
 import dev.lysen.not.ui.EmptyState
 import dev.lysen.not.ui.Field
@@ -95,7 +98,6 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             title = title,
             onTitleClick = { showsLists = true },
             titleAccessory = { Icon(R.drawable.ic_expand_more, "Switch list", tint = Not.colors.inkFaint, size = 28.dp) },
-            navigation = { IconButton(R.drawable.ic_menu, "Lists", { showsLists = true }) },
             actions = {
                 SyncStatus(state.sync, onClick = onOpenSettings)
                 val list = state.selectedList
@@ -107,13 +109,16 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
         ) {
             val outline = state.outline
             if (outline.open.isEmpty()) {
+                // Fades in once the last row has left, instead of popping in under it.
                 item(key = "empty") {
+                    Box(Modifier.animateItem(fadeInSpec = tween(260, delayMillis = 180), fadeOutSpec = tween(120))) {
                     when {
                         outline.completed.isNotEmpty() ->
                             EmptyState(R.drawable.ic_check, "All done", "Everything in $title is checked off.", Modifier.padding(bottom = 24.dp))
                         state.selectedListId == INBOX_ID ->
                             EmptyState(R.drawable.ic_inbox, "Inbox zero", "Anything you jot down lands here first. Sort it into lists when you have a moment.")
                         else -> EmptyState(R.drawable.ic_list, "Nothing in $title yet", "Tap + to add the first one.")
+                    }
                     }
                 }
             }
@@ -196,71 +201,16 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
     }
 }
 
+/** "3 tasks"; keeps its line when there are none, so the list below doesn't jump. */
 @Composable
 private fun Subtitle(state: UiState) {
     val open = state.outline.open.count { it.depth == 0u }
-    if (open == 0) return
     Text(
         if (open == 1) "1 task" else "$open tasks",
         style = Not.type.body,
         color = Not.colors.inkMuted,
-        modifier = Modifier.padding(top = 2.dp),
+        modifier = Modifier.padding(top = 2.dp).alpha(if (open == 0) 0f else 1f),
     )
-}
-
-/**
- * The add field, floating above the keyboard. It keeps focus after adding, for the next one, and
- * closes when the keyboard goes away with nothing typed, or on Back.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun Composer(placeholder: String, onAdd: (String) -> Unit, onClose: () -> Unit) {
-    var draft by rememberSaveable { mutableStateOf("") }
-    val colors = Not.colors
-    val focus = remember { FocusRequester() }
-    val imeVisible = WindowInsets.isImeVisible
-    var hadKeyboard by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { focus.requestFocus() }
-    LaunchedEffect(imeVisible) {
-        if (imeVisible) hadKeyboard = true else if (hadKeyboard && draft.isBlank()) onClose()
-    }
-    BackHandler(onBack = onClose)
-    fun submit() {
-        if (draft.isBlank()) return
-        onAdd(draft)
-        draft = ""
-    }
-    Field(
-        draft,
-        { draft = it },
-        placeholder,
-        modifier = Modifier
-            .padding(horizontal = 12.dp)
-            .fillMaxWidth()
-            .shadow(14.dp, RoundedCornerShape(24.dp), ambientColor = Color.Black.copy(alpha = 0.14f), spotColor = Color.Black.copy(alpha = 0.14f))
-            .clip(RoundedCornerShape(24.dp))
-            .background(colors.surface)
-            .padding(horizontal = 8.dp, vertical = 8.dp)
-            .focusRequester(focus),
-        leading = { Spacer(Modifier.width(4.dp)); RoundCheckPlaceholder() },
-        trailing = {
-            Box(
-                Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(if (draft.isNotBlank()) colors.accent else colors.sunken)
-                    .pressable(::submit, enabled = draft.isNotBlank()),
-                contentAlignment = Alignment.Center,
-            ) { Icon(R.drawable.ic_arrow_up, "Add", tint = if (draft.isNotBlank()) colors.onAccent else colors.inkFaint, size = 20.dp) }
-        },
-        onDone = ::submit,
-    )
-}
-
-/** The empty ring a new task will have, as the composer's leading mark. */
-@Composable
-private fun RoundCheckPlaceholder() {
-    Box(Modifier.size(22.dp).border(1.75.dp, Not.colors.inkFaint, CircleShape))
 }
 
 /** Swipe right to complete (or reopen), left to delete; tap for details. */

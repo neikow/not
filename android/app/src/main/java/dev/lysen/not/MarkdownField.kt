@@ -4,8 +4,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.ColorScheme
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +41,9 @@ import androidx.compose.ui.unit.sp
 import dev.lysen.not.core.MarkdownSpan
 import dev.lysen.not.core.MarkdownStyle
 import dev.lysen.not.core.markdownSpans
+import dev.lysen.not.ui.Bricolage
+import dev.lysen.not.ui.Not
+import dev.lysen.not.ui.NotColors
 
 /**
  * A plain-text markdown editor that styles the markdown in place, using the core's spans so notes
@@ -51,7 +52,7 @@ import dev.lysen.not.core.markdownSpans
  */
 @Composable
 fun MarkdownField(value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit, modifier: Modifier = Modifier) {
-    val colors = MaterialTheme.colorScheme
+    val colors = Not.colors
     val transformation = remember(colors) { MarkdownTransformation(colors) }
     val marks = remember(value.text) { listMarks(markdownSpans(value.text)) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
@@ -62,8 +63,8 @@ fun MarkdownField(value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit
     BasicTextField(
         value = value,
         onValueChange = { onValueChange(continueList(value, it)) },
-        textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface, lineHeight = 26.sp),
-        cursorBrush = SolidColor(colors.primary),
+        textStyle = Not.type.body.copy(color = colors.ink, lineHeight = 26.sp),
+        cursorBrush = SolidColor(colors.accentInk),
         visualTransformation = transformation,
         onTextLayout = { layout = it },
         modifier = modifier
@@ -89,7 +90,7 @@ fun MarkdownField(value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit
                         is ListMark.Dot -> {
                             // Where a box's centre would be: half its 3-character markup in.
                             val r = text.getBoundingBox(mark.at)
-                            drawCircle(colors.primary, 3.dp.toPx(), Offset(r.left + MARKUP_WIDTH.toPx() / 2, r.center.y))
+                            drawCircle(colors.accentInk, 3.dp.toPx(), Offset(r.left + MARKUP_WIDTH.toPx() / 2, r.center.y))
                         }
                     }
                 }
@@ -132,21 +133,21 @@ private fun TextLayoutResult.boxRect(box: ListMark.Box): Rect {
     return Rect(markup.center - Offset(side / 2, side / 2), Size(side, side))
 }
 
-private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: ColorScheme) {
+private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: NotColors) {
     val corner = CornerRadius(rect.width * 0.25f)
     if (checked) {
-        drawRoundRect(colors.primary, rect.topLeft, rect.size, corner)
+        drawRoundRect(colors.accent, rect.topLeft, rect.size, corner)
         val w = rect.width
         val check = androidx.compose.ui.graphics.Path().apply {
             moveTo(rect.left + w * 0.24f, rect.top + w * 0.52f)
             lineTo(rect.left + w * 0.43f, rect.top + w * 0.70f)
             lineTo(rect.left + w * 0.77f, rect.top + w * 0.32f)
         }
-        drawPath(check, colors.onPrimary, style = Stroke(w * 0.13f, cap = StrokeCap.Round))
+        drawPath(check, colors.onAccent, style = Stroke(w * 0.13f, cap = StrokeCap.Round))
     } else {
         val stroke = 2.dp.toPx()
         drawRoundRect(
-            colors.outline,
+            colors.inkFaint,
             rect.topLeft + Offset(stroke / 2, stroke / 2),
             Size(rect.width - stroke, rect.height - stroke),
             corner,
@@ -161,14 +162,14 @@ private fun TextFieldValue.toggleBox(box: ListMark.Box): TextFieldValue {
     return copy(text = text.substring(0, i) + (if (box.checked) ' ' else 'x') + text.substring(i + 1))
 }
 
-private class MarkdownTransformation(private val colors: ColorScheme) : VisualTransformation {
+private class MarkdownTransformation(private val colors: NotColors) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
         val raw = text.text
         val spans = markdownSpans(raw)
         val styled = AnnotatedString.Builder(raw)
         titleRange(raw, spans)?.let { (start, end) ->
-            styled.addStyle(ParagraphStyle(lineHeight = 34.sp), start, end)
-            styled.addStyle(SpanStyle(fontSize = 24.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp), start, end)
+            styled.addStyle(ParagraphStyle(lineHeight = 36.sp), start, end)
+            styled.addStyle(SpanStyle(fontFamily = Bricolage, fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp), start, end)
         }
         val hidden = SpanStyle(color = Color.Transparent)
         for (mark in listMarks(spans)) {
@@ -197,6 +198,7 @@ private class MarkdownTransformation(private val colors: ColorScheme) : VisualTr
 
     private fun style(style: MarkdownStyle): SpanStyle = when (style) {
         is MarkdownStyle.Heading -> SpanStyle(
+            fontFamily = Bricolage,
             fontSize = when (style.level.toInt()) {
                 1 -> 26.sp
                 2 -> 21.sp
@@ -206,13 +208,13 @@ private class MarkdownTransformation(private val colors: ColorScheme) : VisualTr
         )
         MarkdownStyle.Bold -> SpanStyle(fontWeight = FontWeight.Bold)
         MarkdownStyle.Italic -> SpanStyle(fontStyle = FontStyle.Italic)
-        MarkdownStyle.Code -> SpanStyle(fontFamily = FontFamily.Monospace, background = colors.surfaceContainerHighest)
+        MarkdownStyle.Code -> SpanStyle(fontFamily = FontFamily.Monospace, background = colors.sunken)
         MarkdownStyle.Strike -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-        MarkdownStyle.Quote -> SpanStyle(fontStyle = FontStyle.Italic, color = colors.onSurfaceVariant)
-        MarkdownStyle.Bullet -> SpanStyle(color = colors.primary, fontWeight = FontWeight.Bold)
+        MarkdownStyle.Quote -> SpanStyle(fontStyle = FontStyle.Italic, color = colors.inkMuted)
+        MarkdownStyle.Bullet -> SpanStyle(color = colors.accentInk, fontWeight = FontWeight.Bold)
         is MarkdownStyle.Checkbox -> SpanStyle()
-        MarkdownStyle.Done -> SpanStyle(textDecoration = TextDecoration.LineThrough, color = colors.onSurfaceVariant)
-        MarkdownStyle.Syntax -> SpanStyle(color = colors.outline)
+        MarkdownStyle.Done -> SpanStyle(textDecoration = TextDecoration.LineThrough, color = colors.inkMuted)
+        MarkdownStyle.Syntax -> SpanStyle(color = colors.inkFaint)
     }
 }
 

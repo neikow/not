@@ -2,50 +2,31 @@ package dev.lysen.not
 
 import android.text.format.DateUtils
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.LargeTopAppBar
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -56,145 +37,124 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.lysen.not.core.Folder
 import dev.lysen.not.core.NoteSummary
+import dev.lysen.not.ui.AddAction
+import dev.lysen.not.ui.Button
+import dev.lysen.not.ui.CardDialog
+import dev.lysen.not.ui.Divider
+import dev.lysen.not.ui.EmptyState
+import dev.lysen.not.ui.Field
+import dev.lysen.not.ui.Icon
+import dev.lysen.not.ui.IconButton
+import dev.lysen.not.ui.LargeTitleScreen
+import dev.lysen.not.ui.LocalBottomBarHeight
+import dev.lysen.not.ui.Menu
+import dev.lysen.not.ui.MenuItem
+import dev.lysen.not.ui.Not
+import dev.lysen.not.ui.PromptDialog
+import dev.lysen.not.ui.Sheet
+import dev.lysen.not.ui.Text
+import dev.lysen.not.ui.ToastHost
+import dev.lysen.not.ui.ToastState
+import dev.lysen.not.ui.pressable
 import kotlinx.coroutines.delay
 
 /** Notes of a folder (or all), with search; opening a note shows the editor. */
 @Composable
 fun NotesScreen(viewModel: NotesViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val snackbar = remember { SnackbarHostState() }
+    val toasts = remember { ToastState() }
 
     LaunchedEffect(Unit) {
         viewModel.undoables.collect { undoable ->
-            snackbar.currentSnackbarData?.dismiss()
-            val result = snackbar.showSnackbar(undoable.message, actionLabel = "Undo", duration = SnackbarDuration.Short)
-            if (result == SnackbarResult.ActionPerformed) viewModel.undo()
+            if (toasts.show(undoable.message, action = "Undo")) viewModel.undo()
         }
     }
 
     val open = state.openNote
-    if (open != null) {
-        BackHandler { viewModel.open(null) }
-        NoteEditor(open, state, viewModel, snackbar)
-    } else {
-        NoteList(state, viewModel, snackbar)
+    Box(Modifier.fillMaxSize()) {
+        if (open != null) {
+            BackHandler { viewModel.open(null) }
+            NoteEditor(open, state, viewModel)
+        } else {
+            AddAction("New note", onClick = viewModel::newNote)
+            NoteList(state, viewModel)
+        }
+        ToastHost(
+            toasts,
+            Modifier.align(Alignment.BottomCenter).imePadding().padding(bottom = LocalBottomBarHeight.current + 8.dp + if (open != null) 64.dp else 0.dp),
+        )
     }
 
     state.error?.let {
-        AlertDialog(
-            onDismissRequest = viewModel::dismissError,
-            confirmButton = { TextButton(onClick = viewModel::dismissError) { Text("OK") } },
-            title = { Text("Something went wrong") },
-            text = { Text(it) },
-        )
+        CardDialog(
+            title = "Something went wrong",
+            onDismiss = viewModel::dismissError,
+            buttons = { Button("OK", viewModel::dismissError) },
+        ) { Text(it, color = Not.colors.inkMuted) }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NoteList(
-    state: NotesState,
-    viewModel: NotesViewModel,
-    snackbar: SnackbarHostState,
-) {
+private fun NoteList(state: NotesState, viewModel: NotesViewModel) {
     var newFolder by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Folder?>(null) }
     var moving by remember { mutableStateOf<NoteSummary?>(null) }
     val searching = state.query != null
     if (searching) BackHandler { viewModel.search(null) }
-    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
-    Scaffold(
-        modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
-        topBar = {
-            val actions: @Composable RowScope.() -> Unit = {
-                if (searching) {
-                    IconButton(onClick = { viewModel.search(null) }) { Icon(painterResource(R.drawable.ic_close), "Close search") }
-                } else {
-                    IconButton(onClick = { viewModel.search("") }) { Icon(painterResource(R.drawable.ic_search), "Search") }
-                    state.folder?.let { folder ->
-                        FolderMenu(onRename = { renaming = folder }, onDelete = { viewModel.deleteFolder(folder) })
-                    }
-                }
+    LargeTitleScreen(
+        title = state.folder?.title ?: "Notes",
+        actions = {
+            if (!searching) IconButton(R.drawable.ic_search, "Search", { viewModel.search("") })
+            state.folder?.let { folder ->
+                FolderMenu(onRename = { renaming = folder }, onDelete = { viewModel.deleteFolder(folder) })
             }
-            if (!searching) {
-                LargeTopAppBar(title = { Text(state.folder?.title ?: "Notes") }, actions = actions, scrollBehavior = scroll)
+        },
+        header = {
+            if (searching) {
+                SearchField(state.query.orEmpty(), viewModel::search, onClose = { viewModel.search(null) })
             } else {
-                TopAppBar(
-                    title = {
-                        val focus = remember { FocusRequester() }
-                        TextField(
-                            state.query.orEmpty(),
-                            viewModel::search,
-                            placeholder = { Text("Search notes") },
-                            singleLine = true,
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                            ),
-                            modifier = Modifier.fillMaxWidth().focusRequester(focus),
-                        )
-                        LaunchedEffect(Unit) { focus.requestFocus() }
-                    },
-                    actions = actions,
-                )
-            }
-        },
-        snackbarHost = { SnackbarHost(snackbar) },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = viewModel::newNote,
-                icon = { Icon(painterResource(R.drawable.ic_edit), null) },
-                text = { Text("New note") },
-            )
-        },
-    ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            if (!searching) {
                 FolderChips(state, viewModel, onNewFolder = { newFolder = true })
             }
-            if (state.notes.isEmpty()) {
-                EmptyState(
-                    if (searching) R.drawable.ic_search else R.drawable.ic_note,
-                    if (searching) "No results" else "No notes yet",
-                    if (searching) "Try other words" else "Tap New note to write one",
-                )
-            } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 96.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(state.notes, key = { it.id }) { note ->
-                        NoteCard(
-                            note,
-                            folder = if (state.folderId == null && note.folderId != null) state.folderTitle(note.folderId) else null,
-                            viewModel = viewModel,
-                            onMove = { moving = note },
-                            modifier = Modifier.animateItem(),
-                        )
-                    }
+        },
+    ) {
+        if (state.notes.isEmpty()) {
+            item(key = "empty") {
+                if (searching) {
+                    EmptyState(R.drawable.ic_search, "No results", "Try other words.")
+                } else {
+                    EmptyState(R.drawable.ic_note, "No notes yet", "Tap + to write one. The first line becomes its title.")
                 }
             }
+        }
+        items(state.notes, key = { it.id }) { note ->
+            NoteCard(
+                note,
+                folder = if (state.folderId == null && note.folderId != null) state.folderTitle(note.folderId) else null,
+                viewModel = viewModel,
+                onMove = { moving = note },
+                modifier = Modifier.animateItem().padding(horizontal = 16.dp, vertical = 5.dp),
+            )
         }
     }
 
     if (newFolder) {
-        TextPromptDialog(
+        PromptDialog(
             title = state.folder?.let { "New folder in ${it.title}" } ?: "New folder",
             confirm = "Create",
+            placeholder = "Recipes, Work, Trips…",
             onConfirm = {
                 viewModel.addFolder(it)
                 newFolder = false
@@ -203,7 +163,7 @@ private fun NoteList(
         )
     }
     renaming?.let { folder ->
-        TextPromptDialog(
+        PromptDialog(
             title = "Rename folder",
             confirm = "Rename",
             initial = folder.title,
@@ -214,38 +174,72 @@ private fun NoteList(
             onDismiss = { renaming = null },
         )
     }
-    moving?.let { note -> MoveDialog(note, state.folders, viewModel, onDismiss = { moving = null }) }
+    moving?.let { note -> MoveSheet(note, state.folders, viewModel, onDismiss = { moving = null }) }
 }
 
 @Composable
+private fun SearchField(query: String, onQuery: (String) -> Unit, onClose: () -> Unit) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    Field(
+        query,
+        onQuery,
+        "Search notes",
+        filled = true,
+        shape = CircleShape,
+        leading = { Icon(R.drawable.ic_search, null, tint = Not.colors.inkMuted, size = 20.dp) },
+        trailing = {
+            Box(Modifier.clip(CircleShape).pressable(onClose, onClickLabel = "Close search").padding(2.dp)) {
+                Icon(R.drawable.ic_close, "Close search", tint = Not.colors.inkMuted, size = 20.dp)
+            }
+        },
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp).focusRequester(focus),
+    )
+}
+
+/** All, each folder, and + Folder, as a scrolling row of pills. */
+@Composable
 private fun FolderChips(state: NotesState, viewModel: NotesViewModel, onNewFolder: () -> Unit) {
     LazyRow(
-        contentPadding = PaddingValues(horizontal = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.padding(bottom = 4.dp),
+        modifier = Modifier.padding(top = 12.dp),
     ) {
-        item {
-            FilterChip(
-                selected = state.folderId == null,
-                onClick = { viewModel.selectFolder(null) },
-                label = { Text("All") },
-            )
-        }
+        item { Chip("All", selected = state.folderId == null, onClick = { viewModel.selectFolder(null) }) }
         items(state.folders, key = { it.id }) { folder ->
-            FilterChip(
-                selected = folder.id == state.folderId,
-                onClick = { viewModel.selectFolder(folder.id) },
-                label = { Text(folderPath(folder, state.folders)) },
-                leadingIcon = { Icon(painterResource(R.drawable.ic_folder), null, Modifier.size(18.dp)) },
-            )
+            Chip(folderPath(folder, state.folders), selected = folder.id == state.folderId, icon = R.drawable.ic_folder, onClick = { viewModel.selectFolder(folder.id) })
         }
-        item {
-            AssistChip(
-                onClick = onNewFolder,
-                label = { Text("Folder") },
-                leadingIcon = { Icon(painterResource(R.drawable.ic_new_folder), null, Modifier.size(18.dp)) },
-            )
-        }
+        item { Chip("Folder", selected = false, icon = R.drawable.ic_new_folder, quiet = true, onClick = onNewFolder) }
+    }
+}
+
+@Composable
+private fun Chip(text: String, selected: Boolean, onClick: () -> Unit, icon: Int? = null, quiet: Boolean = false) {
+    val colors = Not.colors
+    val bg by animateColorAsState(
+        when {
+            selected -> colors.accent
+            quiet -> Color.Transparent
+            else -> colors.surface
+        },
+        label = "chip",
+    )
+    val fg = when {
+        selected -> colors.onAccent
+        quiet -> colors.accentInk
+        else -> colors.ink
+    }
+    Row(
+        Modifier
+            .clip(CircleShape)
+            .background(bg)
+            .pressable(onClick, pressedScale = 0.94f)
+            .heightIn(min = 38.dp)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (icon != null) Icon(icon, null, tint = if (selected) colors.onAccent else if (quiet) colors.accentInk else colors.inkMuted, size = 16.dp)
+        Text(text, style = Not.type.label, color = fg, maxLines = 1)
     }
 }
 
@@ -255,6 +249,7 @@ private fun folderPath(folder: Folder, all: List<Folder>): String {
     return "${parent.title} › ${folder.title}"
 }
 
+/** A note as a soft card; long-press for pin, move and delete. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NoteCard(
@@ -264,54 +259,51 @@ private fun NoteCard(
     onMove: () -> Unit,
     modifier: Modifier,
 ) {
+    val colors = Not.colors
+    val haptics = LocalHapticFeedback.current
     var menu by remember { mutableStateOf(false) }
     Box(modifier) {
-        Surface(
-            shape = MaterialTheme.shapes.large,
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier
+        Column(
+            Modifier
                 .fillMaxWidth()
-                .combinedClickable(onLongClick = { menu = true }, onClick = { viewModel.open(note.id) }),
-        ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        note.title.ifEmpty { "New note" },
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (note.pinned) {
-                        Icon(painterResource(R.drawable.ic_pin), "Pinned", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                    }
-                }
-                if (note.preview.isNotEmpty()) {
-                    Text(
-                        note.preview,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Text(
-                    listOfNotNull(edited(note.updatedAt), folder).joinToString(" · "),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline,
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .combinedClickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onLongClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        menu = true
+                    },
+                    onClick = { viewModel.open(note.id) },
                 )
+                .padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(note.title.ifEmpty { "New note" }, style = Not.type.heading, maxLines = 1, modifier = Modifier.weight(1f))
+                if (note.pinned) Icon(R.drawable.ic_pin, "Pinned", tint = colors.accentInk, size = 16.dp)
             }
+            if (note.preview.isNotEmpty()) {
+                Text(note.preview, style = Not.type.body.merge(fontSize = Not.type.caption.fontSize.times(1.1f), lineHeight = Not.type.caption.lineHeight.times(1.1f)), color = colors.inkMuted, maxLines = 2)
+            }
+            Text(
+                listOfNotNull(edited(note.updatedAt), folder).joinToString(" · "),
+                style = Not.type.caption,
+                color = colors.inkFaint,
+                modifier = Modifier.padding(top = 2.dp),
+            )
         }
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            DropdownMenuItem(text = { Text(if (note.pinned) "Unpin" else "Pin") }, onClick = {
+        Menu(menu, onDismiss = { menu = false }) {
+            MenuItem(if (note.pinned) "Unpin" else "Pin to top", icon = R.drawable.ic_pin, onClick = {
                 menu = false
                 viewModel.togglePin(note)
             })
-            DropdownMenuItem(text = { Text("Move to…") }, onClick = {
+            MenuItem("Move to…", icon = R.drawable.ic_folder, onClick = {
                 menu = false
                 onMove()
             })
-            DropdownMenuItem(text = { Text("Delete") }, onClick = {
+            MenuItem("Delete", icon = R.drawable.ic_delete, danger = true, onClick = {
                 menu = false
                 viewModel.delete(note)
             })
@@ -323,13 +315,13 @@ private fun NoteCard(
 private fun FolderMenu(onRename: () -> Unit, onDelete: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { open = true }) { Icon(painterResource(R.drawable.ic_more_vert), "Folder options") }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            DropdownMenuItem(text = { Text("Rename folder") }, onClick = {
+        IconButton(R.drawable.ic_more_vert, "Folder options", { open = true })
+        Menu(open, onDismiss = { open = false }) {
+            MenuItem("Rename folder", icon = R.drawable.ic_edit, onClick = {
                 open = false
                 onRename()
             })
-            DropdownMenuItem(text = { Text("Delete folder") }, onClick = {
+            MenuItem("Delete folder", icon = R.drawable.ic_delete, danger = true, onClick = {
                 open = false
                 onDelete()
             })
@@ -338,44 +330,45 @@ private fun FolderMenu(onRename: () -> Unit, onDelete: () -> Unit) {
 }
 
 @Composable
-private fun MoveDialog(note: NoteSummary, folders: List<Folder>, viewModel: NotesViewModel, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Move to") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                val choices = listOf<Folder?>(null) + folders
-                choices.forEach { folder ->
-                    Text(
-                        folder?.title ?: "No folder",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (folder?.id == note.folderId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .combinedClickable(onClick = {
-                                viewModel.move(note, folder?.id)
-                                onDismiss()
-                            })
-                            .padding(start = (16 * (folder?.depth?.toInt() ?: 0)).dp, top = 12.dp, bottom = 12.dp),
-                    )
+private fun MoveSheet(note: NoteSummary, folders: List<Folder>, viewModel: NotesViewModel, onDismiss: () -> Unit) {
+    Sheet(onDismiss) { close ->
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
+            Text("Move to", style = Not.type.title, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 12.dp))
+            (listOf<Folder?>(null) + folders).forEach { folder ->
+                val current = folder?.id == note.folderId
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(CircleShape)
+                        .background(if (current) Not.colors.accentSoft else Color.Transparent)
+                        .pressable({
+                            viewModel.move(note, folder?.id)
+                            close()
+                        }, pressedScale = 0.98f)
+                        .heightIn(min = 52.dp)
+                        .padding(start = (14 + 20 * (folder?.depth?.toInt() ?: 0)).dp, end = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(if (folder == null) R.drawable.ic_note else R.drawable.ic_folder, null, tint = if (current) Not.colors.accentInk else Not.colors.inkMuted)
+                    Spacer(Modifier.width(14.dp))
+                    Text(folder?.title ?: "No folder", style = if (current) Not.type.bodyStrong else Not.type.body)
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
+        }
+    }
 }
 
 // ---- editor ----
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesViewModel, snackbar: SnackbarHostState) {
+private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesViewModel) {
     var value by remember(note.id) { mutableStateOf(TextFieldValue(viewModel.body(note.id))) }
     // What the store had when last loaded or saved, to tell local edits from synced ones.
     var saved by remember(note.id) { mutableStateOf(value.text) }
     var menu by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
+    val colors = Not.colors
 
     LaunchedEffect(note.id, value.text) {
         if (value.text != saved) {
@@ -401,84 +394,72 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
     }
     LaunchedEffect(note.id) { if (value.text.isEmpty()) focus.requestFocus() }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    IconButton(onClick = { viewModel.open(null) }) { Icon(painterResource(R.drawable.ic_arrow_back), "Back") }
-                },
-                title = {
-                    Text(
-                        listOfNotNull(state.folderTitle(note.folderId), "Edited ${edited(note.updatedAt)}").joinToString(" · "),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                },
-                actions = {
-                    IconButton(onClick = { viewModel.togglePin(note) }) {
-                        Icon(
-                            painterResource(R.drawable.ic_pin),
-                            if (note.pinned) "Unpin" else "Pin",
-                            tint = if (note.pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Box {
-                        IconButton(onClick = { menu = true }) { Icon(painterResource(R.drawable.ic_more_vert), "More") }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            DropdownMenuItem(text = { Text("Move to…") }, onClick = {
-                                menu = false
-                                moving = true
-                            })
-                            DropdownMenuItem(text = { Text("Delete") }, onClick = {
-                                menu = false
-                                viewModel.delete(note)
-                            })
-                        }
-                    }
-                },
+    Column(Modifier.fillMaxSize().background(colors.background)) {
+        Row(
+            Modifier.fillMaxWidth().statusBarsPadding().height(56.dp).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(R.drawable.ic_arrow_back, "Back", { viewModel.open(null) })
+            Text(
+                listOfNotNull(state.folderTitle(note.folderId), "Edited ${edited(note.updatedAt)}").joinToString(" · "),
+                style = Not.type.caption,
+                color = colors.inkFaint,
+                maxLines = 1,
+                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
             )
-        },
-        snackbarHost = { SnackbarHost(snackbar) },
-        bottomBar = { FormatBar(value, onChange = { value = it }) },
-    ) { padding ->
+            IconButton(
+                R.drawable.ic_pin,
+                if (note.pinned) "Unpin" else "Pin",
+                { viewModel.togglePin(note) },
+                tint = if (note.pinned) colors.accentInk else colors.inkMuted,
+                background = if (note.pinned) colors.accentSoft else Color.Transparent,
+            )
+            Box {
+                IconButton(R.drawable.ic_more_vert, "More", { menu = true })
+                Menu(menu, onDismiss = { menu = false }) {
+                    MenuItem("Move to…", icon = R.drawable.ic_folder, onClick = {
+                        menu = false
+                        moving = true
+                    })
+                    MenuItem("Delete", icon = R.drawable.ic_delete, danger = true, onClick = {
+                        menu = false
+                        viewModel.delete(note)
+                    })
+                }
+            }
+        }
         MarkdownField(
             value,
             { value = it },
             Modifier
-                .padding(padding)
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .padding(horizontal = 24.dp, vertical = 8.dp)
                 .focusRequester(focus),
         )
+        FormatBar(value, onChange = { value = it })
     }
-    if (moving) MoveDialog(note, state.folders, viewModel, onDismiss = { moving = false })
+    if (moving) MoveSheet(note, state.folders, viewModel, onDismiss = { moving = false })
 }
 
-/** Formatting for the caret's line or the selection, above the keyboard. */
+/** Formatting for the caret's line or the selection, riding above the keyboard. */
 @Composable
 private fun FormatBar(value: TextFieldValue, onChange: (TextFieldValue) -> Unit) {
-    Surface(tonalElevation = 3.dp) {
-        Column(Modifier.navigationBarsPadding().imePadding()) {
-            HorizontalDivider()
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-            ) {
-                FormatButton(R.drawable.ic_title, "Heading") { onChange(value.cycleHeading()) }
-                FormatButton(R.drawable.ic_checklist, "Checklist") { onChange(value.cycleChecklist()) }
-                FormatButton(R.drawable.ic_bullets, "Bulleted list") { onChange(value.toggleBullet()) }
-                FormatButton(R.drawable.ic_format_bold, "Bold") { onChange(value.wrap("**")) }
-                FormatButton(R.drawable.ic_format_italic, "Italic") { onChange(value.wrap("*")) }
-                FormatButton(R.drawable.ic_code, "Code") { onChange(value.wrap("`")) }
-            }
+    Column(Modifier.navigationBarsPadding().imePadding()) {
+        Divider()
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            IconButton(R.drawable.ic_title, "Heading", { onChange(value.cycleHeading()) }, tint = Not.colors.inkMuted)
+            IconButton(R.drawable.ic_checklist, "Checklist", { onChange(value.cycleChecklist()) }, tint = Not.colors.inkMuted)
+            IconButton(R.drawable.ic_bullets, "Bulleted list", { onChange(value.toggleBullet()) }, tint = Not.colors.inkMuted)
+            IconButton(R.drawable.ic_format_bold, "Bold", { onChange(value.wrap("**")) }, tint = Not.colors.inkMuted)
+            IconButton(R.drawable.ic_format_italic, "Italic", { onChange(value.wrap("*")) }, tint = Not.colors.inkMuted)
+            IconButton(R.drawable.ic_code, "Code", { onChange(value.wrap("`")) }, tint = Not.colors.inkMuted)
         }
     }
-}
-
-@Composable
-private fun FormatButton(icon: Int, label: String, onClick: () -> Unit) {
-    IconButton(onClick = onClick) { Icon(painterResource(icon), label) }
 }
 
 private fun edited(millis: Long): String =
