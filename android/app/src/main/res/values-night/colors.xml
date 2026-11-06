@@ -2,4 +2,10 @@
 <resources>
     <!-- Behind the app before Compose draws (launch, splash). Matches ui/Theme.kt. -->
     <color name="app_background">#FF181A26</color>
+    <color name="widget_preview_background">#FF23263A</color>
+    <color name="widget_preview_content">#FFECEEF5</color>
+    <color name="widget_preview_muted">#FF9CA1B6</color>
+    <color name="widget_preview_faint">#FF636881</color>
+    <color name="widget_preview_card">#FF2B2F45</color>
+    <color name="widget_preview_on_accent">#FF16231B</color>
 </resources>

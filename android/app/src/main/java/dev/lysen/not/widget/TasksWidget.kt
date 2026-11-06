@@ -6,30 +6,28 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
-import androidx.glance.GlanceTheme
-import androidx.glance.ImageProvider
+import androidx.glance.action.Action
 import androidx.glance.LocalContext
 import androidx.glance.action.ActionParameters
 import androidx.glance.action.actionParametersOf
 import androidx.glance.action.clickable
-import androidx.glance.appwidget.CheckBox
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
-import androidx.glance.appwidget.components.CircleIconButton
-import androidx.glance.appwidget.components.Scaffold
-import androidx.glance.appwidget.components.TitleBar
 import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.lazy.items
 import androidx.glance.appwidget.provideContent
 import androidx.glance.currentState
 import androidx.glance.layout.Alignment
-import androidx.glance.layout.Box
+import androidx.glance.layout.Row
+import androidx.glance.layout.Spacer
+import androidx.glance.layout.width
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.padding
@@ -58,7 +56,7 @@ class TasksWidget : GlanceAppWidget() {
             // Re-read the store whenever it changes while this widget's session is alive.
             val version by app.changes.collectAsState()
             val content = remember(listId, version) { WidgetContent.load(app.store, listId) }
-            GlanceTheme { TasksWidgetContent(content) }
+            TasksWidgetContent(content)
         }
     }
 }
@@ -89,7 +87,8 @@ private data class WidgetContent(val listId: String, val title: String, val rows
                 val list = lists.firstOrNull { it.id == listId } ?: lists.first()
                 // Open tasks only: completed subtasks of open tasks are left out too.
                 WidgetContent(list.id, list.title, store.outline(list.id).open.filter { !it.done })
-            } catch (_: NotException) {
+            } catch (e: NotException) {
+                logLoadFailure("tasks", e)
                 WidgetContent(INBOX_ID, "Inbox", emptyList())
             }
     }
@@ -98,41 +97,44 @@ private data class WidgetContent(val listId: String, val title: String, val rows
 @Composable
 private fun TasksWidgetContent(content: WidgetContent) {
     val context = LocalContext.current
-    Scaffold(
-        titleBar = {
-            TitleBar(
-                startIcon = ImageProvider(R.drawable.ic_task_alt),
-                title = content.title,
-                modifier = GlanceModifier.clickable(
-                    actionStartActivity(MainActivity.openList(context, content.listId)),
-                ),
-                actions = {
-                    CircleIconButton(
-                        imageProvider = ImageProvider(R.drawable.ic_add),
-                        contentDescription = context.getString(R.string.add_task),
-                        onClick = actionStartActivity(QuickAddActivity.intent(context, content.listId)),
-                        backgroundColor = null,
-                    )
-                },
-            )
-        },
-    ) {
-        if (content.rows.isEmpty()) {
-            Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Nothing to do", style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant))
+    val open = actionStartActivity(MainActivity.openList(context, content.listId))
+    WidgetSurface {
+        WidgetHeader(
+            title = content.title,
+            open = open,
+            detail = content.rows.size.takeIf { it > 0 }?.toString(),
+            add = actionStartActivity(QuickAddActivity.intent(context, content.listId)),
+            addLabel = context.getString(R.string.add_task),
+        )
+        when {
+            content.rows.isNotEmpty() -> LazyColumn(GlanceModifier.fillMaxSize()) {
+                items(content.rows, itemId = { it.task.id.hashCode().toLong() }) { TaskRow(it, open) }
             }
-        } else {
-            LazyColumn(GlanceModifier.fillMaxSize()) {
-                items(content.rows, itemId = { it.task.id.hashCode().toLong() }) { row ->
-                    CheckBox(
-                        checked = false,
-                        onCheckedChange = actionRunCallback<CompleteTask>(actionParametersOf(TASK_ID to row.task.id)),
-                        text = row.task.title,
-                        maxLines = 2,
-                        modifier = GlanceModifier.fillMaxWidth().padding(start = (row.depth.toInt() * 16).dp),
-                    )
-                }
-            }
+            content.listId == INBOX_ID -> WidgetEmpty(R.drawable.ic_inbox, "Inbox zero", "Tap + to jot something down.", open)
+            else -> WidgetEmpty(R.drawable.ic_check, "All done", "Nothing left in ${content.title}.", open)
         }
+    }
+}
+
+@Composable
+private fun TaskRow(row: OutlineRow, open: Action) {
+    val sub = row.depth > 0u
+    Row(
+        GlanceModifier.fillMaxWidth().padding(start = (row.depth.toInt() * 22).dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        WidgetCheck(
+            checked = false,
+            onClick = actionRunCallback<CompleteTask>(actionParametersOf(TASK_ID to row.task.id)),
+            size = if (sub) 18.dp else 22.dp,
+            label = "Complete ${row.task.title}",
+        )
+        Spacer(GlanceModifier.width(6.dp))
+        Text(
+            row.task.title,
+            maxLines = 2,
+            style = TextStyle(color = WidgetColors.ink, fontSize = if (sub) 14.sp else 15.sp),
+            modifier = GlanceModifier.defaultWeight().padding(vertical = 8.dp).clickable(open),
+        )
     }
 }

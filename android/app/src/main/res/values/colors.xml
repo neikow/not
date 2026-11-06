@@ -3,10 +3,14 @@
     <color name="ic_launcher_background">#FF23263A</color>
     <color name="ic_launcher_check">#FF8BE9A8</color>
 
-    <!-- Widget picker preview (Android 12+ overrides these with wallpaper colors). -->
-    <color name="widget_preview_background">#FFEEF0FF</color>
-    <color name="widget_preview_content">#FF1B1B21</color>
-    <color name="widget_preview_card">#FFDDE1F9</color>
+    <!-- Widgets' picker previews: the brand palette, as in ui/Theme.kt. -->
+    <color name="widget_preview_background">#FFFFFFFF</color>
+    <color name="widget_preview_content">#FF23263A</color>
+    <color name="widget_preview_muted">#FF6B7085</color>
+    <color name="widget_preview_faint">#FFA6AABA</color>
+    <color name="widget_preview_card">#FFEEF0F4</color>
+    <color name="widget_preview_accent">#FF8BE9A8</color>
+    <color name="widget_preview_on_accent">#FF23263A</color>
     <!-- Behind the app before Compose draws (launch, splash). Matches ui/Theme.kt. -->
     <color name="app_background">#FFF7F8FA</color>
 </resources>

@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="@drawable/widget_preview_background"
     android:orientation="vertical"
-    android:paddingHorizontal="12dp"
+    android:paddingHorizontal="16dp"
     android:paddingVertical="8dp">
 
     <LinearLayout
@@ -14,21 +14,27 @@
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
-        <ImageView
-            android:layout_width="24dp"
-            android:layout_height="24dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/ic_note"
-            android:tint="@color/widget_preview_content" />
-
         <TextView
-            android:layout_width="0dp"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:layout_weight="1"
             android:text="@string/widget_notes"
             android:textColor="@color/widget_preview_content"
-            android:textSize="18sp" />
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <ImageView
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:background="@drawable/widget_preview_add"
+            android:importantForAccessibility="no"
+            android:padding="7dp"
+            android:src="@drawable/ic_add"
+            android:tint="@color/widget_preview_on_accent" />
     </LinearLayout>
 
     <TextView
@@ -37,7 +43,7 @@
         android:layout_marginBottom="6dp"
         android:background="@drawable/widget_preview_card"
         android:paddingHorizontal="12dp"
-        android:paddingVertical="8dp"
+        android:paddingVertical="9dp"
         android:text="@string/widget_preview_note_1"
         android:textColor="@color/widget_preview_content"
         android:textSize="15sp" />
@@ -48,7 +54,7 @@
         android:layout_marginBottom="6dp"
         android:background="@drawable/widget_preview_card"
         android:paddingHorizontal="12dp"
-        android:paddingVertical="8dp"
+        android:paddingVertical="9dp"
         android:text="@string/widget_preview_note_2"
         android:textColor="@color/widget_preview_content"
         android:textSize="15sp" />
@@ -59,7 +65,7 @@
         android:layout_marginBottom="6dp"
         android:background="@drawable/widget_preview_card"
         android:paddingHorizontal="12dp"
-        android:paddingVertical="8dp"
+        android:paddingVertical="9dp"
         android:text="@string/widget_preview_note_3"
         android:textColor="@color/widget_preview_content"
         android:textSize="15sp" />

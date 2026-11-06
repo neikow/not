@@ -10,7 +10,6 @@ import androidx.compose.ui.unit.sp
 import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
-import androidx.glance.GlanceTheme
 import androidx.glance.Image
 import androidx.glance.ImageProvider
 import androidx.glance.LocalContext
@@ -22,8 +21,6 @@ import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
-import androidx.glance.appwidget.components.Scaffold
-import androidx.glance.appwidget.components.TitleBar
 import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.lazy.items
 import androidx.glance.appwidget.provideContent
@@ -62,14 +59,16 @@ class HabitsWidget : GlanceAppWidget() {
         provideContent {
             val version by app.changes.collectAsState()
             val today = LocalDate.now()
-            val habits = remember(version, today) {
+            // All habits; the widget lists the ones due today.
+            val all = remember(version, today) {
                 try {
-                    app.store.habits(today.toString()).filter { it.due }
-                } catch (_: NotException) {
+                    app.store.habits(today.toString())
+                } catch (e: NotException) {
+                    logLoadFailure("habits", e)
                     emptyList()
                 }
             }
-            GlanceTheme { HabitsWidgetContent(habits) }
+            HabitsWidgetContent(all.filter { it.due }, hasAny = all.isNotEmpty())
         }
     }
 }
@@ -91,25 +90,26 @@ class ToggleHabit : ActionCallback {
 }
 
 @Composable
-private fun HabitsWidgetContent(habits: List<HabitSummary>) {
+private fun HabitsWidgetContent(habits: List<HabitSummary>, hasAny: Boolean) {
     val context = LocalContext.current
+    val open = actionStartActivity(MainActivity.openTab(context, Tab.Habits))
     val left = habits.count { it.count < it.habit.goal }
-    Scaffold(
-        titleBar = {
-            TitleBar(
-                startIcon = ImageProvider(R.drawable.ic_repeat),
-                title = when {
-                    habits.isEmpty() -> "Habits"
-                    left == 0 -> "Habits · all done"
-                    else -> "Habits · $left left"
-                },
-                modifier = GlanceModifier.clickable(actionStartActivity(MainActivity.openTab(context, Tab.Habits))),
-            )
-        },
-    ) {
+    WidgetSurface {
+        WidgetHeader(
+            title = "Habits",
+            open = open,
+            detail = when {
+                habits.isEmpty() -> null
+                left == 0 -> "All done"
+                else -> "$left left"
+            },
+            detailAccent = habits.isNotEmpty() && left == 0,
+        )
         if (habits.isEmpty()) {
-            Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Nothing due today", style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant))
+            if (hasAny) {
+                WidgetEmpty(R.drawable.ic_check, "Nothing due today", "Enjoy the day off.", open)
+            } else {
+                WidgetEmpty(R.drawable.ic_repeat, "No habits yet", "Tap to add one in the app.", open)
             }
         } else {
             LazyColumn(GlanceModifier.fillMaxSize()) {
@@ -119,44 +119,47 @@ private fun HabitsWidgetContent(habits: List<HabitSummary>) {
     }
 }
 
+/** The whole row checks in: habits are tapped many times a day, so the target is big. */
 @Composable
 private fun HabitRow(summary: HabitSummary) {
     val habit = summary.habit
     val done = summary.count >= habit.goal
+    val started = summary.count > 0u && !done
     Row(
         GlanceModifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
+            .padding(vertical = 2.dp)
             .clickable(actionRunCallback<ToggleHabit>(actionParametersOf(HABIT_ID to habit.id))),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(GlanceModifier.size(32.dp), contentAlignment = Alignment.Center) {
+        // Ring like the app's: faint when untouched, mint once started, a mint disc with a check when done.
+        Box(GlanceModifier.size(40.dp), contentAlignment = Alignment.Center) {
             Image(
                 ImageProvider(if (done) R.drawable.widget_ring_done else R.drawable.widget_ring),
                 contentDescription = if (done) "Done" else "Check in",
-                colorFilter = ColorFilter.tint(if (done) GlanceTheme.colors.primary else GlanceTheme.colors.outline),
+                colorFilter = ColorFilter.tint(if (done || started) WidgetColors.accent else WidgetColors.inkFaint),
                 modifier = GlanceModifier.size(28.dp),
             )
             if (done) {
                 Image(
                     ImageProvider(R.drawable.ic_check),
                     contentDescription = null,
-                    colorFilter = ColorFilter.tint(GlanceTheme.colors.onPrimary),
+                    colorFilter = ColorFilter.tint(WidgetColors.onAccent),
                     modifier = GlanceModifier.size(18.dp),
                 )
-            } else if (summary.count > 0u) {
+            } else if (started) {
                 Text(
                     summary.count.toString(),
-                    style = TextStyle(color = GlanceTheme.colors.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                    style = TextStyle(color = WidgetColors.accentInk, fontSize = 12.sp, fontWeight = FontWeight.Bold),
                 )
             }
         }
-        Spacer(GlanceModifier.width(12.dp))
+        Spacer(GlanceModifier.width(8.dp))
         Column(GlanceModifier.defaultWeight()) {
             Text(
                 habit.title,
                 maxLines = 1,
-                style = TextStyle(color = GlanceTheme.colors.onSurface, fontSize = 15.sp),
+                style = TextStyle(color = if (done) WidgetColors.inkMuted else WidgetColors.ink, fontSize = 15.sp),
             )
             val details = listOfNotNull(
                 if (habit.goal > 1u) "${summary.count} of ${habit.goal}" else null,
@@ -166,7 +169,7 @@ private fun HabitRow(summary: HabitSummary) {
                 Text(
                     details.joinToString(" · "),
                     maxLines = 1,
-                    style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 12.sp),
+                    style = TextStyle(color = WidgetColors.inkMuted, fontSize = 12.sp),
                 )
             }
         }

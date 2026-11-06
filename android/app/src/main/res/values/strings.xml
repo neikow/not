@@ -17,7 +17,9 @@
     <string name="widget_preview_task_2">Call the dentist</string>
     <string name="widget_preview_task_3">Renew passport</string>
     <string name="widget_preview_habit_1">Read</string>
-    <string name="widget_preview_habit_2">Water · 1 of 3</string>
+    <string name="widget_preview_habit_2">Water</string>
+    <string name="widget_preview_streak">12-day streak</string>
+    <string name="widget_preview_left">3 left</string>
     <string name="widget_preview_habit_3">Stretch</string>
     <string name="widget_preview_note_1">Pancakes</string>
     <string name="widget_preview_note_2">Trip to Lisbon</string>

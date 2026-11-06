@@ -13,22 +13,17 @@ import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
 import androidx.glance.Image
 import androidx.glance.GlanceModifier
-import androidx.glance.GlanceTheme
 import androidx.glance.ImageProvider
 import androidx.glance.LocalContext
 import androidx.glance.action.Action
 import androidx.glance.action.ActionParameters
 import androidx.glance.action.actionParametersOf
 import androidx.glance.action.clickable
-import androidx.glance.appwidget.CheckBox
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
-import androidx.glance.appwidget.components.CircleIconButton
-import androidx.glance.appwidget.components.Scaffold
-import androidx.glance.appwidget.components.TitleBar
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.lazy.items
@@ -47,6 +42,8 @@ import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
+import androidx.glance.layout.width
+import androidx.glance.text.TextAlign
 import androidx.glance.text.TextDecoration
 import androidx.glance.text.TextStyle
 import dev.lysen.not.MainActivity
@@ -76,7 +73,7 @@ class NotesWidget : GlanceAppWidget() {
             val folderId = currentState(FOLDER_KEY)?.takeIf { it.isNotEmpty() }
             val version by app.changes.collectAsState()
             val content = remember(folderId, version) { NotesContent.load(app.store, folderId) }
-            GlanceTheme { NotesWidgetContent(content) }
+            NotesWidgetContent(content)
         }
     }
 }
@@ -92,7 +89,8 @@ private data class NotesContent(val folderId: String?, val title: String, val no
                 // The folder may have been deleted on another device: fall back to all notes.
                 val folder = folderId?.let { id -> store.folders().firstOrNull { it.id == id } }
                 NotesContent(folder?.id, folder?.title ?: "Notes", store.notes(folder?.id).take(30))
-            } catch (_: NotException) {
+            } catch (e: NotException) {
+                logLoadFailure("notes", e)
                 NotesContent(null, "Notes", emptyList())
             }
     }
@@ -101,68 +99,59 @@ private data class NotesContent(val folderId: String?, val title: String, val no
 @Composable
 private fun NotesWidgetContent(content: NotesContent) {
     val context = LocalContext.current
-    Scaffold(
-        titleBar = {
-            TitleBar(
-                startIcon = ImageProvider(R.drawable.ic_note),
-                title = content.title,
-                modifier = GlanceModifier.clickable(actionStartActivity(MainActivity.openTab(context, Tab.Notes))),
-                actions = {
-                    CircleIconButton(
-                        imageProvider = ImageProvider(R.drawable.ic_add),
-                        contentDescription = "New note",
-                        onClick = actionStartActivity(MainActivity.newNote(context, content.folderId)),
-                        backgroundColor = null,
-                    )
-                },
-            )
-        },
-    ) {
+    val open = actionStartActivity(MainActivity.openTab(context, Tab.Notes))
+    WidgetSurface {
+        WidgetHeader(
+            title = content.title,
+            open = open,
+            add = actionStartActivity(MainActivity.newNote(context, content.folderId)),
+            addLabel = "New note",
+        )
         if (content.notes.isEmpty()) {
-            Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No notes yet", style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant))
-            }
+            WidgetEmpty(R.drawable.ic_note, "No notes yet", "Tap + to write one.", open)
         } else {
             LazyColumn(GlanceModifier.fillMaxSize()) {
-                items(content.notes, itemId = { it.id.hashCode().toLong() }) { note ->
-                    Column(GlanceModifier.fillMaxWidth().padding(bottom = 6.dp)) {
-                        Column(
-                            GlanceModifier
-                                .fillMaxWidth()
-                                .background(GlanceTheme.colors.secondaryContainer)
-                                .cornerRadius(12.dp)
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                                .clickable(actionStartActivity(MainActivity.openNote(context, note.id))),
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (note.pinned) {
-                                    Image(
-                                        ImageProvider(R.drawable.ic_pin),
-                                        contentDescription = "Pinned",
-                                        colorFilter = ColorFilter.tint(GlanceTheme.colors.primary),
-                                        modifier = GlanceModifier.size(14.dp).padding(end = 4.dp),
-                                    )
-                                }
-                                Text(
-                                    note.title.ifEmpty { "New note" },
-                                    maxLines = 1,
-                                    style = TextStyle(
-                                        color = GlanceTheme.colors.onSecondaryContainer,
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.Medium,
-                                    ),
-                                )
-                            }
-                            if (note.preview.isNotEmpty()) {
-                                Text(
-                                    note.preview,
-                                    maxLines = 2,
-                                    style = TextStyle(color = GlanceTheme.colors.onSecondaryContainer, fontSize = 13.sp),
-                                )
-                            }
-                        }
-                    }
+                items(content.notes, itemId = { it.id.hashCode().toLong() }) { NoteCard(it) }
+            }
+        }
+    }
+}
+
+/** A soft card: title (with a pin when pinned) over a two-line preview. */
+@Composable
+private fun NoteCard(note: NoteSummary) {
+    val context = LocalContext.current
+    Column(GlanceModifier.fillMaxWidth().padding(bottom = 6.dp)) {
+        Column(
+            GlanceModifier
+                .fillMaxWidth()
+                .background(WidgetColors.sunken)
+                .cornerRadius(14.dp)
+                .padding(horizontal = 12.dp, vertical = 9.dp)
+                .clickable(actionStartActivity(MainActivity.openNote(context, note.id))),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (note.pinned) {
+                    Image(
+                        ImageProvider(R.drawable.ic_pin),
+                        contentDescription = "Pinned",
+                        colorFilter = ColorFilter.tint(WidgetColors.accentInk),
+                        modifier = GlanceModifier.size(14.dp),
+                    )
+                    Spacer(GlanceModifier.width(4.dp))
                 }
+                Text(
+                    note.title.ifEmpty { "New note" },
+                    maxLines = 1,
+                    style = TextStyle(color = WidgetColors.ink, fontSize = 15.sp, fontWeight = FontWeight.Medium),
+                )
+            }
+            if (note.preview.isNotEmpty()) {
+                Text(
+                    note.preview,
+                    maxLines = 2,
+                    style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.sp),
+                )
             }
         }
     }
@@ -191,7 +180,7 @@ class NoteWidget : GlanceAppWidget() {
             val noteId = currentState(NOTE_KEY)
             val version by app.changes.collectAsState()
             val content = remember(noteId, version) { NoteContent.load(app.store, noteId) }
-            GlanceTheme { NoteWidgetContent(content) }
+            NoteWidgetContent(content)
         }
     }
 }
@@ -246,7 +235,8 @@ private data class NoteContent(val id: String?, val title: String, val lines: Li
                 val title = store.notes(null).firstOrNull { it.id == id }?.title.orEmpty()
                 val lines = all.withIndex().drop(first + 1).take(200).map { (i, raw) -> parse(i, raw) }
                 NoteContent(id, title.ifEmpty { "Note" }, lines.dropWhile { it is NoteLine.Gap }, missing = false)
-            } catch (_: NotException) {
+            } catch (e: NotException) {
+                logLoadFailure("note", e)
                 NoteContent(id, "Note", emptyList(), missing = true)
             }
         }
@@ -273,67 +263,69 @@ private data class NoteContent(val id: String?, val title: String, val lines: Li
 private fun NoteWidgetContent(content: NoteContent) {
     val context = LocalContext.current
     val open = content.id?.let { actionStartActivity(MainActivity.openNote(context, it)) }
-    Scaffold(
-        titleBar = {
-            TitleBar(
-                startIcon = ImageProvider(R.drawable.ic_note),
-                title = content.title,
-                modifier = if (open != null) GlanceModifier.clickable(open) else GlanceModifier,
-            )
-        },
-    ) {
+    WidgetSurface {
+        WidgetHeader(title = content.title, open = open)
         when {
-            content.id == null -> Message("Long-press the widget to pick a note.")
-            content.missing -> Message("This note was deleted. Long-press the widget to pick another.")
-            content.lines.isEmpty() -> Message("Nothing else in this note")
+            content.id == null -> WidgetEmpty(R.drawable.ic_note, "No note picked", "Long-press the widget to pick one.")
+            content.missing -> WidgetEmpty(R.drawable.ic_note, "Note deleted", "Long-press the widget to pick another.")
+            content.lines.isEmpty() -> WidgetEmpty(R.drawable.ic_note, "Nothing else here", "Tap to write more.", open)
             else -> LazyColumn(GlanceModifier.fillMaxSize()) {
                 items(content.lines, itemId = { it.index.toLong() }) { line ->
-                    NoteLineView(content.id!!, line, open!!)
+                    NoteLineView(content.id, line, open!!)
                 }
             }
         }
     }
 }
 
+/** Text lines sit 6dp in, in line with the title; checklist marks sit in the same column as a box's. */
 @Composable
 private fun NoteLineView(noteId: String, line: NoteLine, open: Action) {
-    val text = TextStyle(color = GlanceTheme.colors.onSurface, fontSize = 14.sp)
+    val text = TextStyle(color = WidgetColors.ink, fontSize = 14.sp)
     when (line) {
-        is NoteLine.Check -> CheckBox(
-            checked = line.checked,
-            onCheckedChange = actionRunCallback<ToggleNoteCheckbox>(actionParametersOf(NOTE_ID to noteId, LINE to line.index)),
-            text = line.text,
-            style = if (line.checked) {
-                text.copy(color = GlanceTheme.colors.onSurfaceVariant, textDecoration = TextDecoration.LineThrough)
-            } else {
-                text
-            },
-            maxLines = 3,
-            modifier = GlanceModifier.fillMaxWidth().padding(start = (line.depth * 16).dp),
-        )
+        is NoteLine.Check -> Row(
+            GlanceModifier.fillMaxWidth().padding(start = (line.depth * 20).dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            WidgetCheck(
+                checked = line.checked,
+                onClick = actionRunCallback<ToggleNoteCheckbox>(actionParametersOf(NOTE_ID to noteId, LINE to line.index)),
+                size = 18.dp,
+                box = true,
+                label = line.text,
+            )
+            Spacer(GlanceModifier.width(4.dp))
+            Text(
+                line.text,
+                maxLines = 3,
+                style = if (line.checked) text.copy(color = WidgetColors.inkFaint, textDecoration = TextDecoration.LineThrough) else text,
+                modifier = GlanceModifier.defaultWeight().padding(vertical = 6.dp).clickable(open),
+            )
+        }
         is NoteLine.Heading -> Text(
             line.text,
             style = text.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold),
-            modifier = GlanceModifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp).clickable(open),
+            modifier = GlanceModifier.fillMaxWidth().padding(start = 6.dp, top = 6.dp, bottom = 2.dp).clickable(open),
         )
-        is NoteLine.Bullet -> Text(
-            "•  ${line.text}",
-            style = text,
-            modifier = GlanceModifier.fillMaxWidth().padding(start = (4 + line.depth * 16).dp, bottom = 2.dp).clickable(open),
-        )
+        is NoteLine.Bullet -> Row(
+            GlanceModifier.fillMaxWidth().padding(start = (line.depth * 20).dp).clickable(open),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Dot centred where a box would be (36dp column), rows as tall as checklist rows, so lists line up.
+            Text(
+                "•",
+                style = text.copy(color = WidgetColors.accentInk, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center),
+                modifier = GlanceModifier.width(36.dp),
+            )
+            Spacer(GlanceModifier.width(4.dp))
+            Text(line.text, maxLines = 3, style = text, modifier = GlanceModifier.defaultWeight().padding(vertical = 6.dp))
+        }
         is NoteLine.Plain -> Text(
             line.text,
             style = text,
-            modifier = GlanceModifier.fillMaxWidth().padding(bottom = 2.dp).clickable(open),
+            modifier = GlanceModifier.fillMaxWidth().padding(start = 6.dp, bottom = 2.dp).clickable(open),
         )
         is NoteLine.Gap -> Spacer(GlanceModifier.height(8.dp))
-    }
-}
-
-@Composable
-private fun Message(text: String) {
-    Box(GlanceModifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
-        Text(text, style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant))
     }
 }
 

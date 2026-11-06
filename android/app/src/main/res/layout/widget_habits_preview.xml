@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="@drawable/widget_preview_background"
     android:orientation="vertical"
-    android:paddingHorizontal="12dp"
+    android:paddingHorizontal="16dp"
     android:paddingVertical="8dp">
 
     <LinearLayout
@@ -14,86 +14,115 @@
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
-        <ImageView
-            android:layout_width="24dp"
-            android:layout_height="24dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/ic_repeat"
-            android:tint="@color/widget_preview_content" />
-
         <TextView
-            android:layout_width="0dp"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:layout_weight="1"
             android:text="@string/widget_habits"
             android:textColor="@color/widget_preview_content"
-            android:textSize="18sp" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="40dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
-
-        <ImageView
-            android:layout_width="26dp"
-            android:layout_height="26dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/widget_ring"
-            android:tint="@color/widget_preview_content" />
+            android:textSize="18sp"
+            android:textStyle="bold" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:text="@string/widget_preview_habit_1"
-            android:textColor="@color/widget_preview_content"
-            android:textSize="15sp" />
+            android:layout_marginStart="8dp"
+            android:text="@string/widget_preview_left"
+            android:textColor="@color/widget_preview_faint"
+            android:textSize="14sp" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
     </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="40dp"
+        android:layout_height="46dp"
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
         <ImageView
-            android:layout_width="26dp"
-            android:layout_height="26dp"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
             android:importantForAccessibility="no"
             android:src="@drawable/widget_ring"
-            android:tint="@color/widget_preview_content" />
+            android:tint="@color/widget_preview_faint" />
 
-        <TextView
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:text="@string/widget_preview_habit_2"
-            android:textColor="@color/widget_preview_content"
-            android:textSize="15sp" />
+            android:layout_marginStart="14dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_preview_habit_1"
+                android:textColor="@color/widget_preview_content"
+                android:textSize="15sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_preview_streak"
+                android:textColor="@color/widget_preview_muted"
+                android:textSize="12sp" />
+        </LinearLayout>
     </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="40dp"
+        android:layout_height="38dp"
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
         <ImageView
-            android:layout_width="26dp"
-            android:layout_height="26dp"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
             android:importantForAccessibility="no"
             android:src="@drawable/widget_ring"
-            android:tint="@color/widget_preview_content" />
+            android:tint="@color/widget_preview_faint" />
 
-        <TextView
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:text="@string/widget_preview_habit_3"
-            android:textColor="@color/widget_preview_content"
-            android:textSize="15sp" />
+            android:layout_marginStart="14dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_preview_habit_2"
+                android:textColor="@color/widget_preview_content"
+                android:textSize="15sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="38dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_ring"
+            android:tint="@color/widget_preview_faint" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="14dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_preview_habit_3"
+                android:textColor="@color/widget_preview_content"
+                android:textSize="15sp" />
+        </LinearLayout>
     </LinearLayout>
 </LinearLayout>

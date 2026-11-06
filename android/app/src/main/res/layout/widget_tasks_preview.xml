@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="@drawable/widget_preview_background"
     android:orientation="vertical"
-    android:paddingHorizontal="12dp"
+    android:paddingHorizontal="16dp"
     android:paddingVertical="8dp">
 
     <LinearLayout
@@ -14,48 +14,118 @@
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
-        <ImageView
-            android:layout_width="24dp"
-            android:layout_height="24dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/ic_task_alt"
-            android:tint="@color/widget_preview_content" />
-
         <TextView
-            android:layout_width="0dp"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:layout_weight="1"
             android:text="@string/widget_preview_list"
             android:textColor="@color/widget_preview_content"
-            android:textSize="18sp" />
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="3"
+            android:textColor="@color/widget_preview_faint"
+            android:textSize="14sp" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
 
         <ImageView
-            android:layout_width="24dp"
-            android:layout_height="24dp"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:background="@drawable/widget_preview_add"
             android:importantForAccessibility="no"
+            android:padding="7dp"
             android:src="@drawable/ic_add"
-            android:tint="@color/widget_preview_content" />
+            android:tint="@color/widget_preview_on_accent" />
     </LinearLayout>
 
-    <CheckBox
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:buttonTint="@color/widget_preview_content"
-        android:text="@string/widget_preview_task_1"
-        android:textColor="@color/widget_preview_content" />
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="38dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
 
-    <CheckBox
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:buttonTint="@color/widget_preview_content"
-        android:text="@string/widget_preview_task_2"
-        android:textColor="@color/widget_preview_content" />
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_ring"
+            android:tint="@color/widget_preview_faint" />
 
-    <CheckBox
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:buttonTint="@color/widget_preview_content"
-        android:text="@string/widget_preview_task_3"
-        android:textColor="@color/widget_preview_content" />
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="14dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_preview_task_1"
+                android:textColor="@color/widget_preview_content"
+                android:textSize="15sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="38dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_ring"
+            android:tint="@color/widget_preview_faint" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="14dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_preview_task_2"
+                android:textColor="@color/widget_preview_content"
+                android:textSize="15sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="38dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_ring"
+            android:tint="@color/widget_preview_faint" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="14dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_preview_task_3"
+                android:textColor="@color/widget_preview_content"
+                android:textSize="15sp" />
+        </LinearLayout>
+    </LinearLayout>
 </LinearLayout>
