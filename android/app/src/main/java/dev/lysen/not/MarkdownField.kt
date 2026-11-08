@@ -4,7 +4,13 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.OutputTransformation
+import androidx.compose.foundation.text.input.TextFieldBuffer
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -23,7 +29,6 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -31,10 +36,6 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.OffsetMapping
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.TransformedText
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,22 +52,32 @@ import dev.lysen.not.ui.NotColors
  * drawn over their (hidden) markup, and tapping a box ticks it. Return continues lists.
  */
 @Composable
-fun MarkdownField(value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit, modifier: Modifier = Modifier) {
+fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
     val colors = Not.colors
-    val transformation = remember(colors) { MarkdownTransformation(colors) }
-    val marks = remember(value.text) { listMarks(markdownSpans(value.text)) }
+    val styling = remember(colors) { MarkdownStyling(colors) }
+    val text = state.text.toString()
+    val marks = remember(text) { listMarks(markdownSpans(text)) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-    val current by rememberUpdatedState(value)
-    val change by rememberUpdatedState(onValueChange)
     val currentMarks by rememberUpdatedState(marks)
 
+    // The caret never rests inside a box's or bullet's hidden markup.
+    LaunchedEffect(state) {
+        snapshotFlow { state.selection }.collect { selection ->
+            if (!selection.collapsed) return@collect
+            snappedCaret(state.text, selection.start)?.let { state.edit { this.selection = TextRange(it) } }
+        }
+    }
+
+    // The state-based field (not the TextFieldValue one): its input pipeline keeps the keyboard's
+    // edits in order. With the old one, Samsung Keyboard's Enter landed before the autocorrected
+    // word it commits with it, so the word was inserted again after the newline.
     BasicTextField(
-        value = value,
-        onValueChange = { onValueChange(continueList(value, it)) },
+        state = state,
+        inputTransformation = ListEditing,
+        outputTransformation = styling,
         textStyle = Not.type.body.copy(color = colors.ink, lineHeight = 26.sp),
         cursorBrush = SolidColor(colors.accentInk),
-        visualTransformation = transformation,
-        onTextLayout = { layout = it },
+        onTextLayout = { result -> layout = result() },
         modifier = modifier
             // Taps on a box tick it instead of moving the caret there.
             .pointerInput(Unit) {
@@ -79,7 +90,7 @@ fun MarkdownField(value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit
                     down.consume()
                     val up = waitForUpOrCancellation(PointerEventPass.Initial) ?: return@awaitEachGesture
                     up.consume()
-                    change(current.toggleBox(box))
+                    state.toggleBox(box)
                 }
             }
             .drawBehind {
@@ -156,22 +167,35 @@ private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: NotColors) {
     }
 }
 
-private fun TextFieldValue.toggleBox(box: ListMark.Box): TextFieldValue {
-    val i = box.at + 1
-    if (i >= text.length || text[box.at] != '[') return this
-    return copy(text = text.substring(0, i) + (if (box.checked) ' ' else 'x') + text.substring(i + 1))
+private fun TextFieldState.toggleBox(box: ListMark.Box) = edit {
+    apply(toggleBox(asCharSequence().toString(), box.at, selection.start, selection.end))
 }
 
-private class MarkdownTransformation(private val colors: NotColors) : VisualTransformation {
-    override fun filter(text: AnnotatedString): TransformedText {
-        val raw = text.text
+private fun TextFieldBuffer.apply(change: Change?) {
+    change ?: return
+    replace(change.start, change.end, change.text)
+    selection = TextRange(change.selStart, change.selEnd)
+}
+
+/** Styles the markdown in place; the text itself is left alone, so offsets map one to one. */
+private class MarkdownStyling(private val colors: NotColors) : OutputTransformation {
+    override fun TextFieldBuffer.transformOutput() {
+        val raw = asCharSequence().toString()
         val spans = markdownSpans(raw)
-        val styled = AnnotatedString.Builder(raw)
+        val styled = this
         titleRange(raw, spans)?.let { (start, end) ->
             styled.addStyle(ParagraphStyle(lineHeight = 36.sp), start, end)
             styled.addStyle(SpanStyle(fontFamily = Bricolage, fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp), start, end)
         }
         val hidden = SpanStyle(color = Color.Transparent)
+        // Two spaces are too narrow to read as nesting; widen each level to about a box's step.
+        var ls = 0
+        while (ls <= raw.length) {
+            listPrefix(raw, ls)?.takeIf { it.indent.isNotEmpty() }?.let {
+                styled.addStyle(SpanStyle(letterSpacing = 8.sp), it.start, it.start + it.indent.length)
+            }
+            ls = lineEnd(raw, ls) + 1
+        }
         for (mark in listMarks(spans)) {
             when (mark) {
                 // The bullet and its space collapse, so boxes line up with bullets; the box is drawn
@@ -193,7 +217,6 @@ private class MarkdownTransformation(private val colors: NotColors) : VisualTran
             if (span.style is MarkdownStyle.Bullet && span.end - span.start == 1u) continue
             styled.addStyle(style(span.style), span.start.toInt(), span.end.toInt())
         }
-        return TransformedText(styled.toAnnotatedString(), OffsetMapping.Identity)
     }
 
     private fun style(style: MarkdownStyle): SpanStyle = when (style) {
@@ -237,63 +260,55 @@ private fun titleRange(text: String, spans: List<MarkdownSpan>): Pair<Int, Int>?
 
 // ---- editing helpers ----
 
-private val LIST_ITEM = Regex("""^(\s*)([-*+] \[[ xX]] |[-*+] |(\d+)\. )""")
 private val LINE_PREFIX = Regex("""^(#{1,6} |> |[-*+] \[[ xX]] |[-*+] |\d+\. )?""")
 
-/** A typed newline after a list item starts the next item; on an empty item it ends the list. */
-private fun continueList(old: TextFieldValue, new: TextFieldValue): TextFieldValue {
-    val caret = new.selection.start
-    val typedNewline = new.text.length == old.text.length + 1 && new.selection.collapsed &&
-        caret > 0 && new.text[caret - 1] == '\n'
-    if (!typedNewline) return new
-    val lineStart = new.text.lastIndexOf('\n', caret - 2) + 1
-    val line = new.text.substring(lineStart, caret - 1)
-    val match = LIST_ITEM.find(line) ?: return new
-    val marker = match.value
-    if (line == marker) {
-        // Empty item: remove its marker and the newline.
-        val text = new.text.removeRange(lineStart, caret)
-        return TextFieldValue(text, TextRange(lineStart))
+/** List rules for what the user types: Return continues lists, Backspace takes markers out whole. */
+private object ListEditing : InputTransformation {
+    override fun TextFieldBuffer.transformInput() {
+        val original = originalText.toString()
+        val text = asCharSequence().toString()
+        val was = originalSelection
+        val caret = selection.start
+        if (!selection.collapsed) return
+        val deletedOneBack = was.collapsed && caret == was.start - 1 && text.length == original.length - 1 &&
+            text == original.removeRange(caret, was.start)
+        // A newline before the caret that wasn't there before. The keyboard may commit the word it
+        // was composing in the same edit, so the length can grow by more than one.
+        val typedNewline = caret > 0 && text[caret - 1] == '\n' && text.count { it == '\n' } > original.count { it == '\n' }
+        when {
+            deletedOneBack -> onBackspace(original, was.start)?.let { revertAllChanges(); apply(it) }
+            typedNewline -> apply(onNewline(text, caret))
+        }
     }
-    val indent = match.groupValues[1]
-    val next = when {
-        match.groupValues[3].isNotEmpty() -> "$indent${match.groupValues[3].toInt() + 1}. "
-        "[" in marker -> "$indent${marker.trim()[0]} [ ] "
-        else -> marker
-    }
-    return new.insert(caret, next)
 }
 
-private fun TextFieldValue.insert(at: Int, s: String) =
-    TextFieldValue(text.substring(0, at) + s + text.substring(at), TextRange(at + s.length))
+/** Nests the list items on the selected lines one level deeper, or ([deeper] false) back out. */
+fun TextFieldState.indent(deeper: Boolean) = edit {
+    apply(indentLines(asCharSequence().toString(), selection.min, selection.max, deeper))
+}
 
 /** Wraps the selection (or an empty pair at the caret) in [marker]. */
-fun TextFieldValue.wrap(marker: String): TextFieldValue {
+fun TextFieldState.wrap(marker: String) = edit {
     val (start, end) = selection.min to selection.max
-    val text = text.substring(0, start) + marker + text.substring(start, end) + marker + text.substring(end)
-    return TextFieldValue(text, TextRange(start + marker.length, end + marker.length))
+    replace(end, end, marker)
+    replace(start, start, marker)
+    selection = TextRange(start + marker.length, end + marker.length)
 }
 
 /** Rewrites the block marker of the caret's line with [next] (given the current marker, "" if none). */
-private fun TextFieldValue.withLinePrefix(next: (String) -> String): TextFieldValue {
-    val lineStart = text.lastIndexOf('\n', (selection.start - 1).coerceAtLeast(0)).let {
-        if (selection.start == 0) 0 else it + 1
-    }
-    val current = LINE_PREFIX.find(text.substring(lineStart))?.value.orEmpty()
+private fun TextFieldState.withLinePrefix(next: (String) -> String) = edit {
+    val text = asCharSequence().toString()
+    val (start, end) = selection.start to selection.end
+    val prefixAt = lineStart(text, start).let { ls -> ls + text.drop(ls).takeWhile { it == ' ' || it == '\t' }.length }
+    val current = LINE_PREFIX.find(text.substring(prefixAt))?.value.orEmpty()
     val replacement = next(current)
-    val text = text.substring(0, lineStart) + replacement + text.substring(lineStart + current.length)
+    replace(prefixAt, prefixAt + current.length, replacement)
     val shift = replacement.length - current.length
-    return TextFieldValue(
-        text,
-        TextRange(
-            (selection.start + shift).coerceAtLeast(lineStart),
-            (selection.end + shift).coerceAtLeast(lineStart),
-        ),
-    )
+    selection = TextRange((start + shift).coerceAtLeast(prefixAt), (end + shift).coerceAtLeast(prefixAt))
 }
 
 /** None → # → ## → ### → none. */
-fun TextFieldValue.cycleHeading() = withLinePrefix {
+fun TextFieldState.cycleHeading() = withLinePrefix {
     when (it) {
         "# " -> "## "
         "## " -> "### "
@@ -303,7 +318,7 @@ fun TextFieldValue.cycleHeading() = withLinePrefix {
 }
 
 /** None → unchecked → checked → none. */
-fun TextFieldValue.cycleChecklist() = withLinePrefix {
+fun TextFieldState.cycleChecklist() = withLinePrefix {
     when {
         it.endsWith("[ ] ") -> "- [x] "
         it.endsWith("[x] ") || it.endsWith("[X] ") -> ""
@@ -311,4 +326,4 @@ fun TextFieldValue.cycleChecklist() = withLinePrefix {
     }
 }
 
-fun TextFieldValue.toggleBullet() = withLinePrefix { if (it == "- ") "" else "- " }
+fun TextFieldState.toggleBullet() = withLinePrefix { if (it == "- ") "" else "- " }

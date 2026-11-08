@@ -7,6 +7,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +30,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.foundation.text.input.TextFieldBuffer
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,8 +46,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.lysen.not.core.Folder
@@ -362,37 +363,38 @@ private fun MoveSheet(note: NoteSummary, folders: List<Folder>, viewModel: Notes
 
 @Composable
 private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesViewModel) {
-    var value by remember(note.id) { mutableStateOf(TextFieldValue(viewModel.body(note.id))) }
+    val editor = remember(note.id) { TextFieldState(viewModel.body(note.id)) }
+    val text = editor.text.toString()
     // What the store had when last loaded or saved, to tell local edits from synced ones.
-    var saved by remember(note.id) { mutableStateOf(value.text) }
+    var saved by remember(note.id) { mutableStateOf(text) }
     var menu by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val colors = Not.colors
 
-    LaunchedEffect(note.id, value.text) {
-        if (value.text != saved) {
+    LaunchedEffect(note.id, text) {
+        if (text != saved) {
             delay(400)
-            saved = value.text
-            viewModel.setBody(note.id, value.text)
+            saved = text
+            viewModel.setBody(note.id, text)
         }
     }
     // Edited on another device: take it unless there are unsaved local changes.
     LaunchedEffect(note.updatedAt) {
         val body = viewModel.body(note.id)
-        if (value.text == saved && body != value.text) {
-            value = TextFieldValue(body, TextRange(value.selection.start.coerceAtMost(body.length)))
+        if (text == saved && body != text) {
+            editor.edit { replaceChanged(body) }
             saved = body
         }
     }
-    val latest by rememberUpdatedState(value.text to saved)
+    val latest by rememberUpdatedState(text to saved)
     DisposableEffect(note.id) {
         onDispose {
             val (text, lastSaved) = latest
             viewModel.close(note.id, text.takeIf { it != lastSaved })
         }
     }
-    LaunchedEffect(note.id) { if (value.text.isEmpty()) focus.requestFocus() }
+    LaunchedEffect(note.id) { if (text.isEmpty()) focus.requestFocus() }
 
     Column(Modifier.fillMaxSize().background(colors.background)) {
         Row(
@@ -429,8 +431,7 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
             }
         }
         MarkdownField(
-            value,
-            { value = it },
+            editor,
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
@@ -438,28 +439,49 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
                 .padding(horizontal = 24.dp, vertical = 8.dp)
                 .focusRequester(focus),
         )
-        FormatBar(value, onChange = { value = it })
+        FormatBar(editor)
     }
     if (moving) MoveSheet(note, state.folders, viewModel, onDismiss = { moving = false })
 }
 
-/** Formatting for the caret's line or the selection, riding above the keyboard. */
+/** Formatting for the caret's line or the selection, riding above the keyboard; undo stays put at the end. */
+@OptIn(ExperimentalFoundationApi::class) // undoState
 @Composable
-private fun FormatBar(value: TextFieldValue, onChange: (TextFieldValue) -> Unit) {
+private fun FormatBar(editor: TextFieldState) {
+    val muted = Not.colors.inkMuted
     Column(Modifier.navigationBarsPadding().imePadding()) {
         Divider()
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            IconButton(R.drawable.ic_title, "Heading", { onChange(value.cycleHeading()) }, tint = Not.colors.inkMuted)
-            IconButton(R.drawable.ic_checklist, "Checklist", { onChange(value.cycleChecklist()) }, tint = Not.colors.inkMuted)
-            IconButton(R.drawable.ic_bullets, "Bulleted list", { onChange(value.toggleBullet()) }, tint = Not.colors.inkMuted)
-            IconButton(R.drawable.ic_format_bold, "Bold", { onChange(value.wrap("**")) }, tint = Not.colors.inkMuted)
-            IconButton(R.drawable.ic_format_italic, "Italic", { onChange(value.wrap("*")) }, tint = Not.colors.inkMuted)
-            IconButton(R.drawable.ic_code, "Code", { onChange(value.wrap("`")) }, tint = Not.colors.inkMuted)
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState())) {
+                IconButton(R.drawable.ic_checklist, "Checklist", { editor.cycleChecklist() }, tint = muted)
+                IconButton(R.drawable.ic_bullets, "Bulleted list", { editor.toggleBullet() }, tint = muted)
+                IconButton(R.drawable.ic_outdent, "Outdent", { editor.indent(deeper = false) }, tint = muted)
+                IconButton(R.drawable.ic_indent, "Indent", { editor.indent(deeper = true) }, tint = muted)
+                IconButton(R.drawable.ic_title, "Heading", { editor.cycleHeading() }, tint = muted)
+                IconButton(R.drawable.ic_format_bold, "Bold", { editor.wrap("**") }, tint = muted)
+                IconButton(R.drawable.ic_format_italic, "Italic", { editor.wrap("*") }, tint = muted)
+                IconButton(R.drawable.ic_code, "Code", { editor.wrap("`") }, tint = muted)
+            }
+            val undo = editor.undoState
+            IconButton(R.drawable.ic_undo, "Undo", { if (undo.canUndo) undo.undo() }, tint = if (undo.canUndo) muted else Not.colors.inkFaint.copy(alpha = 0.5f))
+            IconButton(R.drawable.ic_redo, "Redo", { if (undo.canRedo) undo.redo() }, tint = if (undo.canRedo) muted else Not.colors.inkFaint.copy(alpha = 0.5f))
         }
     }
+}
+
+/**
+ * Replaces only the part of the text that differs from [new], so the caret and the keyboard's
+ * composing word survive an edit synced from another device when it lands elsewhere in the note.
+ */
+private fun TextFieldBuffer.replaceChanged(new: String) {
+    val old = asCharSequence()
+    var prefix = 0
+    while (prefix < old.length && prefix < new.length && old[prefix] == new[prefix]) prefix++
+    var suffix = 0
+    while (suffix < old.length - prefix && suffix < new.length - prefix &&
+        old[old.length - 1 - suffix] == new[new.length - 1 - suffix]
+    ) suffix++
+    replace(prefix, old.length - suffix, new.substring(prefix, new.length - suffix))
 }
 
 private fun edited(millis: Long): String =

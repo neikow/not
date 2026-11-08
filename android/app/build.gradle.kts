@@ -47,4 +47,5 @@ dependencies {
     // uniffi's Kotlin bindings call into the Rust library through JNA.
     implementation("net.java.dev.jna:jna:5.19.1@aar")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
 }
