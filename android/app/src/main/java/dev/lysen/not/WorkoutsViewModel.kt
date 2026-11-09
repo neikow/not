@@ -97,7 +97,8 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
         if (line.isEmpty()) return
         setSets(exercise, exercise.lines.map { it.raw } + line)
         val parsed = parseSets(line).firstOrNull()
-        if (parsed != null && parsed.parsed && !parsed.warmup && timer.startsAfterSet.value) timer.start()
+        // Sets only: a swim or a run isn't followed by a rest.
+        if (parsed != null && parsed.parsed && !parsed.warmup && parsed.reps.isNotEmpty() && timer.startsAfterSet.value) timer.start()
     }
 
     fun deleteExercise(exercise: WorkoutExercise) {

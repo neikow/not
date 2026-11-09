@@ -78,6 +78,13 @@ fn imports_a_text_log() {
     assert_eq!(list[0].set_count, 3);
     let w = s.workout(&list[1].id).unwrap();
     assert_eq!(w.exercises[1].lines[0].reps, [10, 10, 8]);
+
+    s.import_workouts("05/11\nPiscine\n500m 14min\n\nCourse\n11.6km 1h30\n", "2026-11-09").unwrap();
+    let cardio = s.workout(&s.workouts().unwrap()[0].id).unwrap();
+    assert_eq!(cardio.exercises.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Piscine", "Course"]);
+    assert_eq!(cardio.exercises[1].lines[0].label, "11.6 km · 1 h 30 · 7:46 /km");
+    let log = &s.exercise_history("Course", 1).unwrap()[0];
+    assert_eq!((log.distance, log.duration, log.set_count), (11_600.0, 5400, 0));
 }
 
 #[test]

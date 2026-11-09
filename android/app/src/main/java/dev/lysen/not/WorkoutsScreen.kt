@@ -729,10 +729,16 @@ private fun HistorySheet(name: String, viewModel: WorkoutsViewModel, today: Loca
                 Text("Nothing logged yet.", style = Not.type.body, color = colors.inkMuted)
                 return@Column
             }
-            val weights = logs.reversed().mapNotNull { it.topWeight }
-            if (weights.size > 1) Sparkline(weights, Modifier.fillMaxWidth().height(96.dp))
-            logs.mapNotNull { it.topWeight }.maxOrNull()?.let { best ->
-                Text("Best ${formatWeight(best)} kg · ${logs.size} sessions", style = Not.type.caption, color = colors.inkMuted)
+            // Cardio (no weights) charts distance instead of the top set.
+            val cardio = logs.all { it.topWeight == null } && logs.any { it.distance > 0 }
+            val points = logs.reversed().mapNotNull { if (cardio) it.distance.takeIf { d -> d > 0 }?.div(1000) else it.topWeight }
+            if (points.size > 1) Sparkline(points, Modifier.fillMaxWidth().height(96.dp))
+            if (cardio) {
+                Text("Longest ${formatWeight(logs.maxOf { it.distance } / 1000)} km · ${logs.size} sessions", style = Not.type.caption, color = colors.inkMuted)
+            } else {
+                logs.mapNotNull { it.topWeight }.maxOrNull()?.let { best ->
+                    Text("Best ${formatWeight(best)} kg · ${logs.size} sessions", style = Not.type.caption, color = colors.inkMuted)
+                }
             }
             Divider()
             logs.forEach { log ->

@@ -352,7 +352,8 @@ private struct ExerciseCard: View {
         let parsed = parseSets(text: text).first
         model.updateExercise(exercise.id, name: exercise.name, sets: (lines + [text]).joined(separator: "\n"))
         draft = ""
-        if parsed?.parsed == true, parsed?.warmup == false, model.restTimer.startsAfterSet {
+        // Sets only: a swim or a run isn't followed by a rest.
+        if parsed?.parsed == true, parsed?.warmup == false, parsed?.reps.isEmpty == false, model.restTimer.startsAfterSet {
             model.restTimer.start()
         }
     }
@@ -447,9 +448,14 @@ private struct ExerciseHistory: View {
     let today: String
     @State private var linking = false
 
+    /// Cardio (no weights): distance in km instead of the top set.
+    private var isCardio: Bool { logs.allSatisfy { $0.topWeight == nil } && logs.contains { $0.distance > 0 } }
+
     private var points: [(date: Date, weight: Double)] {
         logs.reversed().compactMap { log in
-            guard let w = log.topWeight, let d = parseDay(log.date) else { return nil }
+            guard let d = parseDay(log.date),
+                  let w = isCardio ? (log.distance > 0 ? log.distance / 1000 : nil) : log.topWeight
+            else { return nil }
             return (d, w)
         }
     }
@@ -472,7 +478,11 @@ private struct ExerciseHistory: View {
                     .chartYScale(domain: .automatic(includesZero: false))
                     .frame(height: 120)
                 }
-                if let best = logs.compactMap(\.topWeight).max() {
+                if isCardio, let longest = logs.map(\.distance).max() {
+                    Text("Longest \(formatWeight(longest / 1000)) km · \(logs.count) sessions")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if let best = logs.compactMap(\.topWeight).max() {
                     Text("Best \(formatWeight(best)) kg · \(logs.count) sessions")
                         .font(.callout)
                         .foregroundStyle(.secondary)

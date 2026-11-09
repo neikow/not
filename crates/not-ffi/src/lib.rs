@@ -280,8 +280,13 @@ pub struct SetLine {
     /// `None` for bodyweight.
     pub weight: Option<f64>,
     pub unit: String,
+    /// Empty for cardio.
     pub reps: Vec<u32>,
-    /// Tidy form, e.g. `24 kg × 10 × 3`.
+    /// Cardio: metres (`unit` is then `m`, `km` or `mi` as typed).
+    pub distance: Option<f64>,
+    /// Cardio: seconds.
+    pub duration: Option<u32>,
+    /// Tidy form, e.g. `24 kg × 10 × 3`, `500 m · 14 min · 2:48 /100 m`.
     pub label: String,
 }
 
@@ -327,6 +332,10 @@ pub struct ExerciseLog {
     /// Σ weight × reps over working sets.
     pub volume: f64,
     pub set_count: u32,
+    /// Cardio: metres over all lines.
+    pub distance: f64,
+    /// Cardio: seconds over all lines.
+    pub duration: u32,
 }
 
 /// An exercise from wger's database (CC-BY-SA / CC0; credit wger and `author` where shown).
@@ -1144,6 +1153,8 @@ impl From<not_core::SetLine> for SetLine {
             weight: l.weight,
             unit: l.unit,
             reps: l.reps,
+            distance: l.distance,
+            duration: l.duration,
             label: l.label,
         }
     }
@@ -1159,6 +1170,8 @@ impl From<not_core::ExerciseLog> for ExerciseLog {
             top_weight: l.top_weight,
             volume: l.volume,
             set_count: l.set_count,
+            distance: l.distance,
+            duration: l.duration,
         }
     }
 }

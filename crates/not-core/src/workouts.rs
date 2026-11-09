@@ -36,8 +36,13 @@ pub struct SetLine {
     pub weight: Option<f64>,
     /// `kg`, `lb`, or empty for bodyweight.
     pub unit: String,
-    /// Reps of each set, in order: `10 x 3` is `[10, 10, 10]`.
+    /// Reps of each set, in order: `10 x 3` is `[10, 10, 10]`. Empty for cardio.
     pub reps: Vec<u32>,
+    /// Cardio (`500m 14min`, `11.6km 1h30`): metres covered; `unit` then holds the unit typed
+    /// (`m`, `km` or `mi`).
+    pub distance: Option<f64>,
+    /// Cardio: seconds.
+    pub duration: Option<u32>,
     /// Tidy form for display, e.g. `24 kg × 10 × 3`; the raw text when not parsed.
     pub label: String,
 }
@@ -84,6 +89,10 @@ pub struct ExerciseLog {
     /// Σ weight × reps over working sets.
     pub volume: f64,
     pub set_count: u32,
+    /// Cardio: metres over all lines.
+    pub distance: f64,
+    /// Cardio: seconds over all lines.
+    pub duration: u32,
 }
 
 impl Store {
@@ -436,6 +445,8 @@ fn history(db: &Connection, keys: &[String], before: Option<&str>, limit: u32) -
             top_weight: stats.top_weight,
             volume: stats.volume,
             set_count: stats.set_count,
+            distance: stats.distance,
+            duration: stats.duration,
         })
     })
     .collect()
@@ -450,6 +461,8 @@ struct Stats {
     top_weight: Option<f64>,
     volume: f64,
     set_count: u32,
+    distance: f64,
+    duration: u32,
 }
 
 impl Stats {
@@ -457,6 +470,8 @@ impl Stats {
         let mut stats = Self::default();
         for line in lines.iter().filter(|l| l.parsed && !l.warmup) {
             stats.set_count += line.reps.len() as u32;
+            stats.distance += line.distance.unwrap_or(0.0);
+            stats.duration += line.duration.unwrap_or(0);
             if let Some(w) = line.weight {
                 stats.top_weight = Some(stats.top_weight.map_or(w, |t: f64| t.max(w)));
                 stats.volume += w * line.reps.iter().sum::<u32>() as f64;
@@ -481,25 +496,182 @@ fn parse_line(raw: &str) -> SetLine {
         weight: None,
         unit: String::new(),
         reps: Vec::new(),
+        distance: None,
+        duration: None,
         label: raw.to_owned(),
     };
     let (warmup, rest) = strip_warmup(raw);
-    let Some(tokens) = tokenize(rest) else {
-        return unparsed();
-    };
-    let Some((weight, unit, reps)) = read_sets(&tokens) else {
-        return unparsed();
-    };
-    let label = label(warmup, weight, &unit, &reps);
-    SetLine {
-        raw: raw.to_owned(),
-        parsed: true,
-        warmup,
-        weight,
-        unit,
-        reps,
-        label,
+    if let Some((weight, unit, reps)) = tokenize(rest).and_then(|t| read_sets(&t)) {
+        return SetLine {
+            raw: raw.to_owned(),
+            parsed: true,
+            label: label(warmup, weight, &unit, &reps),
+            warmup,
+            weight,
+            unit,
+            reps,
+            distance: None,
+            duration: None,
+        };
     }
+    if let Some(cardio) = read_cardio(rest) {
+        let body = cardio.label();
+        return SetLine {
+            raw: raw.to_owned(),
+            parsed: true,
+            warmup,
+            weight: None,
+            unit: cardio.unit.to_owned(),
+            reps: Vec::new(),
+            distance: cardio.metres,
+            duration: cardio.seconds,
+            label: if warmup { format!("Warm-up · {body}") } else { body },
+        };
+    }
+    unparsed()
+}
+
+struct Cardio {
+    metres: Option<f64>,
+    /// As typed: `m`, `km` or `mi`; empty without a distance.
+    unit: &'static str,
+    seconds: Option<u32>,
+}
+
+impl Cardio {
+    /// `500 m · 14 min · 2:48 /100 m`, `11.6 km · 1 h 30 · 7:46 /km`.
+    fn label(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(m) = self.metres {
+            parts.push(match self.unit {
+                "km" => format!("{} km", number(m / 1000.0)),
+                "mi" => format!("{} mi", number(m / MILE)),
+                _ => format!("{} m", number(m)),
+            });
+        }
+        if let Some(s) = self.seconds {
+            parts.push(duration_label(s));
+        }
+        if let (Some(m), Some(s)) = (self.metres, self.seconds)
+            && m > 0.0
+        {
+            // Swims read per 100 m, runs and rides per km (or mile).
+            let (per, unit) = match self.unit {
+                "mi" => (MILE, "/mi"),
+                "m" if m <= 5000.0 => (100.0, "/100 m"),
+                _ => (1000.0, "/km"),
+            };
+            let pace = (f64::from(s) * per / m).round() as u32;
+            parts.push(format!("{}:{:02} {unit}", pace / 60, pace % 60));
+        }
+        parts.join(" · ")
+    }
+}
+
+const MILE: f64 = 1609.344;
+
+fn duration_label(s: u32) -> String {
+    let (h, m, sec) = (s / 3600, s / 60 % 60, s % 60);
+    match (h, m, sec) {
+        (0, 0, sec) => format!("{sec} s"),
+        (0, m, 0) => format!("{m} min"),
+        (0, m, sec) => format!("{m} min {sec} s"),
+        (h, 0, _) => format!("{h} h"),
+        (h, m, _) => format!("{h} h {m:02}"),
+    }
+}
+
+/// A distance and/or a duration in any order: `500m 14min`, `11,6 km en 1h30`, `45min`,
+/// `5k 25:30`.
+fn read_cardio(line: &str) -> Option<Cardio> {
+    let lower = line.to_lowercase().replace('·', " ");
+    // Glue a number to the unit after it ("14 min" → "14min"), and read decimal commas.
+    let mut words: Vec<String> = Vec::new();
+    for w in lower.split([' ', '\t', ';']).filter(|w| !w.is_empty()) {
+        let w = w.trim_end_matches(',');
+        match words.last_mut() {
+            Some(prev) if prev.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',') && w.starts_with(char::is_alphabetic) => {
+                prev.push_str(w)
+            }
+            _ => words.push(w.to_owned()),
+        }
+    }
+    let mut cardio = Cardio {
+        metres: None,
+        unit: "",
+        seconds: None,
+    };
+    for word in &words {
+        let word = word.replace(',', ".");
+        if matches!(word.as_str(), "en" | "in" | "@" | "-") {
+            continue;
+        }
+        if cardio.metres.is_none()
+            && let Some((metres, unit)) = distance(&word)
+        {
+            cardio.metres = Some(metres);
+            cardio.unit = unit;
+        } else if cardio.seconds.is_none()
+            && let Some(s) = duration(&word)
+        {
+            cardio.seconds = Some(s);
+        } else {
+            return None;
+        }
+    }
+    (cardio.metres.is_some() || cardio.seconds.is_some()).then_some(cardio)
+}
+
+/// Splits `11.6km` into (11.6, "km").
+fn split_number(word: &str) -> Option<(f64, &str)> {
+    let end = word.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(word.len());
+    let n: f64 = word[..end].parse().ok()?;
+    (n > 0.0).then_some((n, &word[end..]))
+}
+
+fn distance(word: &str) -> Option<(f64, &'static str)> {
+    let (n, unit) = split_number(word)?;
+    match unit {
+        "m" => Some((n, "m")),
+        "km" | "k" => Some((n * 1000.0, "km")),
+        "mi" | "mile" | "miles" => Some((n * MILE, "mi")),
+        _ => None,
+    }
+}
+
+/// `14min`, `45s`, `1h30`, `1h30min`, `1h`, `14min30`, `25:30`, `1:02:03`.
+fn duration(word: &str) -> Option<u32> {
+    if word.contains(':') {
+        let parts: Vec<u32> = word.split(':').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+        return match parts[..] {
+            [m, s] if s < 60 => Some(m * 60 + s),
+            [h, m, s] if m < 60 && s < 60 => Some(h * 3600 + m * 60 + s),
+            _ => None,
+        };
+    }
+    let (n, rest) = split_number(word)?;
+    if n.fract() != 0.0 {
+        return None;
+    }
+    let n = n as u32;
+    let trailing = |rest: &str, unit: u32| -> Option<u32> {
+        if rest.is_empty() {
+            return Some(0);
+        }
+        let (m, tail) = split_number(rest)?;
+        (m.fract() == 0.0 && matches!(tail, "" | "min" | "mn" | "m" | "s" | "sec")).then_some(m as u32 * unit)
+    };
+    if let Some(rest) = rest.strip_prefix('h') {
+        return Some(n * 3600 + trailing(rest, 60)?);
+    }
+    for unit in ["min", "mn", "mins"] {
+        if let Some(rest) = rest.strip_prefix(unit)
+            && (rest.is_empty() || rest.starts_with(|c: char| c.is_ascii_digit()))
+        {
+            return Some(n * 60 + trailing(rest, 1)?);
+        }
+    }
+    matches!(rest, "s" | "sec").then_some(n)
 }
 
 /// `E 18kg x 10`, `W: …`, `warm-up …`, `échauffement …`.
@@ -836,6 +1008,27 @@ mod tests {
         assert_eq!((bw.weight, bw.reps.clone(), bw.label.as_str()), (None, vec![20, 20, 20], "20 reps × 3"));
         assert_eq!(line("bw x 12").label, "12 reps");
         assert_eq!(line("(10 + 8) x 2").reps, vec![10, 8, 10, 8]);
+    }
+
+    #[test]
+    fn reads_cardio() {
+        let l = line("500m 14min");
+        assert!(l.parsed && l.reps.is_empty());
+        assert_eq!((l.distance, l.duration), (Some(500.0), Some(840)));
+        assert_eq!(l.label, "500 m · 14 min · 2:48 /100 m");
+
+        let l = line("11.6km 1h30");
+        assert_eq!((l.distance, l.duration), (Some(11_600.0), Some(5400)));
+        assert_eq!(l.label, "11.6 km · 1 h 30 · 7:46 /km");
+
+        assert_eq!(line("11,6 km en 1h30").duration, Some(5400));
+        assert_eq!(line("45 min").label, "45 min");
+        assert_eq!(line("5k 25:30").label, "5 km · 25 min 30 s · 5:06 /km");
+        assert_eq!(line("1500m").label, "1500 m");
+        assert_eq!(line("E 1km 6min").label, "Warm-up · 1 km · 6 min · 6:00 /km");
+        assert!(!line("10 min felt good").parsed);
+        // Cardio has no sets.
+        assert_eq!(Stats::of(&parse_sets("500m 14min")).set_count, 0);
     }
 
     #[test]
