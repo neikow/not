@@ -43,6 +43,8 @@ pub struct SetLine {
     pub distance: Option<f64>,
     /// Cardio: seconds.
     pub duration: Option<u32>,
+    /// Text after a quote (`28kg x 9 " spotted on the first`), shown beside the sets.
+    pub note: Option<String>,
     /// Tidy form for display, e.g. `24 kg × 10 × 3`; the raw text when not parsed.
     pub label: String,
 }
@@ -488,7 +490,35 @@ pub fn parse_sets(text: &str) -> Vec<SetLine> {
     text.lines().map(str::trim).filter(|l| !l.is_empty()).map(parse_line).collect()
 }
 
+/// Quotes that start a note on a set line, straight or curly as keyboards type them.
+const NOTE_QUOTES: [char; 7] = ['"', '\'', '“', '”', '‘', '’', '«'];
+
 fn parse_line(raw: &str) -> SetLine {
+    // `28kg x 9 " spotted on the first`: sets, then a note. Only when the part before the quote
+    // reads as sets, so a plain note with an apostrophe stays whole.
+    if let Some(at) = raw.find(NOTE_QUOTES) {
+        let head = raw[..at].trim();
+        let note = raw[at..]
+            .trim_start_matches(NOTE_QUOTES)
+            .trim_end_matches(NOTE_QUOTES)
+            .trim_end_matches('»')
+            .trim();
+        let mut line = parse_parts(raw, head);
+        if line.parsed {
+            line.note = (!note.is_empty()).then(|| note.to_owned());
+            return line;
+        }
+        if head.is_empty() && !note.is_empty() {
+            // A quoted line is a note on its own.
+            line.label = note.to_owned();
+            return line;
+        }
+    }
+    parse_parts(raw, raw)
+}
+
+/// Reads `text` (all or part of the line `raw`) as sets or cardio.
+fn parse_parts(raw: &str, text: &str) -> SetLine {
     let unparsed = || SetLine {
         raw: raw.to_owned(),
         parsed: false,
@@ -498,9 +528,10 @@ fn parse_line(raw: &str) -> SetLine {
         reps: Vec::new(),
         distance: None,
         duration: None,
+        note: None,
         label: raw.to_owned(),
     };
-    let (warmup, rest) = strip_warmup(raw);
+    let (warmup, rest) = strip_warmup(text);
     if let Some((weight, unit, reps)) = tokenize(rest).and_then(|t| read_sets(&t)) {
         return SetLine {
             raw: raw.to_owned(),
@@ -512,6 +543,7 @@ fn parse_line(raw: &str) -> SetLine {
             reps,
             distance: None,
             duration: None,
+            note: None,
         };
     }
     if let Some(cardio) = read_cardio(rest) {
@@ -525,6 +557,7 @@ fn parse_line(raw: &str) -> SetLine {
             reps: Vec::new(),
             distance: cardio.metres,
             duration: cardio.seconds,
+            note: None,
             label: if warmup { format!("Warm-up · {body}") } else { body },
         };
     }
@@ -898,7 +931,8 @@ fn parse_log(text: &str, today: Date) -> Vec<LoggedSession> {
         let Some(session) = sessions.last_mut() else {
             continue;
         };
-        let reads_as_sets = parse_line(line).parsed;
+        // A quoted line is a note for the exercise above, not a new one.
+        let reads_as_sets = parse_line(line).parsed || line.starts_with(NOTE_QUOTES);
         match session.exercises.last_mut() {
             Some((_, sets)) if reads_as_sets => {
                 if !sets.is_empty() {
@@ -1032,6 +1066,26 @@ mod tests {
     }
 
     #[test]
+    fn quotes_start_a_note() {
+        let l = line("28kg x 9 \" aide au premier");
+        assert!(l.parsed);
+        assert_eq!((l.reps.clone(), l.note.as_deref()), (vec![9], Some("aide au premier")));
+        assert_eq!(l.label, "28 kg × 9");
+        assert_eq!(line("500m 14min ' eau froide").note.as_deref(), Some("eau froide"));
+        assert_eq!(line("24kg x 10 “dur”").note.as_deref(), Some("dur"));
+        assert_eq!(line("24kg x 10 \"").note, None);
+        // An apostrophe in a plain note keeps it whole.
+        let n = line("pas l'énergie");
+        assert!(!n.parsed);
+        assert_eq!(n.label, "pas l'énergie");
+        let q = line("\" genou sensible");
+        assert!(!q.parsed);
+        assert_eq!(q.label, "genou sensible");
+        // Notes don't change the stats.
+        assert_eq!(Stats::of(&parse_sets("28kg x 9 \" aide")).set_count, 1);
+    }
+
+    #[test]
     fn keeps_anything_else_as_a_note() {
         for s in ["felt heavy", "Abdos", "66kg x", "x 3", "10 x 1000", "Extension"] {
             let l = line(s);
@@ -1056,6 +1110,8 @@ mod tests {
         assert_eq!(log.len(), 2);
         assert_eq!(log[0].date.to_string(), "2026-10-30");
         assert_eq!(log[0].exercises, vec![("Tirage vertical (large)".into(), "66kg x 8 x 3".into())]);
+        let noted = parse_log("01/11\nDips\n50kg x 10 \" lent\n\" coude\n", today);
+        assert_eq!(noted[0].exercises, vec![("Dips".into(), "50kg x 10 \" lent\n\" coude".into())]);
         assert_eq!(
             log[1].exercises,
             vec![

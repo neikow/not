@@ -662,6 +662,9 @@ private fun SetRow(line: SetLine, onClick: () -> Unit) {
             style = if (line.parsed && !line.warmup) Not.type.bodyStrong else Not.type.body.merge(fontStyle = if (line.parsed) FontStyle.Normal else FontStyle.Italic),
             color = if (line.parsed && !line.warmup) colors.ink else colors.inkMuted,
         )
+        line.note?.let {
+            Text(it, style = Not.type.body.merge(fontStyle = FontStyle.Italic), color = colors.inkMuted, maxLines = 2, modifier = Modifier.weight(1f, fill = false))
+        }
     }
 }
 
@@ -745,7 +748,7 @@ private fun HistorySheet(name: String, viewModel: WorkoutsViewModel, today: Loca
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(dayLabel(log.date, today, long = true), style = Not.type.label, color = colors.ink)
                     log.lines.forEach { line ->
-                        Text(line.label, style = Not.type.body, color = if (line.parsed && !line.warmup) colors.ink else colors.inkMuted)
+                        Text(line.note?.let { "${line.label} — $it" } ?: line.label, style = Not.type.body, color = if (line.parsed && !line.warmup) colors.ink else colors.inkMuted)
                     }
                 }
             }

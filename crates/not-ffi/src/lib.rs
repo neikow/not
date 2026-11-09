@@ -286,6 +286,8 @@ pub struct SetLine {
     pub distance: Option<f64>,
     /// Cardio: seconds.
     pub duration: Option<u32>,
+    /// Text after a quote on the line, shown beside the sets.
+    pub note: Option<String>,
     /// Tidy form, e.g. `24 kg × 10 × 3`, `500 m · 14 min · 2:48 /100 m`.
     pub label: String,
 }
@@ -1155,6 +1157,7 @@ impl From<not_core::SetLine> for SetLine {
             reps: l.reps,
             distance: l.distance,
             duration: l.duration,
+            note: l.note,
             label: l.label,
         }
     }

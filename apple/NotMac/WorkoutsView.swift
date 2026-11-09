@@ -390,6 +390,12 @@ private struct SetLineRow: View {
             Text(line.label)
                 .foregroundStyle(line.parsed && !line.warmup ? .primary : .secondary)
                 .italic(!line.parsed)
+            if let note = line.note {
+                Text(note)
+                    .font(.body)
+                    .italic()
+                    .foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
         }
         .font(.body.monospacedDigit())
@@ -493,7 +499,7 @@ private struct ExerciseHistory: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(dayLabel(log.date, today: today)).font(.callout.weight(.semibold))
                                 ForEach(Array(log.lines.enumerated()), id: \.offset) { _, line in
-                                    Text(line.label)
+                                    Text(line.note.map { "\(line.label) — \($0)" } ?? line.label)
                                         .font(.callout.monospacedDigit())
                                         .foregroundStyle(line.warmup || !line.parsed ? .secondary : .primary)
                                 }
