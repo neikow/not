@@ -329,6 +329,45 @@ pub struct ExerciseLog {
     pub set_count: u32,
 }
 
+/// An exercise from wger's database (CC-BY-SA / CC0; credit wger and `author` where shown).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CatalogExercise {
+    pub id: String,
+    pub name_en: String,
+    pub name_fr: Option<String>,
+    pub aliases: Vec<String>,
+    pub category: String,
+    pub muscles: Vec<String>,
+    pub secondary_muscles: Vec<String>,
+    pub equipment: Vec<String>,
+    pub license: String,
+    /// May be empty.
+    pub author: String,
+}
+
+impl From<not_core::CatalogExercise> for CatalogExercise {
+    fn from(e: not_core::CatalogExercise) -> Self {
+        Self {
+            id: e.id,
+            name_en: e.name_en,
+            name_fr: e.name_fr,
+            aliases: e.aliases,
+            category: e.category,
+            muscles: e.muscles,
+            secondary_muscles: e.secondary_muscles,
+            equipment: e.equipment,
+            license: e.license,
+            author: e.author,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MuscleSets {
+    pub muscle: String,
+    pub sets: u32,
+}
+
 /// Reads exercise sets shorthand, for live previews while typing.
 #[uniffi::export]
 pub fn parse_sets(text: String) -> Vec<SetLine> {
@@ -795,6 +834,38 @@ impl NotStore {
     /// Names used so far, most recent first.
     pub fn exercise_names(&self) -> Result<Vec<String>, NotError> {
         Ok(self.store.exercise_names()?)
+    }
+
+    /// Catalogue exercises matching `query` (English, French or alias; accents ignored).
+    pub fn search_exercises(&self, query: String, limit: u32) -> Vec<CatalogExercise> {
+        self.store
+            .search_exercises(&query, limit as usize)
+            .into_iter()
+            .map(CatalogExercise::from)
+            .collect()
+    }
+
+    /// The catalogue exercise a name is linked to, by hand or by matching its name.
+    pub fn exercise_info(&self, name: String) -> Option<CatalogExercise> {
+        self.store.exercise_info(&name).map(CatalogExercise::from)
+    }
+
+    /// Links a name to a catalogue exercise; `None` unlinks it.
+    pub fn link_exercise(&self, name: String, catalog_id: Option<String>) -> Result<(), NotError> {
+        Ok(self.store.link_exercise(&name, catalog_id.as_deref())?)
+    }
+
+    /// Working sets per primary muscle in sessions dated `from..=to`, most first.
+    pub fn muscle_sets(&self, from: String, to: String) -> Result<Vec<MuscleSets>, NotError> {
+        Ok(self
+            .store
+            .muscle_sets(&from, &to)?
+            .into_iter()
+            .map(|m| MuscleSets {
+                muscle: m.muscle,
+                sets: m.sets,
+            })
+            .collect())
     }
 
     /// Adds sessions from a text log (`dd/mm` lines, exercise names, set lines). Returns how many.

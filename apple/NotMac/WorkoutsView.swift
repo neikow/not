@@ -68,6 +68,14 @@ private struct WorkoutList: View {
 
     var body: some View {
         List(selection: $model.selectedWorkoutID) {
+            if !model.weekMuscles.isEmpty {
+                Section("Sets this week") {
+                    Text(model.weekMuscles.prefix(8).map { "\($0.muscle) \($0.sets)" }.joined(separator: " · "))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .selectionDisabled()
+                }
+            }
             ForEach(model.workouts, id: \.id) { w in
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline) {
@@ -169,8 +177,23 @@ private struct WorkoutEditor: View {
                 .focused($focus, equals: .newExercise)
                 .textInputSuggestions {
                     let taken = Set(workout.exercises.map { $0.name.lowercased() })
-                    ForEach(suggestions.filter { !taken.contains($0.lowercased()) }.prefix(8), id: \.self) { name in
-                        Text(name).textInputCompletion(name)
+                    let mine = suggestions.filter { !taken.contains($0.lowercased()) }.prefix(6)
+                    ForEach(Array(mine), id: \.self) { name in
+                        Label(name, systemImage: "clock.arrow.circlepath").textInputCompletion(name)
+                    }
+                    let typed = newExercise.trimmingCharacters(in: .whitespaces)
+                    if typed.count >= 2 {
+                        let seen = Set(mine.map { $0.lowercased() }).union(taken)
+                        ForEach(model.searchExercises(typed).filter { !seen.contains(catalogName($0, typed).lowercased()) }, id: \.id) { e in
+                            let name = catalogName(e, typed)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(name)
+                                Text(([otherName(e, name)].compactMap { $0 } + e.muscles.prefix(2)).joined(separator: " · "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .textInputCompletion(name)
+                        }
                     }
                 }
                 .onSubmit {
@@ -226,7 +249,7 @@ private struct ExerciseCard: View {
                 .buttonStyle(.borderless)
                 .help("History")
                 .popover(isPresented: $showsHistory, arrowEdge: .bottom) {
-                    ExerciseHistory(name: exercise.name, logs: model.exerciseHistory(exercise.name), today: model.today)
+                    ExerciseHistory(model: model, name: exercise.name, logs: model.exerciseHistory(exercise.name), today: model.today)
                 }
                 Menu {
                     Button("Move Up") { model.moveExercise(exercise.id, to: index - 1) }
@@ -241,6 +264,13 @@ private struct ExerciseCard: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
+            }
+
+            if let info = model.exerciseInfo(exercise.name) {
+                Text((info.muscles + info.equipment).joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, -6)
             }
 
             if let previous = exercise.previous {
@@ -411,9 +441,11 @@ private struct DayButton: View {
 // MARK: - History
 
 private struct ExerciseHistory: View {
+    let model: AppModel
     let name: String
     let logs: [ExerciseLog]
     let today: String
+    @State private var linking = false
 
     private var points: [(date: Date, weight: Double)] {
         logs.reversed().compactMap { log in
@@ -425,7 +457,10 @@ private struct ExerciseHistory: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(name).font(.headline)
-            if logs.isEmpty {
+            CatalogLink(model: model, name: name, linking: $linking)
+            if linking {
+                EmptyView()
+            } else if logs.isEmpty {
                 Text("Nothing logged yet.").foregroundStyle(.secondary)
             } else {
                 if points.count > 1 {
@@ -463,6 +498,99 @@ private struct ExerciseHistory: View {
         .padding(16)
         .frame(width: 320)
     }
+}
+
+/// What the name is linked to in wger's database, with its muscles and credit; or a search to
+/// link it.
+private struct CatalogLink: View {
+    let model: AppModel
+    let name: String
+    @Binding var linking: Bool
+    @State private var query = ""
+
+    var body: some View {
+        let info = model.exerciseInfo(name)
+        if linking {
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Search exercises", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .onAppear { query = info?.nameEn ?? name.replacing(/\(.*?\)/, with: "") }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(model.searchExercises(query, limit: 20), id: \.id) { e in
+                            Button {
+                                model.linkExercise(name, to: e.id)
+                                linking = false
+                            } label: {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(e.nameFr ?? e.nameEn)
+                                    Text(([e.nameFr == nil ? nil : e.nameEn].compactMap { $0 } + e.muscles).joined(separator: " · "))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 4)
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(height: 220)
+                HStack {
+                    if info != nil {
+                        Button("Unlink", role: .destructive) {
+                            model.linkExercise(name, to: nil)
+                            linking = false
+                        }
+                    }
+                    Spacer()
+                    Button("Cancel") { linking = false }
+                }
+                .buttonStyle(.borderless)
+            }
+        } else if let info {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(info.nameFr.map { $0 == name ? info.nameEn : $0 } ?? info.nameEn)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Change") { linking = true }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.tint)
+                }
+                Text(muscleLine(info))
+                    .font(.callout)
+                Text("wger.de\(info.author.isEmpty ? "" : " · \(info.author)") · \(info.license)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        } else {
+            Button("Link to an Exercise…") { linking = true }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.tint)
+                .help("Link to wger's exercise database for muscles, and to share history with other names for it")
+        }
+    }
+
+    private func muscleLine(_ e: CatalogExercise) -> String {
+        var parts = [e.muscles.joined(separator: ", ")]
+        if !e.secondaryMuscles.isEmpty { parts.append("also " + e.secondaryMuscles.joined(separator: ", ")) }
+        if !e.equipment.isEmpty { parts.append(e.equipment.joined(separator: ", ")) }
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+}
+
+/// The catalogue name to insert: the one that matches what was typed, else French, else English.
+func catalogName(_ e: CatalogExercise, _ typed: String) -> String {
+    let candidates = [e.nameFr, e.nameEn].compactMap { $0 }
+    return candidates.first { $0.localizedStandardContains(typed) } ?? e.nameFr ?? e.nameEn
+}
+
+/// The exercise's name in the other language, if it has one.
+func otherName(_ e: CatalogExercise, _ shown: String) -> String? {
+    let other = shown == e.nameEn ? e.nameFr : e.nameEn
+    return other == shown ? nil : other
 }
 
 // MARK: - Rest timer

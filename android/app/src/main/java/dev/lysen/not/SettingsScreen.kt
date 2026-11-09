@@ -98,7 +98,7 @@ fun SettingsScreen(viewModel: TasksViewModel, onBack: () -> Unit) {
         }
         item(key = "about") {
             Text(
-                "not ${BuildConfig.VERSION_NAME}",
+                "not ${BuildConfig.VERSION_NAME}\nExercise data from wger.de by its contributors, CC-BY-SA 4.0 / 3.0 or CC0",
                 style = Not.type.caption,
                 color = Not.colors.inkFaint,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),

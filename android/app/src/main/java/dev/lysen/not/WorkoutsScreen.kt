@@ -67,7 +67,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.lysen.not.core.ExerciseLog
+import dev.lysen.not.core.CatalogExercise
 import dev.lysen.not.core.SetLine
 import dev.lysen.not.core.Workout
 import dev.lysen.not.core.WorkoutExercise
@@ -177,12 +177,16 @@ private fun WeekHeader(state: WorkoutsState) {
     val dates = state.workouts.filter { it.exerciseNames.isNotEmpty() }.mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
     val week = dates.count { !it.isBefore(monday) }
     val month = dates.count { it.year == state.today.year && it.month == state.today.month }
-    Text(
-        if (dates.isEmpty()) " " else "$week this week · $month this month",
-        style = Not.type.body,
-        color = Not.colors.inkMuted,
-        modifier = Modifier.padding(top = 2.dp),
-    )
+    Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(if (dates.isEmpty()) " " else "$week this week · $month this month", style = Not.type.body, color = Not.colors.inkMuted)
+        if (state.weekMuscles.isNotEmpty()) {
+            Text(
+                "Sets: " + state.weekMuscles.take(6).joinToString(" · ") { "${it.muscle} ${it.sets}" },
+                style = Not.type.caption,
+                color = Not.colors.inkFaint,
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -405,6 +409,12 @@ private fun WorkoutEditor(workout: Workout, state: WorkoutsState, viewModel: Wor
                             workout.exercises.none { it.name.equals(name, ignoreCase = true) } &&
                                 (newExercise.isBlank() || name.contains(newExercise.trim(), ignoreCase = true))
                         }.take(8),
+                        catalogue = if (newExercise.trim().length >= 2) {
+                            viewModel.searchExercises(newExercise.trim(), 6).filter { e ->
+                                workout.exercises.none { it.name.equals(catalogName(e, newExercise), ignoreCase = true) }
+                            }
+                        } else emptyList(),
+                        typed = newExercise,
                         onAdd = { name ->
                             viewModel.addExercise(workout.id, name)?.let { focusSetsOf = it }
                             newExercise = ""
@@ -416,12 +426,20 @@ private fun WorkoutEditor(workout: Workout, state: WorkoutsState, viewModel: Wor
         }
         RestBar(viewModel, Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding().padding(bottom = 12.dp))
     }
-    history?.let { name -> HistorySheet(name, viewModel.history(name), state.today, onDismiss = { history = null }) }
+    history?.let { name -> HistorySheet(name, viewModel, state.today, onDismiss = { history = null }) }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AddExercise(value: String, onValue: (String) -> Unit, suggestions: List<String>, onAdd: (String) -> Unit, modifier: Modifier) {
+private fun AddExercise(
+    value: String,
+    onValue: (String) -> Unit,
+    suggestions: List<String>,
+    catalogue: List<CatalogExercise>,
+    typed: String,
+    onAdd: (String) -> Unit,
+    modifier: Modifier,
+) {
     val colors = Not.colors
     var focused by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -455,8 +473,40 @@ private fun AddExercise(value: String, onValue: (String) -> Unit, suggestions: L
                 }
             }
         }
+        // From wger's database, under what was used before.
+        if (focused && catalogue.isNotEmpty()) {
+            Column(Modifier.padding(horizontal = 12.dp)) {
+                catalogue.forEach { e ->
+                    val name = catalogName(e, typed)
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .pressable({ onAdd(name) }, pressedScale = 0.98f)
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Text(name, style = Not.type.body, color = colors.ink, maxLines = 1)
+                        Text(
+                            (listOfNotNull(otherName(e, name)) + e.muscles.take(2)).joinToString(" · "),
+                            style = Not.type.caption,
+                            color = colors.inkFaint,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
+
+/** The catalogue name to insert: the one matching what was typed, else French, else English. */
+private fun catalogName(e: CatalogExercise, typed: String): String {
+    val q = typed.trim()
+    return listOfNotNull(e.nameFr, e.nameEn).firstOrNull { it.contains(q, ignoreCase = true) } ?: e.nameFr ?: e.nameEn
+}
+
+private fun otherName(e: CatalogExercise, shown: String): String? =
+    (if (shown == e.nameEn) e.nameFr else e.nameEn)?.takeIf { it != shown }
 
 @Composable
 private fun ExerciseCard(
@@ -526,6 +576,11 @@ private fun ExerciseCard(
                     })
                 }
             }
+        }
+
+        val info = remember(exercise.name, exercise.sets) { viewModel.exerciseInfo(exercise.name) }
+        if (info != null) {
+            Text((info.muscles + info.equipment).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint)
         }
 
         exercise.previous?.let { previous ->
@@ -636,11 +691,40 @@ private fun LineEditor(initial: String, onDone: (String) -> Unit) {
 // ---- history -------------------------------------------------------------------------------------
 
 @Composable
-private fun HistorySheet(name: String, logs: List<ExerciseLog>, today: LocalDate, onDismiss: () -> Unit) {
+private fun HistorySheet(name: String, viewModel: WorkoutsViewModel, today: LocalDate, onDismiss: () -> Unit) {
     val colors = Not.colors
+    // Re-read after linking: history follows the link.
+    var version by remember { mutableStateOf(0) }
+    val logs = remember(version) { viewModel.history(name) }
+    val info = remember(version) { viewModel.exerciseInfo(name) }
+    var linking by remember { mutableStateOf(false) }
     Sheet(onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(name, style = Not.type.title, modifier = Modifier.padding(top = 4.dp))
+            if (linking) {
+                LinkPicker(name, info, viewModel, onDone = {
+                    linking = false
+                    version++
+                })
+                return@Column
+            }
+            if (info != null) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(otherName(info, name) ?: info.nameEn, style = Not.type.body, color = colors.inkMuted, modifier = Modifier.weight(1f))
+                        Button("Change", { linking = true }, kind = ButtonKind.Quiet)
+                    }
+                    Text(
+                        listOf(info.muscles.joinToString(", "), info.secondaryMuscles.takeIf { it.isNotEmpty() }?.joinToString(", ", prefix = "also "), info.equipment.joinToString(", "))
+                            .filter { !it.isNullOrEmpty() }.joinToString(" · "),
+                        style = Not.type.caption,
+                        color = colors.ink,
+                    )
+                    Text("wger.de${if (info.author.isEmpty()) "" else " · ${info.author}"} · ${info.license}", style = Not.type.caption, color = colors.inkFaint)
+                }
+            } else {
+                Button("Link to an exercise", { linking = true }, kind = ButtonKind.Quiet, icon = R.drawable.ic_search)
+            }
             if (logs.isEmpty()) {
                 Text("Nothing logged yet.", style = Not.type.body, color = colors.inkMuted)
                 return@Column
@@ -660,6 +744,43 @@ private fun HistorySheet(name: String, logs: List<ExerciseLog>, today: LocalDate
                 }
             }
         }
+    }
+}
+
+/** Search wger's database to link [name]; linked names share history. */
+@Composable
+private fun LinkPicker(name: String, info: CatalogExercise?, viewModel: WorkoutsViewModel, onDone: () -> Unit) {
+    val colors = Not.colors
+    var query by remember { mutableStateOf(info?.nameEn ?: name.replace(Regex("\\(.*?\\)"), "").trim()) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    Field(
+        query,
+        { query = it },
+        "Search exercises",
+        filled = true,
+        shape = CircleShape,
+        leading = { Icon(R.drawable.ic_search, null, tint = colors.inkMuted, size = 20.dp) },
+        modifier = Modifier.fillMaxWidth().focusRequester(focus),
+    )
+    viewModel.searchExercises(query, 20).forEach { e ->
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .pressable({
+                    viewModel.link(name, e.id)
+                    onDone()
+                }, pressedScale = 0.98f)
+                .padding(vertical = 6.dp),
+        ) {
+            Text(e.nameFr ?: e.nameEn, style = Not.type.body, color = colors.ink)
+            Text((listOfNotNull(e.nameEn.takeIf { e.nameFr != null }) + e.muscles).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint)
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (info != null) Button("Unlink", { viewModel.link(name, null); onDone() }, kind = ButtonKind.Danger)
+        Button("Cancel", onDone, kind = ButtonKind.Secondary)
     }
 }
 

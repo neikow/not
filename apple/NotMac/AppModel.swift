@@ -85,6 +85,8 @@ final class AppModel {
     private(set) var workout: Workout?
     /// Exercise names used so far, most recent first.
     private(set) var exerciseNames: [String] = []
+    /// Working sets per muscle since Monday.
+    private(set) var weekMuscles: [MuscleSets] = []
     let restTimer = RestTimer()
 
     @ObservationIgnored private let store: NotStore
@@ -157,6 +159,9 @@ final class AppModel {
             selection = .workouts
             if workouts.isEmpty {
                 _ = importWorkouts(Self.demoWorkoutLog)
+                if let bench = searchExercises("Développé couché avec haltères", limit: 1).first {
+                    linkExercise("Bench Haltères", to: bench.id)
+                }
                 reload()
                 if let id = workouts.first?.id, let copy = run({ try store.repeatWorkout(fromId: id, date: today) }),
                    let first = run({ try store.workout(id: copy) })?.exercises.first {
@@ -603,6 +608,19 @@ final class AppModel {
         run { try store.exerciseHistory(name: name, limit: 30) } ?? []
     }
 
+    func searchExercises(_ query: String, limit: Int = 8) -> [CatalogExercise] {
+        store.searchExercises(query: query, limit: UInt32(limit))
+    }
+
+    func exerciseInfo(_ name: String) -> CatalogExercise? {
+        store.exerciseInfo(name: name)
+    }
+
+    /// `nil` unlinks the name from the catalogue.
+    func linkExercise(_ name: String, to catalogID: String?) {
+        run { try store.linkExercise(name: name, catalogId: catalogID) }
+    }
+
     /// Adds sessions from a pasted text log; returns how many.
     func importWorkouts(_ text: String) -> Int {
         refreshToday()
@@ -654,6 +672,11 @@ final class AppModel {
     private func reloadWorkouts() {
         workouts = run { try store.workouts() } ?? []
         exerciseNames = run { try store.exerciseNames() } ?? []
+        if let now = parseDay(today) {
+            let weekday = (Calendar.current.component(.weekday, from: now) + 5) % 7 // Monday = 0
+            let monday = Calendar.current.date(byAdding: .day, value: -weekday, to: now) ?? now
+            weekMuscles = run { try store.muscleSets(from: Self.dayString(monday), to: today) } ?? []
+        }
         if let id = selectedWorkoutID, !workouts.contains(where: { $0.id == id }) {
             selectedWorkoutID = nil
         }

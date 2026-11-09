@@ -25,6 +25,7 @@ const HABITS_TREE: &str = "habits";
 const HABIT_LOG: &str = "habit_log";
 const NOTES_TREE: &str = "notes";
 const WORKOUTS_TREE: &str = "workouts";
+const EXERCISE_LINKS: &str = "exercise_links";
 
 /// Id of the built-in Inbox list. It isn't a node: tasks at the root of the tree are in the Inbox,
 /// so there is nothing to create and two fresh devices can't end up with an Inbox each.
@@ -102,6 +103,8 @@ pub struct Store {
     pub(crate) habit_log: LoroMap,
     pub(crate) notes: LoroTree,
     pub(crate) workouts: LoroTree,
+    /// The user's exercise name keys → catalogue ids; see [`crate::catalog`].
+    pub(crate) exercise_links: LoroMap,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
     /// This session's local edits; remote changes are never undone.
@@ -144,6 +147,7 @@ impl Store {
         notes.enable_fractional_index(0);
         let workouts = doc.get_tree(WORKOUTS_TREE);
         workouts.enable_fractional_index(0);
+        let exercise_links = doc.get_map(EXERCISE_LINKS);
 
         let tx = db.transaction()?;
         if storage::needs_compaction(&tx, WORKSPACE)? {
@@ -192,6 +196,7 @@ impl Store {
             habit_log,
             notes,
             workouts,
+            exercise_links,
             dirty,
             history,
             listeners: Mutex::default(),

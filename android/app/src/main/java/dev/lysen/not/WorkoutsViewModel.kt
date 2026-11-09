@@ -3,7 +3,9 @@ package dev.lysen.not
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.lysen.not.core.CatalogExercise
 import dev.lysen.not.core.ExerciseLog
+import dev.lysen.not.core.MuscleSets
 import dev.lysen.not.core.NotException
 import dev.lysen.not.core.Workout
 import dev.lysen.not.core.WorkoutExercise
@@ -28,6 +30,8 @@ data class WorkoutsState(
     /** Exercise names used so far, most recent first. */
     val exerciseNames: List<String> = emptyList(),
     val today: LocalDate = LocalDate.now(),
+    /** Working sets per muscle since Monday. */
+    val weekMuscles: List<MuscleSets> = emptyList(),
     val error: String? = null,
 )
 
@@ -107,6 +111,15 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
 
     fun history(name: String): List<ExerciseLog> = run { store.exerciseHistory(name, 30u) }.orEmpty()
 
+    fun searchExercises(query: String, limit: Int = 8): List<CatalogExercise> = store.searchExercises(query, limit.toUInt())
+
+    fun exerciseInfo(name: String): CatalogExercise? = store.exerciseInfo(name)
+
+    /** Null unlinks the name from the catalogue. */
+    fun link(name: String, catalogId: String?) {
+        run { store.linkExercise(name, catalogId) }
+    }
+
     /** Sessions from a pasted text log; returns how many were added. */
     fun import(text: String): Int {
         refreshToday()
@@ -142,6 +155,7 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
             Abdos
             """.trimIndent(),
         )
+        searchExercises("Développé couché avec haltères", 1).firstOrNull()?.let { link("Bench Haltères", it.id) }
         reload()
         val first = _state.value.workouts.firstOrNull() ?: return
         val copy = run { store.repeatWorkout(first.id, today()) } ?: return
@@ -158,7 +172,9 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
         val names = run { store.exerciseNames() }.orEmpty()
         val openId = _state.value.openId?.takeIf { id -> workouts.any { it.id == id } }
         val open = openId?.let { run { store.workout(it) } }
-        _state.update { it.copy(workouts = workouts, exerciseNames = names, openId = openId, open = open) }
+        val today = _state.value.today
+        val muscles = run { store.muscleSets(today.minusDays(today.dayOfWeek.value - 1L).toString(), today.toString()) }.orEmpty()
+        _state.update { it.copy(workouts = workouts, exerciseNames = names, openId = openId, open = open, weekMuscles = muscles) }
     }
 
     private fun <T> run(body: () -> T): T? =

@@ -79,3 +79,33 @@ fn imports_a_text_log() {
     let w = s.workout(&list[1].id).unwrap();
     assert_eq!(w.exercises[1].lines[0].reps, [10, 10, 8]);
 }
+
+#[test]
+fn linked_names_share_history_and_count_per_muscle() {
+    let s = Store::open_in_memory().unwrap();
+    let bench = s.search_exercises("Développé couché avec haltères", 1).remove(0);
+    assert!(bench.muscles.iter().any(|m| m == "Chest"), "{bench:?}");
+
+    // Matching a catalogue name links by itself, ignoring case and accents.
+    assert_eq!(s.exercise_info("developpe couche avec halteres").map(|e| e.id), Some(bench.id.clone()));
+    assert!(s.exercise_info("Bench Haltères").is_none());
+
+    let old = s.create_workout("2026-11-02", "").unwrap();
+    s.add_exercise(&old, "Bench Haltères", "24kg x 10 x 3").unwrap();
+    let new = s.create_workout("2026-11-09", "").unwrap();
+    s.add_exercise(&new, "Développé couché avec haltères", "").unwrap();
+    assert!(s.workout(&new).unwrap().exercises[0].previous.is_none());
+
+    s.link_exercise("Bench Haltères", Some(&bench.id)).unwrap();
+    let previous = s.workout(&new).unwrap().exercises[0].previous.clone().unwrap();
+    assert_eq!(previous.date, "2026-11-02");
+    assert_eq!(s.exercise_history("Développé couché avec haltères", 10).unwrap().len(), 1);
+
+    let muscles = s.muscle_sets("2026-11-02", "2026-11-08").unwrap();
+    assert_eq!(muscles.iter().find(|m| m.muscle == "Chest").map(|m| m.sets), Some(3));
+
+    // Unlinking by hand beats the name match.
+    s.link_exercise("Bench Haltères", None).unwrap();
+    assert!(s.exercise_info("Bench Haltères").is_none());
+    assert!(s.link_exercise("x", Some("no-such-id")).is_err());
+}

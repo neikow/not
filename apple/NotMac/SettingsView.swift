@@ -10,6 +10,14 @@ struct SettingsView: View {
             Tab("General", systemImage: "gearshape") {
                 GeneralSettings()
             }
+            Tab("Credits", systemImage: "heart") {
+                Form {
+                    Section("Exercise data") {
+                        Text("Exercise names, muscles and equipment come from the free exercise database of [wger](https://wger.de), shared by its contributors under [CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), CC-BY-SA 3.0 or CC0. Each exercise credits its author in its history.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             Tab("Sync", systemImage: "arrow.triangle.2.circlepath.icloud") {
                 Group {
                     if let info = model.syncInfo {

@@ -259,7 +259,9 @@ impl Store {
                     name,
                     lines: parse_sets(&sets),
                     sets,
-                    previous: history(&inner.db, &key, Some(&date), 1)?.into_iter().next(),
+                    previous: history(&inner.db, &self.same_exercise(&inner.db, &key)?, Some(&date), 1)?
+                        .into_iter()
+                        .next(),
                 })
             })
             .collect::<Result<_>>()?;
@@ -271,10 +273,57 @@ impl Store {
         })
     }
 
-    /// Sessions with this exercise (matched by name), latest first, at most `limit`.
+    /// Sessions with this exercise, latest first, at most `limit`. Names linked to the same
+    /// catalogue exercise count as one.
     pub fn exercise_history(&self, name: &str, limit: u32) -> Result<Vec<ExerciseLog>> {
         let inner = self.lock();
-        history(&inner.db, &name_key(name), None, limit)
+        let keys = self.same_exercise(&inner.db, &name_key(name))?;
+        history(&inner.db, &keys, None, limit)
+    }
+
+    /// Working sets per primary muscle of catalogue-linked exercises in sessions dated
+    /// `from..=to`, most trained first.
+    pub fn muscle_sets(&self, from: &str, to: &str) -> Result<Vec<crate::MuscleSets>> {
+        let (from, to) = (Date::parse(from)?.to_string(), Date::parse(to)?.to_string());
+        let inner = self.lock();
+        let mut stmt = inner.db.prepare_cached(
+            "SELECT e.name_key, sum(e.set_count) FROM workout_exercise e JOIN workout w ON w.id = e.workout_id
+             WHERE w.date BETWEEN ?1 AND ?2 GROUP BY e.name_key",
+        )?;
+        let mut sets: std::collections::HashMap<String, u32> = Default::default();
+        for row in stmt.query_map([from, to], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))? {
+            let (key, count) = row?;
+            let Some(exercise) = self.resolve(&key).and_then(|id| crate::catalog::by_id(&id)) else {
+                continue;
+            };
+            for muscle in exercise.muscles {
+                *sets.entry(muscle).or_default() += count;
+            }
+        }
+        let mut out: Vec<crate::MuscleSets> = sets
+            .into_iter()
+            .filter(|&(_, n)| n > 0)
+            .map(|(muscle, sets)| crate::MuscleSets { muscle, sets })
+            .collect();
+        out.sort_by(|a, b| b.sets.cmp(&a.sets).then_with(|| a.muscle.cmp(&b.muscle)));
+        Ok(out)
+    }
+
+    /// Name keys logged so far that mean the same exercise as `key` (linked to the same catalogue
+    /// exercise), `key` included.
+    fn same_exercise(&self, db: &Connection, key: &str) -> Result<Vec<String>> {
+        let Some(id) = self.resolve(key) else {
+            return Ok(vec![key.to_owned()]);
+        };
+        let mut stmt = db.prepare_cached("SELECT DISTINCT name_key FROM workout_exercise")?;
+        let mut keys = vec![key.to_owned()];
+        for k in stmt.query_map([], |r| r.get::<_, String>(0))? {
+            let k = k?;
+            if k != key && self.resolve(&k).as_deref() == Some(id.as_str()) {
+                keys.push(k);
+            }
+        }
+        Ok(keys)
     }
 
     /// Exercise names used so far, most recently used first, for suggestions.
@@ -358,14 +407,21 @@ impl Store {
     }
 }
 
-/// Logs of exercise `key` with sets, latest first; only sessions before `before` when given.
-fn history(db: &Connection, key: &str, before: Option<&str>, limit: u32) -> Result<Vec<ExerciseLog>> {
-    let mut stmt = db.prepare_cached(
+/// Logs of exercises named by any of `keys` with sets, latest first; only sessions before `before`
+/// when given.
+fn history(db: &Connection, keys: &[String], before: Option<&str>, limit: u32) -> Result<Vec<ExerciseLog>> {
+    let marks = vec!["?"; keys.len()].join(", ");
+    let mut stmt = db.prepare(&format!(
         "SELECT w.id, w.date, e.sets FROM workout_exercise e JOIN workout w ON w.id = e.workout_id
-         WHERE e.name_key = ?1 AND e.sets != '' AND (?2 IS NULL OR w.date < ?2)
-         ORDER BY w.date DESC, w.position DESC LIMIT ?3",
-    )?;
-    let rows = stmt.query_map(params![key, before, limit], |r| {
+         WHERE e.name_key IN ({marks}) AND e.sets != '' AND (?{b} IS NULL OR w.date < ?{b})
+         ORDER BY w.date DESC, w.position DESC LIMIT ?{l}",
+        b = keys.len() + 1,
+        l = keys.len() + 2,
+    ))?;
+    let mut args: Vec<&dyn rusqlite::ToSql> = keys.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
+    args.push(&before);
+    args.push(&limit);
+    let rows = stmt.query_map(args.as_slice(), |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
     })?;
     rows.map(|row| {
@@ -385,7 +441,7 @@ fn history(db: &Connection, key: &str, before: Option<&str>, limit: u32) -> Resu
     .collect()
 }
 
-fn name_key(name: &str) -> String {
+pub(crate) fn name_key(name: &str) -> String {
     name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 

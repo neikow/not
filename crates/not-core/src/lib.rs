@@ -1,5 +1,6 @@
 //! Shared core of `not`: Loro documents, SQLite persistence and read model, commands, sync.
 
+mod catalog;
 pub mod date;
 mod error;
 mod habits;
@@ -13,6 +14,7 @@ mod store;
 mod sync;
 mod workouts;
 
+pub use catalog::{CatalogExercise, MuscleSets};
 pub use error::{Error, Result};
 pub use habits::{EVERY_DAY, Habit, HabitDay, HabitSummary};
 pub use not_protocol::PairingLink;
