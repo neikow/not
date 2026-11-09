@@ -20,6 +20,14 @@ pub const KIND_LIST: &str = "list";
 pub const KIND_TASK: &str = "task";
 pub const TITLE: &str = "title";
 pub const COMPLETED_AT: &str = "completed_at";
+/// `YYYY-MM-DD`; see [`crate::schedule`].
+pub const DUE: &str = "due";
+/// Minutes after midnight; only with [`DUE`].
+pub const DUE_TIME: &str = "due_time";
+/// 1 = low … 3 = high; absent = none.
+pub const PRIORITY: &str = "priority";
+/// RRULE subset; only with [`DUE`].
+pub const REPEAT: &str = "repeat";
 /// `LoroText` with the task's markdown notes.
 pub const NOTES: &str = "notes";
 /// Soft delete: set on a list or task to hide it and everything under it. Nodes are never removed
@@ -32,6 +40,7 @@ pub struct Roots {
     pub habits: ContainerID,
     pub habit_log: ContainerID,
     pub notes: ContainerID,
+    pub workouts: ContainerID,
 }
 
 #[derive(Debug, Default)]
@@ -42,11 +51,13 @@ pub struct Dirty {
     /// `habit_log` keys whose counter changed.
     pub habit_log: HashSet<String>,
     pub notes: TreeDirty,
+    /// Anything in the workouts tree; it is small and re-projected whole.
+    pub workouts: bool,
 }
 
 impl Dirty {
     pub fn is_empty(&self) -> bool {
-        self.tasks.is_empty() && !self.habits && self.habit_log.is_empty() && self.notes.is_empty()
+        self.tasks.is_empty() && !self.habits && self.habit_log.is_empty() && self.notes.is_empty() && !self.workouts
     }
 
     pub fn record(&mut self, roots: &Roots, event: &DiffEvent) {
@@ -67,6 +78,8 @@ impl Dirty {
                         }
                         _ => None,
                     }));
+            } else if under(&roots.workouts) {
+                self.workouts = true;
             } else if under(&roots.notes) {
                 self.notes.record(&roots.notes, change);
             } else {
@@ -189,12 +202,14 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
                 return remove(db, id);
             };
             db.execute(
-                "INSERT INTO task (id, list_id, parent_id, title, notes, completed_at, position)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO task (id, list_id, parent_id, title, notes, completed_at, position,
+                                   due, due_time, priority, repeat)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT (id) DO UPDATE SET
                     list_id = excluded.list_id, parent_id = excluded.parent_id, title = excluded.title,
                     notes = excluded.notes, completed_at = excluded.completed_at,
-                    position = excluded.position",
+                    position = excluded.position, due = excluded.due, due_time = excluded.due_time,
+                    priority = excluded.priority, repeat = excluded.repeat",
                 params![
                     id.to_string(),
                     list_id,
@@ -202,7 +217,11 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
                     title,
                     meta_text(&meta, NOTES).unwrap_or_default(),
                     meta_i64(&meta, COMPLETED_AT),
-                    position
+                    position,
+                    meta_str(&meta, DUE),
+                    meta_i64(&meta, DUE_TIME),
+                    meta_i64(&meta, PRIORITY).unwrap_or(0),
+                    meta_str(&meta, REPEAT),
                 ],
             )?;
         }

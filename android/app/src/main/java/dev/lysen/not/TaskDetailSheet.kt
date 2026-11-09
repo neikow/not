@@ -1,6 +1,7 @@
 package dev.lysen.not
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,11 +24,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import dev.lysen.not.core.TaskItem
 import dev.lysen.not.ui.Button
 import dev.lysen.not.ui.ButtonKind
+import dev.lysen.not.ui.CardDialog
 import dev.lysen.not.ui.Field
 import dev.lysen.not.ui.Icon
 import dev.lysen.not.ui.Menu
@@ -70,7 +74,7 @@ fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, o
                 .padding(start = 12.dp, end = 24.dp, bottom = 20.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                RoundCheck(task.completedAt != null, { viewModel.toggle(task) })
+                RoundCheck(task.completedAt != null, { viewModel.toggle(task) }, ring = colors.priority(task.priority))
                 Field(
                     title,
                     { title = it },
@@ -89,6 +93,10 @@ fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, o
                 minLines = 2,
                 modifier = Modifier.fillMaxWidth().padding(start = 48.dp, top = 4.dp, bottom = 12.dp),
             )
+            Row(Modifier.padding(start = 48.dp, bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SchedulePill(task, viewModel)
+                PriorityPill(task, viewModel)
+            }
 
             // Subtasks sit in a soft card, like a checklist inside the task.
             Column(
@@ -140,6 +148,92 @@ fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, o
                     close()
                     viewModel.delete(task)
                 }, kind = ButtonKind.Danger, icon = R.drawable.ic_delete)
+            }
+        }
+    }
+}
+
+/** When the task is due: tap to change it in words ("fri 9am", "every mon"), or pick a quick one. */
+@Composable
+private fun SchedulePill(task: TaskItem, viewModel: TasksViewModel) {
+    var editing by remember { mutableStateOf(false) }
+    val label = scheduleLabel(task.due, task.dueTime, task.repeat)
+    val colors = Not.colors
+    val today = today()
+    val tint = when {
+        task.due == null -> colors.inkMuted
+        task.due!! < today -> colors.danger
+        else -> colors.accentInk
+    }
+    Chip(
+        if (task.repeat != null) R.drawable.ic_repeat else R.drawable.ic_calendar,
+        label ?: "Add date",
+        tint = tint,
+        onClick = { editing = true },
+    )
+    if (editing) ScheduleDialog(task, viewModel, onDismiss = { editing = false })
+}
+
+@Composable
+private fun ScheduleDialog(task: TaskItem, viewModel: TasksViewModel, onDismiss: () -> Unit) {
+    val draft = rememberTaskDraft()
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    fun save() {
+        if (!draft.isBlank) viewModel.setSchedule(task.id, draft.text, draft.dismissed)
+        onDismiss()
+    }
+    fun pick(words: String) {
+        viewModel.setSchedule(task.id, words)
+        onDismiss()
+    }
+    CardDialog(
+        title = "When",
+        onDismiss = onDismiss,
+        buttons = {
+            if (task.due != null) Button("Clear", { pick("") }, kind = ButtonKind.Quiet)
+            Button("Cancel", onDismiss, kind = ButtonKind.Quiet)
+            Button("Save", ::save, enabled = !draft.isBlank)
+        },
+    ) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for ((label, words) in listOf("Today" to "today", "Tomorrow" to "tomorrow", "This weekend" to "this weekend", "Next week" to "next week")) {
+                Chip(R.drawable.ic_calendar, label, onClick = { pick(words) })
+            }
+        }
+        TaskDraftField(
+            draft,
+            "fri 9am, every mon, 12 dec…",
+            onSubmit = ::save,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Not.colors.sunken)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .focusRequester(focus),
+        )
+        TokenChips(draft, emptyList(), Modifier.padding(top = 8.dp))
+    }
+}
+
+@Composable
+private fun PriorityPill(task: TaskItem, viewModel: TasksViewModel) {
+    var open by remember { mutableStateOf(false) }
+    val colors = Not.colors
+    Box {
+        Chip(
+            R.drawable.ic_flag,
+            if (task.priority > 0u) priorityName(task.priority) else "Priority",
+            tint = colors.priority(task.priority) ?: colors.inkMuted,
+            onClick = { open = true },
+        )
+        Menu(open, onDismiss = { open = false }) {
+            for (p in listOf<UByte>(3u, 2u, 1u, 0u)) {
+                MenuItem(priorityName(p), icon = R.drawable.ic_flag, enabled = p != task.priority, onClick = {
+                    viewModel.setPriority(task.id, p)
+                    open = false
+                })
             }
         }
     }

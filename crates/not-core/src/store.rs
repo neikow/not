@@ -10,16 +10,21 @@ use loro::{
 };
 use rusqlite::Connection;
 
+use crate::date::Date;
+use crate::parse::{self, ParsedTask};
 use crate::projection::{
-    self, COMPLETED_AT, DELETED_AT, Dirty, KIND, KIND_LIST, KIND_TASK, NOTES, Roots, TITLE,
+    self, COMPLETED_AT, DELETED_AT, DUE, DUE_TIME, Dirty, KIND, KIND_LIST, KIND_TASK, NOTES, PRIORITY,
+    REPEAT, Roots, TITLE, meta_i64, meta_str, meta_text,
 };
-use crate::{Error, Result, habits, notes, storage};
+use crate::schedule::{Repeat, Schedule};
+use crate::{Error, Result, habits, notes, storage, workouts};
 
 pub const WORKSPACE: &str = "workspace";
 const TASKS_TREE: &str = "tasks";
 const HABITS_TREE: &str = "habits";
 const HABIT_LOG: &str = "habit_log";
 const NOTES_TREE: &str = "notes";
+const WORKOUTS_TREE: &str = "workouts";
 
 /// Id of the built-in Inbox list. It isn't a node: tasks at the root of the tree are in the Inbox,
 /// so there is nothing to create and two fresh devices can't end up with an Inbox each.
@@ -45,6 +50,14 @@ pub struct Task {
     pub notes: String,
     /// Unix millis.
     pub completed_at: Option<i64>,
+    /// `YYYY-MM-DD`.
+    pub due: Option<String>,
+    /// Minutes after midnight.
+    pub due_time: Option<u32>,
+    /// 0 = none, 1 = low, 2 = medium, 3 = high.
+    pub priority: u8,
+    /// RRULE subset, see [`Repeat`].
+    pub repeat: Option<String>,
 }
 
 /// A task in display order, with its nesting depth.
@@ -88,6 +101,7 @@ pub struct Store {
     pub(crate) habits: LoroTree,
     pub(crate) habit_log: LoroMap,
     pub(crate) notes: LoroTree,
+    pub(crate) workouts: LoroTree,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
     /// This session's local edits; remote changes are never undone.
@@ -127,6 +141,9 @@ impl Store {
         habits.enable_fractional_index(0);
         let habit_log = doc.get_map(HABIT_LOG);
         let notes = doc.get_tree(NOTES_TREE);
+        notes.enable_fractional_index(0);
+        let workouts = doc.get_tree(WORKOUTS_TREE);
+        workouts.enable_fractional_index(0);
 
         let tx = db.transaction()?;
         if storage::needs_compaction(&tx, WORKSPACE)? {
@@ -136,6 +153,7 @@ impl Store {
             projection::rebuild(&tasks, &tx)?;
             habits::rebuild(&habits, &habit_log, &tx)?;
             notes::rebuild(&notes, &tx)?;
+            workouts::rebuild(&workouts, &tx)?;
         }
         let server_vv = storage::kv_get(&tx, SERVER_VV_KEY)?
             .map(|b| VersionVector::decode(&b))
@@ -152,6 +170,7 @@ impl Store {
                 habits: habits.id(),
                 habit_log: habit_log.id(),
                 notes: notes.id(),
+                workouts: workouts.id(),
             };
             doc.subscribe_root(Arc::new(move |event| {
                 dirty.lock().unwrap().record(&roots, &event);
@@ -172,6 +191,7 @@ impl Store {
             habits,
             habit_log,
             notes,
+            workouts,
             dirty,
             history,
             listeners: Mutex::default(),
@@ -206,6 +226,67 @@ impl Store {
         })
     }
 
+    /// Adds a task with a schedule and priority in one step (one undo step).
+    pub fn add_task_with(
+        &self,
+        parent: &str,
+        title: &str,
+        schedule: &Schedule,
+        priority: u8,
+    ) -> Result<String> {
+        let title = clean_title(title)?;
+        let parent = self.container(parent)?;
+        self.write(|tree| {
+            let id = tree.create(parent)?;
+            let meta = tree.get_meta(id)?;
+            meta.insert(KIND, KIND_TASK)?;
+            meta.insert(TITLE, title)?;
+            write_schedule(&meta, schedule)?;
+            write_priority(&meta, priority)?;
+            Ok(id.to_string())
+        })
+    }
+
+    /// Parses `input` (see [`parse::parse_task`]) and adds the task to the list it names, or else to
+    /// `parent`, due on `default_due` unless the input says when. Returns the new task's id.
+    pub fn quick_add(
+        &self,
+        parent: &str,
+        input: &str,
+        today: Date,
+        dismissed: &[String],
+        default_due: Option<Date>,
+    ) -> Result<String> {
+        let mut parsed = self.parse_task(input, today, dismissed)?;
+        parsed.schedule.due = parsed.schedule.due.or(default_due);
+        // A title made only of tokens ("tomorrow") keeps its words rather than being refused.
+        let title = if parsed.title.is_empty() {
+            input
+        } else {
+            &parsed.title
+        };
+        let parent = parsed.list_id.as_deref().unwrap_or(parent);
+        self.add_task_with(parent, title, &parsed.schedule, parsed.priority)
+    }
+
+    /// [`parse::parse_task`] against this store's lists.
+    pub fn parse_task(&self, input: &str, today: Date, dismissed: &[String]) -> Result<ParsedTask> {
+        let lists: Vec<_> = self.lists()?.into_iter().map(|l| (l.id, l.title)).collect();
+        Ok(parse::parse_task(input, today, &lists, dismissed))
+    }
+
+    /// Sets or (with no due date) clears when the task is due and how it repeats.
+    pub fn set_schedule(&self, id: &str, schedule: &Schedule) -> Result<()> {
+        let id = self.node(id, &[KIND_TASK])?;
+        self.write(|tree| write_schedule(&tree.get_meta(id)?, schedule))
+    }
+
+    /// 0 = none … 3 = high.
+    pub fn set_priority(&self, id: &str, priority: u8) -> Result<()> {
+        let id = self.node(id, &[KIND_TASK])?;
+        self.write(|tree| write_priority(&tree.get_meta(id)?, priority))
+    }
+
     pub fn rename(&self, id: &str, title: &str) -> Result<()> {
         let title = clean_title(title)?;
         let id = self.node(id, &[KIND_LIST, KIND_TASK])?;
@@ -223,14 +304,51 @@ impl Store {
         })
     }
 
-    pub fn set_completed(&self, id: &str, completed: bool) -> Result<()> {
+    /// Completes or reopens a task. Completing a repeating task logs this occurrence as a completed
+    /// copy and moves the task on to its next due date after `today`, with its subtasks reopened.
+    pub fn set_completed(&self, id: &str, completed: bool, today: Date) -> Result<()> {
         let id = self.node(id, &[KIND_TASK])?;
         self.write(|tree| {
             let meta = tree.get_meta(id)?;
-            if completed {
-                meta.insert(COMPLETED_AT, now_millis())?;
-            } else {
+            if !completed {
                 meta.delete(COMPLETED_AT)?;
+                return Ok(());
+            }
+            let schedule = read_schedule(&meta);
+            let (Some(due), Some(repeat), None) = (schedule.due, schedule.repeat, meta.get(COMPLETED_AT))
+            else {
+                meta.insert(COMPLETED_AT, now_millis())?;
+                return Ok(());
+            };
+            let parent = tree.parent(id).ok_or_else(|| Error::NotFound(id.to_string()))?;
+            let copy = tree.create(parent)?;
+            let done = tree.get_meta(copy)?;
+            done.insert(KIND, KIND_TASK)?;
+            done.insert(TITLE, meta_str(&meta, TITLE).unwrap_or_default())?;
+            write_schedule(
+                &done,
+                &Schedule {
+                    repeat: None,
+                    ..schedule
+                },
+            )?;
+            write_priority(&done, meta_i64(&meta, PRIORITY).unwrap_or(0) as u8)?;
+            if let Some(notes) = meta_text(&meta, NOTES).filter(|n| !n.is_empty()) {
+                done.ensure_mergeable_text(NOTES)?
+                    .update(&notes, Default::default())
+                    .map_err(|e| Error::Invalid(format!("notes: {e}")))?;
+            }
+            done.insert(COMPLETED_AT, now_millis())?;
+
+            let mut next = repeat.next_after(due);
+            while next <= today {
+                next = repeat.next_after(next);
+            }
+            meta.insert(DUE, next.to_string())?;
+            let mut stack = tree.children(id).unwrap_or_default();
+            while let Some(child) = stack.pop() {
+                tree.get_meta(child)?.delete(COMPLETED_AT)?;
+                stack.extend(tree.children(child).unwrap_or_default());
             }
             Ok(())
         })
@@ -263,6 +381,44 @@ impl Store {
             }
             Ok(())
         })
+    }
+
+    /// Makes a task the last subtask of the open sibling right above it. Returns false when there is
+    /// none (it is the first).
+    pub fn indent_task(&self, id: &str) -> Result<bool> {
+        let id = self.node(id, &[KIND_TASK])?;
+        let parent = self.tasks.parent(id).ok_or_else(|| Error::NotFound(id.to_string()))?;
+        let siblings = self.tasks.children(parent).unwrap_or_default();
+        let Some(at) = siblings.iter().position(|&s| s == id) else {
+            return Ok(false);
+        };
+        let open_task = |s: TreeID| {
+            projection::is_alive(&self.tasks, s)
+                && projection::kind(&self.tasks, s).as_deref() == Some(KIND_TASK)
+                && self
+                    .tasks
+                    .get_meta(s)
+                    .is_ok_and(|m| meta_i64(&m, COMPLETED_AT).is_none())
+        };
+        let Some(&above) = siblings[..at].iter().rev().find(|&&s| open_task(s)) else {
+            return Ok(false);
+        };
+        self.write(|tree| Ok(tree.mov(id, TreeParentId::Node(above))?))?;
+        Ok(true)
+    }
+
+    /// Makes a subtask a sibling of its parent task, right after it. Returns false for top-level
+    /// tasks.
+    pub fn outdent_task(&self, id: &str) -> Result<bool> {
+        let id = self.node(id, &[KIND_TASK])?;
+        let Some(TreeParentId::Node(parent)) = self.tasks.parent(id) else {
+            return Ok(false);
+        };
+        if projection::kind(&self.tasks, parent).as_deref() != Some(KIND_TASK) {
+            return Ok(false);
+        }
+        self.write(|tree| Ok(tree.mov_after(id, parent)?))?;
+        Ok(true)
     }
 
     /// Moves a list to `index` among the other lists. The Inbox always comes first.
@@ -333,20 +489,24 @@ impl Store {
     /// All tasks of a list (or [`INBOX`]), top-level first, each level in user order.
     pub fn tasks(&self, list_id: &str) -> Result<Vec<Task>> {
         let inner = self.lock();
-        let mut stmt = inner.db.prepare_cached(
-            "SELECT id, list_id, parent_id, title, notes, completed_at FROM task
-             WHERE list_id = ?1 ORDER BY parent_id IS NOT NULL, parent_id, position, id",
-        )?;
-        let rows = stmt.query_map([list_id], |r| {
-            Ok(Task {
-                id: r.get(0)?,
-                list_id: r.get(1)?,
-                parent_id: r.get(2)?,
-                title: r.get(3)?,
-                notes: r.get(4)?,
-                completed_at: r.get(5)?,
-            })
-        })?;
+        let mut stmt = inner.db.prepare_cached(&format!(
+            "SELECT {TASK_COLUMNS} FROM task t
+             WHERE list_id = ?1 ORDER BY parent_id IS NOT NULL, parent_id, position, id"
+        ))?;
+        let rows = stmt.query_map([list_id], task_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Open tasks due on or before `today`, from every list: overdue first, then by time and
+    /// priority. Subtasks of completed tasks are left out.
+    pub fn due_tasks(&self, today: Date) -> Result<Vec<Task>> {
+        let inner = self.lock();
+        let mut stmt = inner.db.prepare_cached(&format!(
+            "SELECT {TASK_COLUMNS} FROM task t LEFT JOIN task p ON p.id = t.parent_id
+             WHERE t.completed_at IS NULL AND t.due IS NOT NULL AND t.due <= ?1 AND p.completed_at IS NULL
+             ORDER BY t.due, t.due_time IS NULL, t.due_time, t.priority DESC, t.position, t.id"
+        ))?;
+        let rows = stmt.query_map([today.to_string()], task_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -458,6 +618,9 @@ impl Store {
         }
         habits::project_log(&self.habit_log, &tx, &dirty.habit_log)?;
         notes::apply(&self.notes, &tx, dirty.notes)?;
+        if dirty.workouts {
+            workouts::rebuild(&self.workouts, &tx)?;
+        }
         tx.commit()?;
         *saved_vv = vv;
         Ok(true)
@@ -491,6 +654,65 @@ impl Store {
 }
 
 pub(crate) const SERVER_VV_KEY: &str = "server_vv:workspace";
+
+const TASK_COLUMNS: &str =
+    "t.id, t.list_id, t.parent_id, t.title, t.notes, t.completed_at, t.due, t.due_time, t.priority, t.repeat";
+
+fn task_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: r.get(0)?,
+        list_id: r.get(1)?,
+        parent_id: r.get(2)?,
+        title: r.get(3)?,
+        notes: r.get(4)?,
+        completed_at: r.get(5)?,
+        due: r.get(6)?,
+        due_time: r.get(7)?,
+        priority: r.get(8)?,
+        repeat: r.get(9)?,
+    })
+}
+
+fn read_schedule(meta: &LoroMap) -> Schedule {
+    let due = meta_str(meta, DUE).and_then(|d| Date::parse(&d).ok());
+    Schedule {
+        due,
+        time: due.and(meta_i64(meta, DUE_TIME)).map(|t| t as u32),
+        repeat: due
+            .and(meta_str(meta, REPEAT))
+            .and_then(|r| Repeat::parse_rrule(&r).ok()),
+    }
+}
+
+/// A time or repeat rule only means something with a due date; without one all three go.
+fn write_schedule(meta: &LoroMap, schedule: &Schedule) -> Result<()> {
+    let Some(due) = schedule.due else {
+        for key in [DUE, DUE_TIME, REPEAT] {
+            meta.delete(key)?;
+        }
+        return Ok(());
+    };
+    meta.insert(DUE, due.to_string())?;
+    match schedule.time {
+        Some(t) if t < 24 * 60 => meta.insert(DUE_TIME, i64::from(t))?,
+        Some(t) => return Err(Error::Invalid(format!("time {t} is past midnight"))),
+        None => meta.delete(DUE_TIME)?,
+    }
+    match &schedule.repeat {
+        Some(r) => meta.insert(REPEAT, r.to_rrule())?,
+        None => meta.delete(REPEAT)?,
+    }
+    Ok(())
+}
+
+fn write_priority(meta: &LoroMap, priority: u8) -> Result<()> {
+    match priority {
+        0 => meta.delete(PRIORITY)?,
+        1..=3 => meta.insert(PRIORITY, i64::from(priority))?,
+        _ => return Err(Error::Invalid(format!("priority {priority} is not 0-3"))),
+    }
+    Ok(())
+}
 
 /// Open top-level tasks of list `?1`.
 const OPEN_COUNT: &str =

@@ -159,7 +159,8 @@ fun FloatingTabBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, 
     }
 }
 
-private val TabWidth = 76.dp
+// Four tabs and the + fit a 360dp-wide phone.
+private val TabWidth = 68.dp
 private val TabHeight = 52.dp
 
 /** What the + beside the tab bar does on the current screen; screens set it with [AddAction]. */

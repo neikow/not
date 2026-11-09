@@ -5,6 +5,13 @@
     <!-- Only for scanning pairing QR codes; asked for when the scanner opens. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Rest timer between sets: the countdown notification and the alarm at its end. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="false" />
@@ -55,6 +62,10 @@
                 <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".RestTimerReceiver"
+            android:exported="false" />
 
         <service
             android:name=".QuickAddTileService"

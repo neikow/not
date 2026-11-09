@@ -94,6 +94,15 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
         run { store.moveNote(note.id, folderId) }
     }
 
+    /** Drag and drop in a folder: [note] goes before [beforeId], or last. Sorts the folder by hand. */
+    fun moveBefore(note: NoteSummary, beforeId: String?) {
+        run { store.moveNoteBefore(note.id, beforeId) }
+    }
+
+    fun setManualOrder(folder: Folder, manual: Boolean) {
+        run { store.setFolderManualOrder(folder.id, manual) }
+    }
+
     fun delete(note: NoteSummary) {
         _state.update { if (it.openNoteId == note.id) it.copy(openNoteId = null) else it }
         run { store.deleteNote(note.id) } ?: return
@@ -131,7 +140,8 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
         val notes = when {
             query.isNotEmpty() -> run { store.searchNotes(query) } ?: return
             folderId == null -> all
-            else -> all.filter { it.folderId == folderId }
+            // The folder's own order (by hand, or latest edit).
+            else -> run { store.notes(folderId) } ?: return
         }
         _state.update {
             it.copy(

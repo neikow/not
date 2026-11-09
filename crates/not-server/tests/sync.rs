@@ -7,6 +7,10 @@ use not_protocol::Poke;
 use not_server::AppState;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+fn today() -> not_core::date::Date {
+    not_core::date::Date::parse("2026-11-08").unwrap()
+}
+
 struct Server {
     base: String,
     state: AppState,
@@ -53,7 +57,7 @@ async fn two_devices_converge_through_server() {
     assert_eq!(phone.tasks(INBOX).unwrap(), mac.tasks(INBOX).unwrap());
 
     mac.rename(&milk, "oat milk").unwrap();
-    phone.set_completed(&milk, true).unwrap();
+    phone.set_completed(&milk, true, today()).unwrap();
     mac_client.sync(&mac).await.unwrap();
     phone_client.sync(&phone).await.unwrap();
     mac_client.sync(&mac).await.unwrap();
@@ -185,7 +189,7 @@ async fn live_sync_propagates_both_ways() {
     wait_until(|| phone.tasks(INBOX).unwrap().len() == 1).await;
 
     let milk = phone.tasks(INBOX).unwrap()[0].id.clone();
-    phone.set_completed(&milk, true).unwrap();
+    phone.set_completed(&milk, true, today()).unwrap();
     wait_until(|| mac.tasks(INBOX).unwrap()[0].completed_at.is_some()).await;
 }
 

@@ -58,6 +58,9 @@ import dev.lysen.not.ui.AddAction
 import dev.lysen.not.ui.Button
 import dev.lysen.not.ui.ButtonKind
 import dev.lysen.not.ui.CardDialog
+import androidx.compose.foundation.lazy.rememberLazyListState
+import dev.lysen.not.ui.rememberReorderState
+import dev.lysen.not.ui.reorderable
 import dev.lysen.not.ui.Composer
 import dev.lysen.not.ui.EmptyState
 import dev.lysen.not.ui.Field
@@ -91,15 +94,28 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
     }
     AddAction("New habit", enabled = !composing) { composing = true }
 
+    val listState = rememberLazyListState()
+    val reorder = rememberReorderState(listState, state.habits) { it.habit.id }
+
     Box(Modifier.fillMaxSize()) {
-        LargeTitleScreen(title = "Habits", header = { TodayHeader(state) }) {
+        LargeTitleScreen(title = "Habits", state = listState, header = { TodayHeader(state) }) {
             if (state.habits.isEmpty()) {
                 item(key = "empty") {
                     EmptyState(R.drawable.ic_repeat, "No habits yet", "Tap + to add one, then check it off each day to build a streak.")
                 }
             }
-            items(state.habits, key = { it.habit.id }) { summary ->
-                HabitRow(summary, state.today, viewModel, Modifier.animateItem())
+            items(reorder.items, key = { it.habit.id }) { summary ->
+                HabitRow(
+                    summary,
+                    state.today,
+                    viewModel,
+                    (if (reorder.isDragging(summary)) Modifier else Modifier.animateItem())
+                        .reorderable(reorder, summary, summary.habit.id) {
+                            reorder.start(summary, canSwap = { true }, onDrop = { order ->
+                                viewModel.move(summary.habit.id, order.indexOfFirst { it.habit.id == summary.habit.id })
+                            })
+                        },
+                )
             }
         }
         Column(
@@ -148,6 +164,7 @@ private fun HabitRow(summary: HabitSummary, today: LocalDate, viewModel: HabitsV
     Row(
         modifier
             .fillMaxWidth()
+            .background(colors.background)
             .pressable({ viewModel.open(habit.id) }, pressedScale = 0.985f)
             .padding(start = 16.dp, end = 24.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,

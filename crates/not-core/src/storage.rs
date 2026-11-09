@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::Result;
 
 /// Bump when the read-model tables change; a mismatch triggers a full rebuild from the docs.
-pub const READ_MODEL_VERSION: i64 = 5;
+pub const READ_MODEL_VERSION: i64 = 7;
 
 /// Local update rows per doc before they are folded into a snapshot on open.
 const COMPACT_AFTER: i64 = 200;
@@ -48,6 +48,8 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
         DROP TABLE IF EXISTS habit_log;
         DROP TABLE IF EXISTS folder;
         DROP TABLE IF EXISTS note;
+        DROP TABLE IF EXISTS workout;
+        DROP TABLE IF EXISTS workout_exercise;
 
         CREATE TABLE list (
             id       TEXT PRIMARY KEY,
@@ -61,9 +63,14 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
             title        TEXT NOT NULL,
             notes        TEXT NOT NULL,
             completed_at INTEGER,
-            position     TEXT NOT NULL
+            position     TEXT NOT NULL,
+            due          TEXT,
+            due_time     INTEGER,
+            priority     INTEGER NOT NULL,
+            repeat       TEXT
         );
         CREATE INDEX task_by_list ON task (list_id, parent_id, position);
+        CREATE INDEX task_by_due ON task (due) WHERE due IS NOT NULL AND completed_at IS NULL;
         CREATE TABLE habit (
             id       TEXT PRIMARY KEY,
             title    TEXT NOT NULL,
@@ -80,7 +87,8 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
         CREATE TABLE folder (
             id        TEXT PRIMARY KEY,
             parent_id TEXT,
-            title     TEXT NOT NULL
+            title     TEXT NOT NULL,
+            manual    INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE note (
             id         TEXT PRIMARY KEY,
@@ -89,9 +97,27 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
             preview    TEXT NOT NULL,
             body       TEXT NOT NULL,
             pinned     INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            position   TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX note_by_folder ON note (folder_id, pinned, updated_at);
+        CREATE TABLE workout (
+            id       TEXT PRIMARY KEY,
+            date     TEXT NOT NULL,
+            title    TEXT NOT NULL,
+            position TEXT NOT NULL
+        );
+        CREATE TABLE workout_exercise (
+            id         TEXT PRIMARY KEY,
+            workout_id TEXT NOT NULL,
+            name       TEXT NOT NULL,
+            name_key   TEXT NOT NULL,
+            sets       TEXT NOT NULL,
+            position   TEXT NOT NULL,
+            set_count  INTEGER NOT NULL
+        );
+        CREATE INDEX workout_exercise_by_workout ON workout_exercise (workout_id, position);
+        CREATE INDEX workout_exercise_by_name ON workout_exercise (name_key);
         ",
     )?;
     kv_set(db, "read_model_version", &READ_MODEL_VERSION.to_le_bytes())?;

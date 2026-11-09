@@ -58,6 +58,9 @@ import dev.lysen.not.ui.EmptyState
 import dev.lysen.not.ui.Field
 import dev.lysen.not.ui.Icon
 import dev.lysen.not.ui.IconButton
+import androidx.compose.foundation.lazy.rememberLazyListState
+import dev.lysen.not.ui.rememberReorderState
+import dev.lysen.not.ui.reorderable
 import dev.lysen.not.ui.LargeTitleScreen
 import dev.lysen.not.ui.LocalBottomBarHeight
 import dev.lysen.not.ui.Menu
@@ -114,13 +117,23 @@ private fun NoteList(state: NotesState, viewModel: NotesViewModel) {
     var moving by remember { mutableStateOf<NoteSummary?>(null) }
     val searching = state.query != null
     if (searching) BackHandler { viewModel.search(null) }
+    val listState = rememberLazyListState()
+    val reorder = rememberReorderState(listState, state.notes) { it.id }
+    // Only a folder has an order of its own; All mixes folders and search ranks by match.
+    val canReorder = state.folder != null && !searching
 
     LargeTitleScreen(
         title = state.folder?.title ?: "Notes",
+        state = listState,
         actions = {
             if (!searching) IconButton(R.drawable.ic_search, "Search", { viewModel.search("") })
             state.folder?.let { folder ->
-                FolderMenu(onRename = { renaming = folder }, onDelete = { viewModel.deleteFolder(folder) })
+                FolderMenu(
+                    folder,
+                    onRename = { renaming = folder },
+                    onManualOrder = { viewModel.setManualOrder(folder, it) },
+                    onDelete = { viewModel.deleteFolder(folder) },
+                )
             }
         },
         header = {
@@ -140,13 +153,31 @@ private fun NoteList(state: NotesState, viewModel: NotesViewModel) {
                 }
             }
         }
-        items(state.notes, key = { it.id }) { note ->
+        items(reorder.items, key = { it.id }) { note ->
+            var menu by remember { mutableStateOf(false) }
             NoteCard(
                 note,
                 folder = if (state.folderId == null && note.folderId != null) state.folderTitle(note.folderId) else null,
                 viewModel = viewModel,
                 onMove = { moving = note },
-                modifier = Modifier.animateItem().padding(horizontal = 16.dp, vertical = 5.dp),
+                menu = menu,
+                onMenu = { menu = it },
+                // In a folder a long press lifts the card to drag it; letting go in place opens the menu.
+                longPressOpensMenu = !canReorder,
+                modifier = (if (reorder.isDragging(note)) Modifier else Modifier.animateItem())
+                    .reorderable(reorder, note, note.id, enabled = canReorder) {
+                        reorder.start(
+                            note,
+                            // Pinned notes stay above the rest.
+                            canSwap = { it.pinned == note.pinned },
+                            onDrop = { order ->
+                                val i = order.indexOfFirst { it.id == note.id }
+                                viewModel.moveBefore(note, order.drop(i + 1).firstOrNull { it.pinned == note.pinned }?.id)
+                            },
+                            onHold = { menu = true },
+                        )
+                    }
+                    .padding(horizontal = 16.dp, vertical = 5.dp),
             )
         }
     }
@@ -258,11 +289,13 @@ private fun NoteCard(
     folder: String?,
     viewModel: NotesViewModel,
     onMove: () -> Unit,
+    menu: Boolean,
+    onMenu: (Boolean) -> Unit,
+    longPressOpensMenu: Boolean,
     modifier: Modifier,
 ) {
     val colors = Not.colors
     val haptics = LocalHapticFeedback.current
-    var menu by remember { mutableStateOf(false) }
     Box(modifier) {
         Column(
             Modifier
@@ -272,10 +305,12 @@ private fun NoteCard(
                 .combinedClickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    onLongClick = {
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        menu = true
-                    },
+                    onLongClick = if (longPressOpensMenu) {
+                        {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onMenu(true)
+                        }
+                    } else null,
                     onClick = { viewModel.open(note.id) },
                 )
                 .padding(horizontal = 18.dp, vertical = 16.dp),
@@ -295,17 +330,17 @@ private fun NoteCard(
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
-        Menu(menu, onDismiss = { menu = false }) {
+        Menu(menu, onDismiss = { onMenu(false) }) {
             MenuItem(if (note.pinned) "Unpin" else "Pin to top", icon = R.drawable.ic_pin, onClick = {
-                menu = false
+                onMenu(false)
                 viewModel.togglePin(note)
             })
             MenuItem("Move to…", icon = R.drawable.ic_folder, onClick = {
-                menu = false
+                onMenu(false)
                 onMove()
             })
             MenuItem("Delete", icon = R.drawable.ic_delete, danger = true, onClick = {
-                menu = false
+                onMenu(false)
                 viewModel.delete(note)
             })
         }
@@ -313,11 +348,19 @@ private fun NoteCard(
 }
 
 @Composable
-private fun FolderMenu(onRename: () -> Unit, onDelete: () -> Unit) {
+private fun FolderMenu(folder: Folder, onRename: () -> Unit, onManualOrder: (Boolean) -> Unit, onDelete: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(R.drawable.ic_more_vert, "Folder options", { open = true })
         Menu(open, onDismiss = { open = false }) {
+            MenuItem(
+                if (folder.manualOrder) "Sort by latest edit" else "Sort by hand",
+                icon = R.drawable.ic_sort,
+                onClick = {
+                    open = false
+                    onManualOrder(!folder.manualOrder)
+                },
+            )
             MenuItem("Rename folder", icon = R.drawable.ic_edit, onClick = {
                 open = false
                 onRename()

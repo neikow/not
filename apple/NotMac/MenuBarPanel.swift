@@ -55,7 +55,7 @@ struct MenuBarPanel: View {
             .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
             .focused($fieldFocused)
             .onSubmit {
-                model.addTask(draft, to: model.panelListID)
+                model.quickAdd(draft, to: model.panelListID)
                 draft = ""
             }
             .padding(.horizontal, 12)

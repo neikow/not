@@ -76,6 +76,11 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
         _undoables.trySend(Undoable("“${habit.title}” deleted"))
     }
 
+    /** Drag and drop: [id] goes to [index] in the list. */
+    fun move(id: String, index: Int) {
+        run { store.moveHabit(id, index.toUInt()) }
+    }
+
     fun undo() {
         run { store.undo() }
     }

@@ -70,7 +70,7 @@ class CompleteTask : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         val id = parameters[TASK_ID] ?: return
         try {
-            (context.applicationContext as NotApp).store.setCompleted(id, true)
+            (context.applicationContext as NotApp).store.setCompleted(id, true, dev.lysen.not.today())
         } catch (_: NotException) {
             return // deleted on another device in the meantime
         }

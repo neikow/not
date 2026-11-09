@@ -40,15 +40,17 @@ enum class Tab(val label: String, val icon: Int) {
     Tasks("Tasks", R.drawable.ic_task_alt),
     Habits("Habits", R.drawable.ic_repeat),
     Notes("Notes", R.drawable.ic_note),
+    Workouts("Workouts", R.drawable.ic_fitness),
 }
 
-/** Tasks, Habits and Notes under a floating tab bar; Settings opens over them from the lists sheet. */
+/** Tasks, Habits, Notes and Workouts under a floating tab bar; Settings opens over them from the lists sheet. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun NotAppUi(
     tasks: TasksViewModel,
     habits: HabitsViewModel,
     notes: NotesViewModel,
+    workouts: WorkoutsViewModel,
     requestedTab: StateFlow<Tab?>,
     onTabShown: () -> Unit,
 ) {
@@ -70,11 +72,12 @@ fun NotAppUi(
     }
     val pendingHabits = habits.state.collectAsStateWithLifecycle().value.pending
     val editingNote = notes.state.collectAsStateWithLifecycle().value.openNote != null
+    val inWorkout = workouts.state.collectAsStateWithLifecycle().value.openId != null
     // Back from another tab goes to Tasks first, then leaves the app.
     if (tab != Tab.Tasks) BackHandler { tab = Tab.Tasks }
 
     // The note editor gets the whole screen, and typing gets the room the bar would take.
-    val showsBar = !(tab == Tab.Notes && editingNote) && !WindowInsets.isImeVisible
+    val showsBar = !(tab == Tab.Notes && editingNote) && !(tab == Tab.Workouts && inWorkout) && !WindowInsets.isImeVisible
     val barHeight = if (showsBar) floatingTabBarHeight() else 0.dp
 
     val addAction = remember { AddActionHolder() }
@@ -85,6 +88,7 @@ fun NotAppUi(
                 Tab.Tasks -> TasksScreen(tasks, onOpenSettings = { showsSettings = true })
                 Tab.Habits -> HabitsScreen(habits)
                 Tab.Notes -> NotesScreen(notes)
+                Tab.Workouts -> WorkoutsScreen(workouts)
             }
         }
         AnimatedVisibility(

@@ -27,6 +27,18 @@ struct NotesView: View {
         .searchable(text: $model.noteSearch, placement: .toolbar, prompt: "Search notes")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                if model.selectedFolderID != nil {
+                    Menu {
+                        Picker("Sort By", selection: Binding(get: { model.isManualOrder }, set: model.setManualOrder)) {
+                            Text("Latest Edit").tag(false)
+                            Text("Manual").tag(true)
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Label("Sort", systemImage: "arrow.up.arrow.down")
+                    }
+                    .help("Sort notes in this folder — drag a note to sort by hand")
+                }
                 if let note = model.selectedNote {
                     Button { model.togglePin(note) } label: {
                         Label(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin")
@@ -58,6 +70,11 @@ private struct NoteList: View {
                     NoteRow(note: note, showsFolder: model.selectedFolderID == nil, model: model)
                         .tag(note.id)
                         .draggable(note.id)
+                }
+                // Dropping between notes of a folder sorts it by hand. All Notes mixes folders, so
+                // it stays sorted by latest edit.
+                .dropDestination(for: String.self) { ids, index in
+                    model.dropNotes(ids, at: index)
                 }
             }
             .listStyle(.inset)

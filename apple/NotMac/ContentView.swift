@@ -4,13 +4,16 @@ import SwiftUI
 struct ContentView: View {
     @Bindable var model: AppModel
 
-    private var isNotes: Bool {
-        if case .notes = model.selection { true } else { false }
+    /// Notes and workouts have no inspector; the editor takes the room.
+    private var hasInspector: Bool {
+        switch model.selection {
+        case .notes, .workouts: false
+        default: true
+        }
     }
 
-    /// Notes have no inspector; the editor takes the room.
     private var showsInspector: Binding<Bool> {
-        isNotes ? .constant(false) : $model.showsInspector
+        hasInspector ? $model.showsInspector : .constant(false)
     }
 
     var body: some View {
@@ -22,6 +25,7 @@ struct ContentView: View {
                 switch model.selection {
                 case .habits: HabitsView(model: model)
                 case .notes: NotesView(model: model)
+                case .workouts: WorkoutsView(model: model)
                 default: TaskListView(model: model)
                 }
             }
@@ -38,7 +42,7 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) { SyncAlert(state: model.syncState) }
-            if !isNotes {
+            if hasInspector {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         model.showsInspector.toggle()
@@ -68,6 +72,9 @@ private struct Sidebar: View {
 
     var body: some View {
         List(selection: $model.selection) {
+            Label("Today", systemImage: "calendar")
+                .badge(model.dueCount)
+                .tag(SidebarItem.today)
             if let inbox = model.inbox {
                 Label(inbox.title, systemImage: "tray")
                     .badge(Int(inbox.openCount))
@@ -76,6 +83,8 @@ private struct Sidebar: View {
             Label("Habits", systemImage: "repeat")
                 .badge(model.habits.count { $0.due && $0.count < $0.habit.goal })
                 .tag(SidebarItem.habits)
+            Label("Workouts", systemImage: "dumbbell")
+                .tag(SidebarItem.workouts)
             Section("Notes") {
                 Label("All Notes", systemImage: "note.text")
                     .badge(model.noteCount)
@@ -216,53 +225,92 @@ private struct ListRow: View {
 
 private struct TaskListView: View {
     @Bindable var model: AppModel
-    @State private var draft = ""
+    @State private var draft = TaskDraft()
+    @State private var focusRequests = 0
     @AppStorage("showsCompleted") private var showsCompleted = false
-    @FocusState private var addFieldFocused: Bool
+
+    private var parsed: ParsedTask? { model.parse(draft.text, dismissed: draft.dismissed) }
 
     private var isEmpty: Bool { model.outline.open.isEmpty && model.outline.completed.isEmpty }
+
+    /// The last open row under the task getting a subtask: the inline field goes after it.
+    private var subtaskAnchorID: String? {
+        let rows = model.outline.open
+        guard let parent = model.addingSubtaskTo,
+              let start = rows.firstIndex(where: { $0.task.id == parent })
+        else { return nil }
+        let depth = rows[start].depth
+        let end = rows[(start + 1)...].firstIndex { $0.depth <= depth } ?? rows.endIndex
+        return rows[end - 1].task.id
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             addField
             Divider()
             if isEmpty {
-                ContentUnavailableView(
-                    "Nothing here yet",
-                    systemImage: "checkmark.circle",
-                    description: Text("Type above and press Return.")
-                )
+                if model.isToday {
+                    ContentUnavailableView(
+                        "Nothing due today",
+                        systemImage: "calendar",
+                        description: Text("Add “tomorrow”, “fri 9am” or “every mon” to a task to see it here when it's due.")
+                    )
+                    .frame(maxHeight: .infinity)
+                } else {
+                    ContentUnavailableView(
+                        "Nothing here yet",
+                        systemImage: "checkmark.circle",
+                        description: Text("Type above and press Return. Try “call mum fri 6pm #home !1”.")
+                    )
+                    .frame(maxHeight: .infinity)
+                }
             } else {
                 taskList
             }
         }
-        .navigationTitle(model.selectedList?.title ?? "not")
-        .onAppear { addFieldFocused = true }
-        .onChange(of: model.addFieldFocusRequests) { addFieldFocused = true }
+        // Keeps the add field at the top when the empty state alone wouldn't fill the column.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .navigationTitle(model.title)
+        .onAppear { focusRequests += 1 }
+        .onChange(of: model.addFieldFocusRequests) { focusRequests += 1 }
     }
 
     private var addField: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "plus.circle.fill")
-                .foregroundStyle(.tint)
-                .imageScale(.large)
-            TextField("New task", text: $draft)
-                .textFieldStyle(.plain)
-                .font(.title3)
-                .focused($addFieldFocused)
-                .onSubmit {
-                    model.addTask(draft)
-                    draft = ""
+        let parsed = parsed
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: "plus.circle.fill")
+                    .foregroundStyle(priorityColor(parsed?.priority ?? 0) ?? .accentColor)
+                    .imageScale(.large)
+                TaskInputField(
+                    text: $draft.text,
+                    placeholder: model.isToday ? "New task for today" : "New task",
+                    tokens: parsed?.tokens ?? [],
+                    focusRequests: focusRequests + model.addFieldFocusRequests
+                ) {
+                    model.quickAdd(draft.text, dismissed: draft.dismissed)
+                    draft.clear()
                 }
+            }
+            TokenChips(parsed: parsed, model: model) { draft.dismissed.append($0.text) }
+                .padding(.leading, 30)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
+        .onChange(of: draft.text) { _, text in if text.isEmpty { draft.dismissed = [] } }
     }
 
     private var taskList: some View {
         List(selection: $model.selectedTaskID) {
             ForEach(model.outline.open, id: \.task.id) { row in
-                TaskRowView(row: row, model: model)
+                TaskRowView(row: row, model: model, showsList: model.isToday)
+                if row.task.id == subtaskAnchorID, let parent = model.addingSubtaskTo,
+                   let depth = model.outline.open.first(where: { $0.task.id == parent })?.depth {
+                    SubtaskComposer(model: model, parentID: parent)
+                        .padding(.leading, CGFloat(depth + 1) * 22)
+                        .selectionDisabled()
+                        .moveDisabled(true)
+                }
             }
             .onMove { source, destination in
                 if let from = source.first { model.moveOpenRow(from: from, to: destination) }
@@ -299,6 +347,17 @@ private struct TaskListView: View {
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
                 Button("Edit Title") { model.editingTaskID = id }
+                if !model.isToday, model.outline.open.contains(where: { $0.task.id == id }) {
+                    Button("Add Subtask") { model.beginSubtask(of: id) }
+                    Button("Indent") {
+                        model.selectedTaskID = id
+                        model.indentSelected()
+                    }
+                    Button("Outdent") {
+                        model.selectedTaskID = id
+                        model.outdentSelected()
+                    }
+                }
                 Button("Show Info") {
                     model.selectedTaskID = id
                     model.showsInspector = true
@@ -320,6 +379,12 @@ private struct TaskListView: View {
             model.editingTaskID = id
             return .handled
         }
+        // Tab nests the selected task under the one above; ⇧Tab moves it back out.
+        .onKeyPress(.tab, phases: .down) { press in
+            guard model.editingTaskID == nil, model.addingSubtaskTo == nil, model.selectedTask != nil else { return .ignored }
+            press.modifiers.contains(.shift) ? model.outdentSelected() : model.indentSelected()
+            return .handled
+        }
         .onKeyPress(keys: [.upArrow, .downArrow], phases: .down) { press in
             guard press.modifiers == .command, model.editingTaskID == nil else { return .ignored }
             model.moveSelected(by: press.key == .upArrow ? -1 : 1)
@@ -331,6 +396,7 @@ private struct TaskListView: View {
 private struct TaskRowView: View {
     let row: OutlineRow
     let model: AppModel
+    var showsList = false
     @State private var draft = ""
     @FocusState private var focused: Bool
 
@@ -358,9 +424,18 @@ private struct TaskRowView: View {
                     .onExitCommand { model.editingTaskID = nil }
                     .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
             } else {
-                Text(task.title)
-                    .strikethrough(row.done)
-                    .foregroundStyle(row.done ? .secondary : .primary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(task.title)
+                        .strikethrough(row.done)
+                        .foregroundStyle(row.done ? .secondary : .primary)
+                    meta
+                }
+            }
+            if let color = priorityColor(task.priority), !row.done {
+                Image(systemName: "flag.fill")
+                    .imageScale(.small)
+                    .foregroundStyle(color)
+                    .help("\(priorityName(task.priority)) priority")
             }
             if !task.notes.isEmpty {
                 Image(systemName: "text.alignleft")
@@ -378,6 +453,25 @@ private struct TaskRowView: View {
         guard isEditing else { return }
         if draft != task.title { model.rename(task.id, to: draft) }
         model.editingTaskID = nil
+    }
+
+    /// "Tomorrow 9:00 ⟳ · Groceries": red once overdue, accent when due today.
+    @ViewBuilder private var meta: some View {
+        let label = scheduleLabel(due: task.due, time: task.dueTime, repeat: nil, today: model.today)
+        if label != nil || showsList {
+            HStack(spacing: 4) {
+                if let label, let due = task.due {
+                    Text(label)
+                        .foregroundStyle(row.done ? AnyShapeStyle(.tertiary) : due < model.today ? AnyShapeStyle(.red) : due == model.today ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    if task.repeat != nil { Image(systemName: "repeat").imageScale(.small).foregroundStyle(.secondary) }
+                }
+                if showsList {
+                    Text(label == nil ? model.listTitle(task.listId) : "· \(model.listTitle(task.listId))")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .font(.caption)
+        }
     }
 }
 
@@ -402,7 +496,9 @@ private struct TaskDetail: View {
     @State private var title = ""
     @State private var notes = ""
     @State private var subtaskDraft = ""
+    @State private var schedule = TaskDraft()
     @FocusState private var notesFocused: Bool
+    @FocusState private var subtaskFocused: Bool
 
     var body: some View {
         Form {
@@ -419,6 +515,38 @@ private struct TaskDetail: View {
                 .disabled(task.parentId != nil)
             }
 
+            Section {
+                LabeledContent("Due") {
+                    HStack {
+                        Text(scheduleLabel(due: task.due, time: task.dueTime, repeat: task.repeat, today: model.today) ?? "None")
+                            .foregroundStyle(task.due == nil ? .secondary : .primary)
+                        if task.due != nil {
+                            Button("Clear") { model.setSchedule(task.id, "") }
+                                .buttonStyle(.link)
+                        }
+                    }
+                }
+                TaskInputField(
+                    text: $schedule.text,
+                    placeholder: "Change: fri 9am, every mon, 12 dec…",
+                    tokens: model.parse(schedule.text, dismissed: schedule.dismissed)?.tokens ?? [],
+                    font: .preferredFont(forTextStyle: .body)
+                ) {
+                    model.setSchedule(task.id, schedule.text)
+                    schedule.clear()
+                }
+                Picker("Priority", selection: Binding(
+                    get: { task.priority },
+                    set: { model.setPriority(task.id, $0) }
+                )) {
+                    ForEach([UInt8(3), 2, 1, 0], id: \.self) { p in
+                        Label(priorityName(p), systemImage: p == 0 ? "flag.slash" : "flag.fill")
+                            .foregroundStyle(priorityColor(p) ?? .secondary)
+                            .tag(p)
+                    }
+                }
+            }
+
             Section("Notes") {
                 TextEditor(text: $notes)
                     .font(.body)
@@ -429,21 +557,23 @@ private struct TaskDetail: View {
 
             Section("Subtasks") {
                 ForEach(model.subtasks(of: task.id), id: \.id) { subtask in
-                    Toggle(isOn: Binding(
-                        get: { subtask.completedAt != nil },
-                        set: { _ in model.toggle(subtask) }
-                    )) {
-                        Text(subtask.title)
-                            .strikethrough(subtask.completedAt != nil)
-                            .foregroundStyle(subtask.completedAt != nil ? .secondary : .primary)
-                    }
-                    .toggleStyle(.checkbox)
+                    SubtaskRow(model: model, subtask: subtask)
                 }
-                TextField("Add subtask", text: $subtaskDraft)
-                    .onSubmit {
-                        model.addTask(subtaskDraft, to: task.id)
-                        subtaskDraft = ""
-                    }
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14)
+                    TextField("Add subtask", text: $subtaskDraft, prompt: Text("Add subtask"))
+                        .labelsHidden()
+                        .textFieldStyle(.plain)
+                        .focused($subtaskFocused)
+                        .onSubmit {
+                            model.addTask(subtaskDraft, to: task.id)
+                            subtaskDraft = ""
+                            // Stays in the field for the next one.
+                            subtaskFocused = true
+                        }
+                }
             }
 
             Section {
@@ -469,6 +599,89 @@ private struct TaskDetail: View {
             if title != task.title { model.rename(task.id, to: title) }
             if notes != task.notes { model.setNotes(task.id, notes) }
         }
+    }
+}
+
+/// A subtask in the inspector: tick it, edit its title in place, or remove it.
+private struct SubtaskRow: View {
+    let model: AppModel
+    let subtask: TaskItem
+    @State private var title = ""
+    @State private var hovering = false
+    @FocusState private var focused: Bool
+
+    private var done: Bool { subtask.completedAt != nil }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: Binding(get: { done }, set: { _ in model.toggle(subtask) }))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+            TextField("Subtask", text: $title)
+                .labelsHidden()
+                .textFieldStyle(.plain)
+                .strikethrough(done)
+                .foregroundStyle(done ? .secondary : .primary)
+                .focused($focused)
+                .onSubmit(commit)
+                .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
+                .onKeyPress(.delete) {
+                    // ⌫ in an empty title removes the subtask.
+                    guard title.isEmpty else { return .ignored }
+                    model.delete(id: subtask.id)
+                    return .handled
+                }
+            Button { model.delete(id: subtask.id) } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.tertiary)
+            .opacity(hovering ? 1 : 0)
+            .help("Delete subtask")
+        }
+        .onHover { hovering = $0 }
+        .onAppear { title = subtask.title }
+        .onChange(of: subtask.title) { _, synced in if !focused { title = synced } }
+    }
+
+    private func commit() {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { title = subtask.title } else if trimmed != subtask.title { model.rename(subtask.id, to: trimmed) }
+    }
+}
+
+/// The inline field under a task in the list: Return adds a subtask and stays for the next one;
+/// Esc, or Return on an empty field, closes it.
+private struct SubtaskComposer: View {
+    let model: AppModel
+    let parentID: String
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "circle.dashed")
+                .foregroundStyle(.tertiary)
+            TextField("New subtask", text: $draft)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .onAppear { focused = true }
+                .onSubmit {
+                    guard !draft.trimmingCharacters(in: .whitespaces).isEmpty else { return close() }
+                    model.quickAdd(draft, to: parentID)
+                    draft = ""
+                    focused = true
+                }
+                .onExitCommand(perform: close)
+                .onChange(of: focused) { _, isFocused in
+                    if !isFocused, draft.isEmpty { close() }
+                }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func close() {
+        if model.addingSubtaskTo == parentID { model.addingSubtaskTo = nil }
     }
 }
 

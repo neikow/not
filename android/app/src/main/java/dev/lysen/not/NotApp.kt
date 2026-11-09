@@ -58,6 +58,8 @@ class NotApp : Application() {
         }
     }
 
+    val restTimer: RestTimer by lazy { RestTimer(this) }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @OptIn(FlowPreview::class)

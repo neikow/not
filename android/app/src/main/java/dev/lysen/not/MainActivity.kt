@@ -19,6 +19,7 @@ class MainActivity : ComponentActivity() {
     private val viewModel: TasksViewModel by viewModels()
     private val habits: HabitsViewModel by viewModels()
     private val notes: NotesViewModel by viewModels()
+    private val workouts: WorkoutsViewModel by viewModels()
     private val requestedTab = MutableStateFlow<Tab?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,7 +27,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
-            NotTheme { NotAppUi(viewModel, habits, notes, requestedTab, onTabShown = { requestedTab.value = null }) }
+            NotTheme { NotAppUi(viewModel, habits, notes, workouts, requestedTab, onTabShown = { requestedTab.value = null }) }
         }
     }
 
@@ -58,12 +59,13 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         habits.refreshToday()
+        workouts.refreshToday()
         viewModel.syncNow()
     }
 
     /**
      * Debug builds only, for scripted testing:
-     * `adb shell am start -n dev.lysen.not/.MainActivity --es server URL --es code CODE --es add TITLE`,
+     * `adb shell am start -n dev.lysen.not/.MainActivity --es server URL --es code CODE --es add TITLE` (parsed like quick add),
      * `--ez pinWidget true` asks the launcher to place the tasks widget, `--ez addTile true` offers the
      * Quick Settings tile (Android 13+).
      * Never honoured in release builds: any app could otherwise pair this device with its own server.
@@ -73,7 +75,7 @@ class MainActivity : ComponentActivity() {
         val server = intent.getStringExtra("server")
         val code = intent.getStringExtra("code")
         if (server != null && code != null) viewModel.pair(server, code, viewModel.defaultDeviceName)
-        intent.getStringExtra("add")?.let(viewModel::addTask)
+        intent.getStringExtra("add")?.let { viewModel.quickAdd(it) }
         // "tasks", "habits", "notes" or "note"
         intent.getStringExtra("pinWidget")?.let { name ->
             val receiver = when (name) {
@@ -85,6 +87,11 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch { Shortcuts.requestWidget(this@MainActivity, receiver) }
         }
         if (intent.getBooleanExtra("addTile", false)) Shortcuts.requestTile(this)
+        // `--ez seedWorkouts true`: sample sessions for screenshots, on an empty device only.
+        if (intent.getBooleanExtra("seedWorkouts", false)) {
+            workouts.seedDemo()
+            requestedTab.value = Tab.Workouts
+        }
     }
 
     companion object {

@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import dev.lysen.not.core.Device
 import dev.lysen.not.core.NotException
 import dev.lysen.not.core.Outline
+import dev.lysen.not.core.OutlineRow
 import dev.lysen.not.core.PairingCode
 import dev.lysen.not.core.SyncInfo
 import dev.lysen.not.core.SyncState
@@ -28,6 +29,10 @@ data class UiState(
     val lists: List<TaskList> = emptyList(),
     val selectedListId: String = INBOX_ID,
     val outline: Outline = Outline(emptyList(), emptyList()),
+    /** Open tasks due today or earlier, for the Today entry's badge. */
+    val dueCount: Int = 0,
+    /** Every task of the open task's list, for its subtasks (Today only shows due ones). */
+    val openTaskList: List<TaskItem> = emptyList(),
     /** The task open in the detail sheet. */
     val openTaskId: String? = null,
     val sync: SyncState? = null,
@@ -40,16 +45,22 @@ data class UiState(
     val error: String? = null,
 ) {
     val selectedList: TaskList? get() = lists.firstOrNull { it.id == selectedListId }
+    val isToday: Boolean get() = selectedListId == TODAY_ID
+    val title: String get() = if (isToday) "Today" else selectedList?.title ?: "Inbox"
     private val allRows get() = outline.open + outline.completed
     val openTask: TaskItem? get() = allRows.firstOrNull { it.task.id == openTaskId }?.task
 
-    fun subtasks(of: String): List<TaskItem> = allRows.map { it.task }.filter { it.parentId == of }
+    fun subtasks(of: String): List<TaskItem> = openTaskList.filter { it.parentId == of }
+    fun listTitle(id: String): String = lists.firstOrNull { it.id == id }?.title ?: "Inbox"
 }
 
 /** Something to confirm in a snackbar, with Undo. */
 data class Undoable(val message: String)
 
 val INBOX_ID: String = inboxId()
+
+/** The Today view: not a list in the core, but every open task due today or earlier. */
+const val TODAY_ID = "today"
 
 class TasksViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as NotApp
@@ -96,12 +107,34 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---- tasks ----
 
-    fun addTask(title: String, parentId: String = _state.value.selectedListId) {
+    fun addTask(title: String, parentId: String) {
         if (title.isNotBlank()) run { store.addTask(parentId, title) }
     }
 
+    /** Adds what was typed in the composer, dates and tags parsed out. From Today, it's due today. */
+    fun quickAdd(text: String, dismissed: List<String> = emptyList()) {
+        if (text.isBlank()) return
+        val s = _state.value
+        val parent = if (s.isToday) INBOX_ID else s.selectedListId
+        run { store.quickAdd(parent, text, today(), dismissed, if (s.isToday) today() else null) }
+    }
+
     fun toggle(task: TaskItem) {
-        run { store.setCompleted(task.id, task.completedAt == null) }
+        run { store.setCompleted(task.id, task.completedAt == null, today()) }
+    }
+
+    /** Takes the date, time and repeat out of `text` ("fri 9am every week"); blank clears them. */
+    fun setSchedule(id: String, text: String, dismissed: List<String> = emptyList()) {
+        if (text.isBlank()) {
+            run { store.setSchedule(id, null, null, null) }
+            return
+        }
+        val parsed = run { store.parseTask(text, today(), dismissed) } ?: return
+        run { store.setSchedule(id, parsed.due, parsed.dueTime, parsed.repeat) }
+    }
+
+    fun setPriority(id: String, priority: UByte) {
+        run { store.setPriority(id, priority) }
     }
 
     fun delete(task: TaskItem) {
@@ -119,7 +152,15 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         run { store.moveTask(task.id, toList, UInt.MAX_VALUE) }
     }
 
-    fun openTask(id: String?) = _state.update { it.copy(openTaskId = id) }
+    /** Drag and drop: [task] goes right before its sibling [beforeId], or last among them. */
+    fun moveBefore(task: TaskItem, beforeId: String?) {
+        run { store.moveTaskBefore(task.id, task.parentId ?: task.listId, beforeId) }
+    }
+
+    fun openTask(id: String?) {
+        _state.update { it.copy(openTaskId = id) }
+        reloadTasks()
+    }
 
     fun undo() {
         run { store.undo() }
@@ -175,18 +216,28 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
     private fun reload() {
         val lists = run { store.lists() } ?: return
         _state.update { s ->
-            val selected = s.selectedListId.takeIf { id -> lists.any { it.id == id } } ?: INBOX_ID
+            val selected = s.selectedListId.takeIf { id -> id == TODAY_ID || lists.any { it.id == id } } ?: INBOX_ID
             s.copy(lists = lists, selectedListId = selected)
         }
         reloadTasks()
     }
 
     private fun reloadTasks() {
-        val outline = run { store.outline(_state.value.selectedListId) } ?: return
+        val due = run { store.dueTasks(today()) } ?: return
+        val outline = if (_state.value.isToday) {
+            Outline(due.map { OutlineRow(it, 0u, false) }, emptyList())
+        } else {
+            run { store.outline(_state.value.selectedListId) } ?: return
+        }
         _state.update { s ->
             // The open task may have been deleted or moved on another device.
-            val stillThere = (outline.open + outline.completed).any { it.task.id == s.openTaskId }
-            s.copy(outline = outline, openTaskId = s.openTaskId.takeIf { stillThere })
+            val open = (outline.open + outline.completed).firstOrNull { it.task.id == s.openTaskId }?.task
+            s.copy(
+                outline = outline,
+                dueCount = due.size,
+                openTaskId = open?.id,
+                openTaskList = open?.let { run { store.tasks(it.listId) } }.orEmpty(),
+            )
         }
     }
 

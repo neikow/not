@@ -90,3 +90,87 @@ fn search_matches_all_words() {
     assert_eq!(store.search_notes("hotel").unwrap().len(), 2);
     assert_eq!(store.search_notes("100%").unwrap().len(), 0);
 }
+
+#[test]
+fn dragging_switches_a_folder_to_manual_order() {
+    let store = Store::open_in_memory().unwrap();
+    let work = store.create_folder(None, "Work").unwrap();
+    let mut ids = Vec::new();
+    for title in ["a", "b", "c"] {
+        ids.push(store.create_note(Some(&work), title).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["c", "b", "a"]);
+    assert!(!store.folders().unwrap()[0].manual_order);
+
+    // "a" goes before "b": the shown order (c, b, a) is kept around it.
+    store.move_note_before(&ids[0], Some(&ids[1])).unwrap();
+    assert!(store.folders().unwrap()[0].manual_order);
+    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["c", "a", "b"]);
+
+    // Editing no longer reshuffles; new notes go on top.
+    store.set_note_body(&ids[1], "b edited").unwrap();
+    store.create_note(Some(&work), "d").unwrap();
+    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["d", "c", "a", "b edited"]);
+    store.move_note_before(&ids[2], None).unwrap();
+    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["d", "a", "b edited", "c"]);
+
+    // Undo goes back step by step; switching back sorts by edits again.
+    store.set_folder_manual_order(&work, false).unwrap();
+    assert_eq!(titles(&store.notes(Some(&work)).unwrap())[0], "d");
+    assert!(!store.folders().unwrap()[0].manual_order);
+    assert!(store.move_note_before(&ids[0], Some(&work)).is_err());
+}
+
+#[test]
+fn notes_from_before_fractional_indexes_can_be_reordered() {
+    // An older replica made its notes without positions.
+    let old = loro::LoroDoc::new();
+    let tree = old.get_tree("notes");
+    let folder = tree.create(loro::TreeParentId::Root).unwrap();
+    tree.get_meta(folder).unwrap().insert("kind", "folder").unwrap();
+    tree.get_meta(folder).unwrap().insert("title", "Old").unwrap();
+    let mut ids = Vec::new();
+    for (i, title) in ["x", "y", "z"].into_iter().enumerate() {
+        let n = tree.create(loro::TreeParentId::Node(folder)).unwrap();
+        let meta = tree.get_meta(n).unwrap();
+        meta.insert("kind", "note").unwrap();
+        meta.insert("updated_at", i as i64).unwrap();
+        meta.ensure_mergeable_text("body").unwrap().insert(0, title).unwrap();
+        ids.push(n.to_string());
+    }
+    old.commit();
+
+    let store = Store::open_in_memory().unwrap();
+    store
+        .apply_pull(&not_protocol::PullResponse {
+            updates: vec![not_protocol::LoggedUpdate {
+                seq: 1,
+                doc: "workspace".into(),
+                data: old.export(loro::ExportMode::Snapshot).unwrap(),
+            }],
+            seq: 1,
+            more: false,
+        })
+        .unwrap();
+    let folder = folder.to_string();
+    assert_eq!(titles(&store.notes(Some(&folder)).unwrap()), ["z", "y", "x"]);
+    store.move_note_before(&ids[0], Some(&ids[2])).unwrap();
+    assert_eq!(titles(&store.notes(Some(&folder)).unwrap()), ["x", "z", "y"]);
+}
+
+#[test]
+fn manual_order_syncs() {
+    let mut log = Log::default();
+    let mac = Store::open_in_memory().unwrap();
+    let phone = Store::open_in_memory().unwrap();
+    let f = mac.create_folder(None, "F").unwrap();
+    let a = mac.create_note(Some(&f), "a").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    mac.create_note(Some(&f), "b").unwrap();
+    mac.move_note_before(&a, None).unwrap();
+    log.sync(&mac);
+    log.sync(&phone);
+    assert_eq!(titles(&phone.notes(Some(&f)).unwrap()), ["b", "a"]);
+    assert!(phone.folders().unwrap()[0].manual_order);
+}

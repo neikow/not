@@ -18,6 +18,10 @@ const BODY: &str = "body";
 const PINNED: &str = "pinned";
 const CREATED_AT: &str = "created_at";
 const UPDATED_AT: &str = "updated_at";
+/// On a folder: `"manual"` keeps its notes in the order they were dragged into; absent sorts them by
+/// latest edit.
+const ORDER: &str = "order";
+const ORDER_MANUAL: &str = "manual";
 const PREVIEW_CHARS: usize = 140;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +33,8 @@ pub struct Folder {
     pub depth: u32,
     /// Notes directly in the folder.
     pub note_count: u32,
+    /// Notes keep the order they were dragged into, instead of latest edit first.
+    pub manual_order: bool,
 }
 
 /// A note without its body, for lists.
@@ -91,6 +97,13 @@ impl Store {
             if !body.is_empty() {
                 meta.ensure_mergeable_text(BODY)?.insert(0, body)?;
             }
+            // New notes go on top of a hand-sorted folder, as they do in one sorted by edits.
+            if let TreeParentId::Node(folder) = parent
+                && self.is_manual(folder)
+                && let Some(&first) = self.note_children(parent).iter().find(|&&n| n != id)
+            {
+                self.notes.mov_before(id, first)?;
+            }
             Ok(id.to_string())
         })
     }
@@ -130,6 +143,99 @@ impl Store {
         self.transact(|| Ok(self.notes.mov(id, parent)?))
     }
 
+    /// Places a note right before `before` (another note in the same folder), or last when `None`.
+    /// A folder sorted by latest edit switches to manual order first, keeping what was on screen.
+    pub fn move_note_before(&self, id: &str, before: Option<&str>) -> Result<()> {
+        let id = self.notes_node(id, KIND_NOTE)?;
+        let parent = self.notes.parent(id).ok_or_else(|| Error::NotFound(id.to_string()))?;
+        let TreeParentId::Node(folder) = parent else {
+            return Err(Error::Invalid("only notes in a folder can be reordered".into()));
+        };
+        let before = before.map(|b| self.notes_node(b, KIND_NOTE)).transpose()?;
+        if before.is_some_and(|b| self.notes.parent(b) != Some(parent)) {
+            return Err(Error::Invalid("`before` must be in the same folder".into()));
+        }
+        self.transact(|| {
+            if !self.is_manual(folder) {
+                self.freeze_order(folder)?;
+            }
+            match before {
+                Some(before) if before != id => self.notes.mov_before(id, before)?,
+                Some(_) => {}
+                None => {
+                    if let Some(&last) = self.note_children(parent).iter().rev().find(|&&n| n != id) {
+                        self.notes.mov_after(id, last)?;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Sorts a folder's notes by hand (`true`, starting from the order shown) or by latest edit.
+    pub fn set_folder_manual_order(&self, id: &str, manual: bool) -> Result<()> {
+        let folder = self.notes_node(id, KIND_FOLDER)?;
+        if self.is_manual(folder) == manual {
+            return Ok(());
+        }
+        self.transact(|| {
+            if manual {
+                self.freeze_order(folder)
+            } else {
+                Ok(self.notes.get_meta(folder)?.delete(ORDER)?)
+            }
+        })
+    }
+
+    /// Lays the folder's notes out in the tree in the order they are shown now (latest edit first),
+    /// and marks it manual. Runs inside a transaction.
+    fn freeze_order(&self, folder: TreeID) -> Result<()> {
+        // Same order as the read model's (pinned, then latest edit), from the doc: the database is
+        // locked while a transaction runs.
+        let mut shown = self.note_children(TreeParentId::Node(folder));
+        let sort_key = |&n: &TreeID| {
+            let meta = self.notes.get_meta(n).ok();
+            let pinned = meta.as_ref().is_some_and(|m| {
+                matches!(m.get(PINNED), Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true))))
+            });
+            let edited = meta
+                .as_ref()
+                .and_then(|m| meta_i64(m, UPDATED_AT).or(meta_i64(m, CREATED_AT)))
+                .unwrap_or(0);
+            (std::cmp::Reverse(pinned), std::cmp::Reverse(edited), n.to_string())
+        };
+        shown.sort_by_cached_key(sort_key);
+        let mut previous: Option<TreeID> = None;
+        for id in shown {
+            match previous {
+                Some(p) => self.notes.mov_after(id, p)?,
+                None => match self.note_children(TreeParentId::Node(folder)).first() {
+                    Some(&first) if first != id => self.notes.mov_before(id, first)?,
+                    _ => {}
+                },
+            }
+            previous = Some(id);
+        }
+        self.notes.get_meta(folder)?.insert(ORDER, ORDER_MANUAL)?;
+        Ok(())
+    }
+
+    fn is_manual(&self, folder: TreeID) -> bool {
+        self.notes
+            .get_meta(folder)
+            .is_ok_and(|m| meta_str(&m, ORDER).as_deref() == Some(ORDER_MANUAL))
+    }
+
+    /// Live notes (not folders) directly under `parent`, in tree order.
+    fn note_children(&self, parent: TreeParentId) -> Vec<TreeID> {
+        self.notes
+            .children(parent)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|&n| is_alive(&self.notes, n) && kind(&self.notes, n).as_deref() == Some(KIND_NOTE))
+            .collect()
+    }
+
     /// Deletes a note, or a folder with everything in it. Undoable.
     pub fn delete_note_or_folder(&self, id: &str) -> Result<()> {
         let node = self.note_id(id)?;
@@ -143,7 +249,7 @@ impl Store {
     pub fn folders(&self) -> Result<Vec<Folder>> {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(
-            "SELECT id, parent_id, title, (SELECT count(*) FROM note WHERE folder_id = folder.id)
+            "SELECT id, parent_id, title, (SELECT count(*) FROM note WHERE folder_id = folder.id), manual
              FROM folder ORDER BY title COLLATE NOCASE, id",
         )?;
         let all = stmt
@@ -154,6 +260,7 @@ impl Store {
                     title: r.get(2)?,
                     depth: 0,
                     note_count: r.get(3)?,
+                    manual_order: r.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -162,14 +269,16 @@ impl Store {
         Ok(out)
     }
 
-    /// Notes in `folder` (not its subfolders), or all notes when `None`. Pinned first, then most
-    /// recently edited.
+    /// Notes in `folder` (not its subfolders), or all notes when `None`. Pinned first, then by hand
+    /// in manual folders, else most recently edited.
     pub fn notes(&self, folder: Option<&str>) -> Result<Vec<NoteSummary>> {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(
             "SELECT id, folder_id, title, preview, pinned, updated_at FROM note
              WHERE ?1 IS NULL OR folder_id = ?1
-             ORDER BY pinned DESC, updated_at DESC, id",
+             ORDER BY pinned DESC,
+                CASE WHEN (SELECT manual FROM folder WHERE id = ?1) THEN position END,
+                updated_at DESC, id",
         )?;
         let rows = stmt.query_map([folder], note_summary)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -329,9 +438,15 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
     match meta_str(&meta, KIND).as_deref() {
         Some(KIND_FOLDER) => {
             db.execute(
-                "INSERT INTO folder (id, parent_id, title) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (id) DO UPDATE SET parent_id = excluded.parent_id, title = excluded.title",
-                params![key, parent, meta_str(&meta, TITLE).unwrap_or_default()],
+                "INSERT INTO folder (id, parent_id, title, manual) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (id) DO UPDATE SET
+                    parent_id = excluded.parent_id, title = excluded.title, manual = excluded.manual",
+                params![
+                    key,
+                    parent,
+                    meta_str(&meta, TITLE).unwrap_or_default(),
+                    meta_str(&meta, ORDER).as_deref() == Some(ORDER_MANUAL)
+                ],
             )?;
         }
         Some(KIND_NOTE) => {
@@ -342,11 +457,12 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
                 Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true)))
             );
             db.execute(
-                "INSERT INTO note (id, folder_id, title, preview, body, pinned, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO note (id, folder_id, title, preview, body, pinned, updated_at, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (id) DO UPDATE SET
                     folder_id = excluded.folder_id, title = excluded.title, preview = excluded.preview,
-                    body = excluded.body, pinned = excluded.pinned, updated_at = excluded.updated_at",
+                    body = excluded.body, pinned = excluded.pinned, updated_at = excluded.updated_at,
+                    position = excluded.position",
                 params![
                     key,
                     parent,
@@ -356,7 +472,8 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
                     pinned,
                     meta_i64(&meta, UPDATED_AT)
                         .or(meta_i64(&meta, CREATED_AT))
-                        .unwrap_or(0)
+                        .unwrap_or(0),
+                    tree.fractional_index(id).unwrap_or_default()
                 ],
             )?;
         }

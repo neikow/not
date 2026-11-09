@@ -6,24 +6,27 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalWindowInfo
 import dev.lysen.not.core.NotException
+import dev.lysen.not.core.TaskList
 import dev.lysen.not.ui.Button
 import dev.lysen.not.ui.ButtonKind
 import dev.lysen.not.ui.CardDialog
-import dev.lysen.not.ui.Field
+import dev.lysen.not.ui.Not
 import kotlinx.coroutines.flow.first
 
 /**
@@ -46,9 +49,10 @@ class QuickAddActivity : ComponentActivity() {
             NotTheme {
                 QuickAddDialog(
                     listTitle = list?.title ?: "Inbox",
-                    onAdd = { title ->
+                    lists = lists,
+                    onAdd = { draft ->
                         try {
-                            store.addTask(list?.id ?: INBOX_ID, title)
+                            store.quickAdd(list?.id ?: INBOX_ID, draft.text, today(), draft.dismissed, null)
                             SyncWorker.pushSoon(this)
                         } catch (e: NotException) {
                             Toast.makeText(this, e.userMessage, Toast.LENGTH_LONG).show()
@@ -68,16 +72,16 @@ class QuickAddActivity : ComponentActivity() {
 }
 
 @Composable
-private fun QuickAddDialog(listTitle: String, onAdd: (String) -> Unit, onDismiss: () -> Unit) {
-    var text by remember { mutableStateOf("") }
+private fun QuickAddDialog(listTitle: String, lists: List<TaskList>, onAdd: (TaskDraft) -> Unit, onDismiss: () -> Unit) {
+    val draft = rememberTaskDraft()
     val focus = remember { FocusRequester() }
-    val submit = { if (text.isNotBlank()) onAdd(text) }
+    val submit = { if (!draft.isBlank) onAdd(draft) }
     CardDialog(
         title = "Add to $listTitle",
         onDismiss = onDismiss,
         buttons = {
             Button("Cancel", onDismiss, kind = ButtonKind.Quiet)
-            Button("Add", submit, enabled = text.isNotBlank())
+            Button("Add", submit, enabled = !draft.isBlank)
         },
     ) {
         // The dialog's own window: opened from the Quick Settings shade, it only gets focus once
@@ -89,6 +93,17 @@ private fun QuickAddDialog(listTitle: String, onAdd: (String) -> Unit, onDismiss
             focus.requestFocus()
             keyboard?.show()
         }
-        Field(text, { text = it }, "Task", filled = true, onDone = submit, modifier = Modifier.fillMaxWidth().focusRequester(focus))
+        TaskDraftField(
+            draft,
+            "Task, e.g. call mum fri 6pm",
+            onSubmit = submit,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Not.colors.sunken)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .focusRequester(focus),
+        )
+        TokenChips(draft, lists, Modifier.padding(top = 8.dp))
     }
 }

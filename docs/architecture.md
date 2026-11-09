@@ -59,8 +59,9 @@ All data lives in Loro documents. Two kinds of doc:
 | Container | Type | Contents |
 |---|---|---|
 | `tasks` | `LoroTree` | Nodes are lists and tasks. List → task → subtask. Tasks at the root are in the **Inbox**, which is built in (id `inbox`) rather than a node, so two fresh devices can't each create one. Sibling order via Loro fractional index; move indexes count siblings of the same kind. Each node's meta map holds its fields (`kind`, `title`, `notes` as a mergeable `LoroText`, `completed_at`, `deleted_at`, later `priority`, `due`, `rrule`, …). Deletes are soft (`deleted_at`) so undo restores the same nodes ([ADR 0007](adr/0007-soft-delete-and-undo.md)). |
-| `notes` | `LoroTree` | Folders (nesting) and notes. Note meta: `body` (mergeable `LoroText`, markdown), `pinned`, `created_at`, `updated_at`, `deleted_at`; folder meta: `title`. Title and preview are derived from the body ([ADR 0008](adr/0008-notes-in-the-workspace-doc.md)). |
+| `notes` | `LoroTree` | Folders (nesting) and notes. Note meta: `body` (mergeable `LoroText`, markdown), `pinned`, `created_at`, `updated_at`, `deleted_at`; folder meta: `title`, `order` (`"manual"` keeps notes in dragged order, by fractional index; absent sorts by latest edit — the first drag switches a folder to manual, starting from the order shown). Title and preview are derived from the body ([ADR 0008](adr/0008-notes-in-the-workspace-doc.md)). |
 | `habits` | `LoroTree` | Flat; the tree only gives habits a mergeable order. Meta: `title`, `goal` (check-ins per day), `days` (weekday bit mask, bit 0 = Monday), `deleted_at`. |
+| `workouts` | `LoroTree` | Sessions are roots (meta: `date` `YYYY-MM-DD`, optional `title`, `created_at`, `deleted_at`); their children are exercises (meta: `name`, `sets`, `deleted_at`). `sets` is the shorthand as typed, one line per group (`24kg x 10 x 3`, `E 18kg x 10`, `24.8kg x (10 x 2 + 8)`), parsed by `workouts::parse_sets` for display and stats, so nothing typed is lost. Exercises match across sessions by name, ignoring case and spacing, for the "last time" hint and history. |
 | `habit_log` | `LoroMap` of `LoroCounter` | Key `habitId:YYYY-MM-DD` (local calendar date from the app, never a timestamp). Counters sum concurrent check-ins; streaks are computed from the read model. |
 | `completions` | `LoroMap` (planned) | Recurring-task history keyed `taskId:occurrenceDate`, so completing the same occurrence twice offline is idempotent. |
 
@@ -184,8 +185,8 @@ an IndexedDB cache. Online-first; no parity goal.
 |---|---|
 | P0 spike ✅ | core (tasks in Loro + read model), relay server, live sync, uniffi → minimal SwiftUI + Compose apps, verified Mac ⇄ Android end to end incl. offline edits |
 | P0.5 ✅ | Built-in Inbox, device pairing with per-device tokens, revocation |
-| P1 (in progress) | ✅ Android tasks widget (with picker preview), quick add from widget / QS tile / app shortcut, app icons (Mac: Icon Composer / Liquid Glass), Mac menu bar extra, background sync, QR pairing; core UX: notes, subtasks, rename, reorder, completed section, undo, soft delete, keyboard flow (Mac), swipe actions + drawer + settings screen (Android). Next: quick-add parser, due dates, Today, reminders, recurrence, hotkey panel, Raycast |
-| P1 | Quick-add parser, recurrence, reminders, hotkey panel, Raycast, Android widgets |
+| P1 (in progress) | ✅ Android tasks widget (with picker preview), quick add from widget / QS tile / app shortcut, app icons (Mac: Icon Composer / Liquid Glass), Mac menu bar extra, background sync, QR pairing; core UX: notes, subtasks, rename, reorder, completed section, undo, soft delete, keyboard flow (Mac), swipe actions + drawer + settings screen (Android); quick-add parser (English + French: dates, times, repeats, `#list`, `!priority`, live highlight + chips), due dates, priorities, recurrence (RRULE subset; completing logs a copy and moves the task on), Today. Next: reminders, hotkey panel, Raycast |
+| P1 | Reminders, hotkey panel, Raycast, Upcoming view |
 | P2 ✅ | Notes: folders, pinning, search, live-styled markdown editors (core span highlighter) on Mac + Android |
 | P3 ✅ | Habits: check-ins, goals, weekday schedules, streaks, history grid (Mac + Android) |
 | P4 | Web companion, TickTick CSV import, compaction |

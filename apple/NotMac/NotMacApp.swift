@@ -59,6 +59,16 @@ private struct TaskCommands: Commands {
             .disabled(model.selectedTask == nil)
             Button(model.showsInspector ? "Hide Info" : "Show Info") { model.showsInspector.toggle() }
                 .keyboardShortcut("i")
+            Divider()
+            Button("Add Subtask") { model.beginSubtask() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(model.selectedTask == nil || model.isToday)
+            Button("Indent") { model.indentSelected() }
+                .keyboardShortcut("]")
+                .disabled(model.selectedTask == nil || model.isToday)
+            Button("Outdent") { model.outdentSelected() }
+                .keyboardShortcut("[")
+                .disabled(model.selectedTask?.parentId == nil || model.isToday)
         }
     }
 
@@ -66,6 +76,7 @@ private struct TaskCommands: Commands {
         switch model.selection {
         case .habits: "New Habit"
         case .notes: "New Note"
+        case .workouts: "New Workout"
         default: "New Task"
         }
     }

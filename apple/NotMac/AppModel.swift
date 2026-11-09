@@ -10,6 +10,10 @@ final class AppModel {
     private(set) var lists: [TaskList] = []
     /// The selected list, arranged for display.
     private(set) var outline = Outline(open: [], completed: [])
+    /// Open tasks due today or earlier, for the Today badge.
+    private(set) var dueCount = 0
+    /// Every task of the selected task's list, for its subtasks (Today only shows due ones).
+    private var selectedTaskList: [TaskItem] = []
     private(set) var syncState: SyncState?
     /// `nil` until this Mac is paired with a server.
     private(set) var syncInfo: SyncInfo?
@@ -24,6 +28,7 @@ final class AppModel {
             editingTaskID = nil
             selectedHabitID = nil
             selectedNoteID = nil
+            addingSubtaskTo = nil
             reloadTasks()
             reloadNotes()
         }
@@ -34,9 +39,13 @@ final class AppModel {
         get { if case let .list(id) = selection { id } else { nil } }
         set { selection = newValue.map(SidebarItem.list) }
     }
-    var selectedTaskID: String?
+    var selectedTaskID: String? {
+        didSet { if oldValue != selectedTaskID { loadSelectedTaskList() } }
+    }
     /// The task whose title is being edited in place.
     var editingTaskID: String?
+    /// The task getting a subtask typed in under it, in the list.
+    var addingSubtaskTo: String?
     var showsInspector = false
     /// Bumped to move keyboard focus to the add-task field (⌘N).
     private(set) var addFieldFocusRequests = 0
@@ -67,6 +76,16 @@ final class AppModel {
     }
     /// Bumped to move keyboard focus to the note editor.
     private(set) var editorFocusRequests = 0
+
+    /// Latest first.
+    private(set) var workouts: [WorkoutSummary] = []
+    var selectedWorkoutID: String? {
+        didSet { if oldValue != selectedWorkoutID { reloadWorkout() } }
+    }
+    private(set) var workout: Workout?
+    /// Exercise names used so far, most recent first.
+    private(set) var exerciseNames: [String] = []
+    let restTimer = RestTimer()
 
     @ObservationIgnored private let store: NotStore
     @ObservationIgnored private var observer: ModelObserver?
@@ -119,7 +138,9 @@ final class AppModel {
     /// `-show habits|notes` opens that section, selecting the note titled `-note` or the first one.
     private func applyDevArguments(_ defaults: UserDefaults) {
         if defaults.bool(forKey: "seedDemo"), lists.count == 1, outline.open.isEmpty {
-            for title in ["Buy oat milk", "Call the dentist", "Renew passport"] { addTask(title) }
+            for title in ["Buy oat milk today !2", "Call the dentist tomorrow 9am", "Renew passport fri !1", "Water plants every 2 days"] {
+                quickAdd(title)
+            }
             if let read = addHabit("Read") { toggleHabit(read) }
             _ = addHabit("Stretch")
             _ = addHabit("Water")
@@ -132,6 +153,19 @@ final class AppModel {
         }
         switch defaults.string(forKey: "show") {
         case "habits": selection = .habits
+        case "workouts":
+            selection = .workouts
+            if workouts.isEmpty {
+                _ = importWorkouts(Self.demoWorkoutLog)
+                reload()
+                if let id = workouts.first?.id, let copy = run({ try store.repeatWorkout(fromId: id, date: today) }),
+                   let first = run({ try store.workout(id: copy) })?.exercises.first {
+                    updateExercise(first.id, name: first.name, sets: "E 18kg x 10\n26kg x 10 x 2\n26kg x 8\nfelt strong")
+                }
+                reload()
+            }
+            selectedWorkoutID = workouts.first?.id
+        case "today": selection = .today
         case "notes":
             selection = .notes(nil)
             let title = defaults.string(forKey: "note")
@@ -139,9 +173,31 @@ final class AppModel {
         default: break
         }
     }
+
+    private static let demoWorkoutLog = """
+    30/10
+    Tirage vertical (large)
+    66kg x 8 x 3
+    Straight Arm Pulldown (double)
+    24.8kg x (10 x 2 + 8)
+    Curl Biceps Haltères
+    14kg x 10 x 2
+
+    02/11
+    Bench Haltères
+    E 18kg x 10
+    24kg x 10 x 3
+    Shrugs
+    24kg x 20
+    24kg x 15 x 2
+    Abdos
+    """
     #endif
 
     var selectedList: TaskList? { lists.first { $0.id == selectedListID } }
+    var isToday: Bool { selection == .today }
+    var title: String { isToday ? "Today" : selectedList?.title ?? "not" }
+    func listTitle(_ id: String) -> String { lists.first { $0.id == id }?.title ?? "Inbox" }
     var inbox: TaskList? { lists.first { $0.id == inboxID } }
     var userLists: [TaskList] { lists.filter { $0.id != inboxID } }
     var panelList: TaskList? { lists.first { $0.id == panelListID } }
@@ -156,9 +212,9 @@ final class AppModel {
         (outline.open + outline.completed).contains { $0.task.id == taskID }
     }
 
-    /// Direct subtasks of `taskID` in the selected list, in order.
+    /// Direct subtasks of `taskID`, in order.
     func subtasks(of taskID: String) -> [TaskItem] {
-        (outline.open + outline.completed).map(\.task).filter { $0.parentId == taskID }
+        selectedTaskList.filter { $0.parentId == taskID }
     }
 
     // MARK: Sync and pairing
@@ -238,7 +294,41 @@ final class AppModel {
     }
 
     func toggle(_ task: TaskItem) {
-        run { try store.setCompleted(id: task.id, completed: task.completedAt == nil) }
+        refreshToday()
+        run { try store.setCompleted(id: task.id, completed: task.completedAt == nil, today: today) }
+    }
+
+    /// What quick add would make of `text`, for highlighting and chips.
+    func parse(_ text: String, dismissed: [String] = []) -> ParsedTask? {
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return run { try store.parseTask(input: text, today: today, dismissed: dismissed) }
+    }
+
+    /// Adds typed input with its dates and tags parsed out, to `parentID` or the selected list.
+    /// From Today, a task without a date is due today.
+    func quickAdd(_ text: String, dismissed: [String] = [], to parentID: String? = nil) {
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        refreshToday()
+        let parent = parentID ?? (isToday ? inboxID : selectedListID ?? inboxID)
+        run {
+            _ = try store.quickAdd(
+                parentId: parent, input: text, today: today, dismissed: dismissed,
+                defaultDue: parentID == nil && isToday ? today : nil
+            )
+        }
+    }
+
+    /// Takes the date, time and repeat out of `text` ("fri 9am every week"); blank clears them.
+    func setSchedule(_ id: String, _ text: String) {
+        guard let parsed = parse(text) else {
+            run { try store.setSchedule(id: id, due: nil, dueTime: nil, repeat: nil) }
+            return
+        }
+        run { try store.setSchedule(id: id, due: parsed.due, dueTime: parsed.dueTime, repeat: parsed.repeat) }
+    }
+
+    func setPriority(_ id: String, _ priority: UInt8) {
+        run { try store.setPriority(id: id, priority: priority) }
     }
 
     func toggleSelected() {
@@ -278,6 +368,27 @@ final class AppModel {
         // Moving down means landing before the sibling after the next one.
         let anchorIndex = offset < 0 ? target : target + 1
         place(task, before: siblings.indices.contains(anchorIndex) ? siblings[anchorIndex].id : nil)
+    }
+
+    /// Opens the inline field for a subtask under `taskID` (the selected task by default).
+    func beginSubtask(of taskID: String? = nil) {
+        guard let id = taskID ?? selectedTaskID, !isToday,
+              outline.open.contains(where: { $0.task.id == id })
+        else { return }
+        editingTaskID = nil
+        addingSubtaskTo = id
+    }
+
+    /// Tab / ⌘]: the selected task becomes a subtask of the one above it.
+    func indentSelected() {
+        guard let id = selectedTaskID, !isToday else { return }
+        run { _ = try store.indentTask(id: id) }
+    }
+
+    /// ⇧Tab / ⌘[: the selected subtask moves out a level.
+    func outdentSelected() {
+        guard let id = selectedTaskID, !isToday else { return }
+        run { _ = try store.outdentTask(id: id) }
     }
 
     private func place(_ task: TaskItem, before anchor: String?) {
@@ -331,6 +442,7 @@ final class AppModel {
         guard now != today else { return }
         today = now
         reloadHabits()
+        reloadTasks()
     }
 
     static func dayString(_ date: Date) -> String {
@@ -374,6 +486,33 @@ final class AppModel {
         run { try store.moveNote(id: id, folderId: folderID) }
     }
 
+    /// The selected folder sorts its notes by hand.
+    var isManualOrder: Bool {
+        folders.first { $0.id == selectedFolderID }?.manualOrder ?? false
+    }
+
+    func setManualOrder(_ manual: Bool) {
+        guard let folder = selectedFolderID else { return }
+        run { try store.setFolderManualOrder(id: folder, manual: manual) }
+    }
+
+    /// Notes dropped into the shown folder's list at `index` (of `notes`). Notes from elsewhere join
+    /// the folder first. The folder switches to manual order.
+    func dropNotes(_ ids: [String], at index: Int) {
+        guard let folder = selectedFolderID, noteSearch.isEmpty else { return }
+        for id in ids {
+            guard let note = notes.first(where: { $0.id == id }) ?? searchAll(id) else { continue }
+            if note.folderId != folder { run { try store.moveNote(id: id, folderId: folder) } }
+            // Pinned notes stay above the others, so anchor within the same group.
+            let anchor = notes[min(index, notes.count)...].first { $0.id != id && $0.pinned == note.pinned }
+            run { try store.moveNoteBefore(id: id, beforeId: anchor?.id) }
+        }
+    }
+
+    private func searchAll(_ id: String) -> NoteSummary? {
+        (run { try store.notes(folderId: nil) } ?? []).first { $0.id == id }
+    }
+
     func deleteNote(_ id: String) {
         if selectedNoteID == id { selectedNoteID = nil }
         run { try store.deleteNote(id: id) }
@@ -409,9 +548,65 @@ final class AppModel {
         run { try store.deleteNote(id: id) }
     }
 
-    /// ⌘N: a new task, habit or note, depending on what is shown.
+    /// ⌘N: a new task, habit, note or workout, depending on what is shown.
     func newItem() {
-        if case .notes = selection { newNote() } else { requestAddFieldFocus() }
+        switch selection {
+        case .notes: newNote()
+        case .workouts: newWorkout()
+        default: requestAddFieldFocus()
+        }
+    }
+
+    // MARK: Workouts
+
+    /// A session for today, or the one already started today.
+    func newWorkout(title: String = "") {
+        refreshToday()
+        guard let id = run({ try store.createWorkout(date: today, title: title) }) else { return }
+        selectedWorkoutID = id
+    }
+
+    func repeatWorkout(_ id: String) {
+        refreshToday()
+        guard let copy = run({ try store.repeatWorkout(fromId: id, date: today) }) else { return }
+        selectedWorkoutID = copy
+    }
+
+    func updateWorkout(_ id: String, date: String, title: String) {
+        run { try store.updateWorkout(id: id, date: date, title: title) }
+    }
+
+    func deleteWorkout(_ id: String) {
+        if selectedWorkoutID == id { selectedWorkoutID = nil }
+        run { try store.deleteWorkout(id: id) }
+    }
+
+    @discardableResult
+    func addExercise(_ name: String, to workoutID: String) -> String? {
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return run { try store.addExercise(workoutId: workoutID, name: name, sets: "") }
+    }
+
+    func updateExercise(_ id: String, name: String, sets: String) {
+        run { try store.updateExercise(id: id, name: name, sets: sets) }
+    }
+
+    func deleteExercise(_ id: String) {
+        run { try store.deleteExercise(id: id) }
+    }
+
+    func moveExercise(_ id: String, to index: Int) {
+        run { try store.moveExercise(id: id, index: UInt32(max(index, 0))) }
+    }
+
+    func exerciseHistory(_ name: String) -> [ExerciseLog] {
+        run { try store.exerciseHistory(name: name, limit: 30) } ?? []
+    }
+
+    /// Adds sessions from a pasted text log; returns how many.
+    func importWorkouts(_ text: String) -> Int {
+        refreshToday()
+        return Int(run { try store.importWorkouts(text: text, today: today) } ?? 0)
     }
 
     // MARK: Undo
@@ -427,7 +622,7 @@ final class AppModel {
         else { return }
         let listName = items.first { $0.name == "list" }?.value ?? ""
         let target = lists.first { $0.title.caseInsensitiveCompare(listName) == .orderedSame }?.id ?? inboxID
-        addTask(title, to: target)
+        quickAdd(title, to: target)
     }
 
     // MARK: Reading
@@ -437,8 +632,11 @@ final class AppModel {
         self.lists = lists
         canUndo = store.canUndo()
         canRedo = store.canRedo()
+        dueCount = (run { try store.dueTasks(today: today) } ?? []).count
         switch selection {
-        case .habits:
+        case .today:
+            reloadTasks()
+        case .habits, .workouts:
             break
         case .notes:
             break // reloadNotes() handles deleted folders.
@@ -450,6 +648,20 @@ final class AppModel {
         reloadPanel()
         reloadHabits()
         reloadNotes()
+        reloadWorkouts()
+    }
+
+    private func reloadWorkouts() {
+        workouts = run { try store.workouts() } ?? []
+        exerciseNames = run { try store.exerciseNames() } ?? []
+        if let id = selectedWorkoutID, !workouts.contains(where: { $0.id == id }) {
+            selectedWorkoutID = nil
+        }
+        reloadWorkout()
+    }
+
+    private func reloadWorkout() {
+        workout = selectedWorkoutID.flatMap { id in run { try store.workout(id: id) } }
     }
 
     private func reloadNotes() {
@@ -484,16 +696,29 @@ final class AppModel {
     }
 
     private func reloadTasks() {
-        guard let list = selectedListID, let outline = run({ try store.outline(listId: list) }) else {
+        let due = run { try store.dueTasks(today: today) } ?? []
+        dueCount = due.count
+        if isToday {
+            outline = Outline(open: due.map { OutlineRow(task: $0, depth: 0, done: false) }, completed: [])
+        } else if let list = selectedListID, let outline = run({ try store.outline(listId: list) }) {
+            self.outline = outline
+        } else {
             outline = Outline(open: [], completed: [])
             return
         }
-        self.outline = outline
+        loadSelectedTaskList()
         if let id = selectedTaskID, selectedTask == nil {
             // Deleted or moved away, possibly on another device.
             selectedTaskID = nil
             if editingTaskID == id { editingTaskID = nil }
         }
+        if let id = addingSubtaskTo, !outline.open.contains(where: { $0.task.id == id }) {
+            addingSubtaskTo = nil
+        }
+    }
+
+    private func loadSelectedTaskList() {
+        selectedTaskList = selectedTask.flatMap { task in run { try store.tasks(listId: task.listId) } } ?? []
     }
 
     @discardableResult
@@ -526,8 +751,11 @@ final class AppModel {
 
 /// What the sidebar shows in the main column.
 enum SidebarItem: Hashable {
+    /// Open tasks due today or earlier, from every list.
+    case today
     case list(String)
     case habits
+    case workouts
     /// A notes folder, or all notes for `nil`.
     case notes(String?)
 }

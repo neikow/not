@@ -22,8 +22,43 @@ impl Date {
         Ok(Self(days_from_civil(y, m, d)))
     }
 
+    pub fn from_ymd(y: i64, m: i64, d: i64) -> Option<Self> {
+        ((1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m)).then(|| Self(days_from_civil(y, m, d)))
+    }
+
     pub fn add_days(self, days: i64) -> Self {
         Self(self.0 + days)
+    }
+
+    /// Same day `months` later, clamped to the end of shorter months (Jan 31 + 1 → Feb 28).
+    pub fn add_months(self, months: i64) -> Self {
+        let (y, m, d) = self.civil();
+        let total = y * 12 + (m - 1) + months;
+        let (y, m) = (total.div_euclid(12), total.rem_euclid(12) + 1);
+        Self(days_from_civil(y, m, d.min(days_in_month(y, m))))
+    }
+
+    /// Days from `other` to `self`.
+    pub fn days_since(self, other: Date) -> i64 {
+        self.0 - other.0
+    }
+
+    /// The Monday starting this date's week.
+    pub fn monday(self) -> Self {
+        self.add_days(-i64::from(self.weekday()))
+    }
+
+    pub fn year(self) -> i64 {
+        self.civil().0
+    }
+
+    /// 1 = January.
+    pub fn month(self) -> i64 {
+        self.civil().1
+    }
+
+    pub fn day(self) -> i64 {
+        self.civil().2
     }
 
     /// 0 = Monday … 6 = Sunday.
@@ -64,7 +99,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-fn days_in_month(y: i64, m: i64) -> i64 {
+pub(crate) fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         2 if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) => 29,
         2 => 28,
@@ -87,6 +122,14 @@ mod tests {
         let d = Date::parse("2024-02-28").unwrap();
         assert_eq!(d.add_days(1).to_string(), "2024-02-29");
         assert_eq!(d.add_days(2).to_string(), "2024-03-01");
+        let jan31 = Date::parse("2026-01-31").unwrap();
+        assert_eq!(jan31.add_months(1).to_string(), "2026-02-28");
+        assert_eq!(jan31.add_months(-2).to_string(), "2025-11-30");
+        assert_eq!(jan31.add_months(12).to_string(), "2027-01-31");
+        assert_eq!(
+            Date::parse("2026-11-08").unwrap().monday().to_string(),
+            "2026-11-02"
+        );
     }
 
     #[test]

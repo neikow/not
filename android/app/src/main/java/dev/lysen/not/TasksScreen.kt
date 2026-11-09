@@ -1,6 +1,10 @@
 package dev.lysen.not
 
 import dev.lysen.not.ui.AddAction
+import androidx.compose.foundation.lazy.rememberLazyListState
+import dev.lysen.not.ui.ReorderState
+import dev.lysen.not.ui.rememberReorderState
+import dev.lysen.not.ui.reorderable
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,10 +53,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.lysen.not.core.OutlineRow
 import dev.lysen.not.core.SyncState
+import dev.lysen.not.core.TaskItem
 import dev.lysen.not.core.TaskList
 import dev.lysen.not.ui.Button
 import dev.lysen.not.ui.CardDialog
-import dev.lysen.not.ui.Composer
 import dev.lysen.not.ui.Divider
 import dev.lysen.not.ui.EmptyState
 import dev.lysen.not.ui.Field
@@ -84,7 +88,7 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
     var showsCompleted by rememberSaveable { mutableStateOf(false) }
     var newList by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<TaskList?>(null) }
-    val title = state.selectedList?.title ?: "Inbox"
+    val title = state.title
 
     // Destructive actions confirm after the fact, with Undo, instead of asking first.
     LaunchedEffect(Unit) {
@@ -93,9 +97,13 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
         }
     }
 
+    val listState = rememberLazyListState()
+    val reorder = rememberReorderState(listState, state.outline.open) { it.task.id }
+
     Box(Modifier.fillMaxSize()) {
         LargeTitleScreen(
             title = title,
+            state = listState,
             onTitleClick = { showsLists = true },
             titleAccessory = { Icon(R.drawable.ic_expand_more, "Switch list", tint = Not.colors.inkFaint, size = 28.dp) },
             actions = {
@@ -113,6 +121,8 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                 item(key = "empty") {
                     Box(Modifier.animateItem(fadeInSpec = tween(260, delayMillis = 180), fadeOutSpec = tween(120))) {
                     when {
+                        state.isToday ->
+                            EmptyState(R.drawable.ic_today, "Nothing due today", "Add “tomorrow”, “fri 9am” or “every mon” to a task to see it here when it's due.")
                         outline.completed.isNotEmpty() ->
                             EmptyState(R.drawable.ic_check, "All done", "Everything in $title is checked off.", Modifier.padding(bottom = 24.dp))
                         state.selectedListId == INBOX_ID ->
@@ -122,8 +132,17 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                     }
                 }
             }
-            items(outline.open, key = { it.task.id }) { row ->
-                TaskRow(row, viewModel, Modifier.animateItem())
+            items(reorder.items, key = { it.task.id }) { row ->
+                TaskRow(
+                    row,
+                    viewModel,
+                    (if (reorder.isDragging(row)) Modifier else Modifier.animateItem())
+                        // Today gathers tasks from every list, so it has no order of its own.
+                        .reorderable(reorder, row, row.task.id, enabled = !state.isToday && !row.done) {
+                            startDrag(reorder, outline.open, row, viewModel)
+                        },
+                    listTitle = if (state.isToday) state.listTitle(row.task.listId) else null,
+                )
             }
             if (outline.completed.isNotEmpty()) {
                 item(key = "completed") {
@@ -151,7 +170,14 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                 .padding(bottom = if (WindowInsets.isImeVisible) 8.dp else LocalBottomBarHeight.current + 8.dp),
         ) {
             ToastHost(toasts, Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp))
-            if (composing) Composer("New task in $title", onAdd = { viewModel.addTask(it) }, onClose = { composing = false })
+            if (composing) {
+                TaskComposer(
+                    if (state.isToday) "New task for today" else "New task in $title",
+                    state.lists,
+                    onAdd = { viewModel.quickAdd(it.text, it.dismissed) },
+                    onClose = { composing = false },
+                )
+            }
         }
     }
 
@@ -201,6 +227,28 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
     }
 }
 
+/**
+ * Drags [row] among its siblings, with its subtasks folded away until it's dropped. Dropping places
+ * it before the next sibling, so completed siblings (shown elsewhere) don't throw it off.
+ */
+private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>, row: OutlineRow, viewModel: TasksViewModel) {
+    val at = open.indexOfFirst { it.task.id == row.task.id }
+    if (at < 0) return
+    var end = at + 1
+    while (end < open.size && open[end].depth > row.depth) end++
+    reorder.start(
+        row,
+        shown = open.take(at + 1) + open.drop(end),
+        canSwap = { it.task.parentId == row.task.parentId && it.depth == row.depth },
+        depth = { it.depth.toInt() },
+        onDrop = { order ->
+            val i = order.indexOfFirst { it.task.id == row.task.id }
+            val next = order.drop(i + 1).firstOrNull { it.task.parentId == row.task.parentId && it.depth == row.depth }
+            viewModel.moveBefore(row.task, next?.task?.id)
+        },
+    )
+}
+
 /** "3 tasks"; keeps its line when there are none, so the list below doesn't jump. */
 @Composable
 private fun Subtitle(state: UiState) {
@@ -213,9 +261,9 @@ private fun Subtitle(state: UiState) {
     )
 }
 
-/** Swipe right to complete (or reopen), left to delete; tap for details. */
+/** Swipe right to complete (or reopen), left to delete; tap for details. [listTitle] shows in Today. */
 @Composable
-private fun TaskRow(row: OutlineRow, viewModel: TasksViewModel, modifier: Modifier) {
+private fun TaskRow(row: OutlineRow, viewModel: TasksViewModel, modifier: Modifier, listTitle: String? = null) {
     val haptics = LocalHapticFeedback.current
     val colors = Not.colors
     val done = row.task.completedAt != null
@@ -236,7 +284,12 @@ private fun TaskRow(row: OutlineRow, viewModel: TasksViewModel, modifier: Modifi
                 .padding(start = (12 + row.depth.toInt() * 28).dp, end = 24.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RoundCheck(done, { viewModel.toggle(row.task) }, size = if (row.depth > 0u) 20.dp else 24.dp)
+            RoundCheck(
+                done,
+                { viewModel.toggle(row.task) },
+                size = if (row.depth > 0u) 20.dp else 24.dp,
+                ring = colors.priority(row.task.priority).takeUnless { row.done },
+            )
             Column(Modifier.weight(1f).padding(start = 4.dp)) {
                 Text(
                     row.task.title,
@@ -244,9 +297,34 @@ private fun TaskRow(row: OutlineRow, viewModel: TasksViewModel, modifier: Modifi
                     color = if (row.done) colors.inkFaint else colors.ink,
                     textDecoration = if (row.done) TextDecoration.LineThrough else null,
                 )
+                TaskMeta(row.task, done = row.done, listTitle = listTitle)
                 val preview = row.task.notes.lineSequence().firstOrNull { it.isNotBlank() }
                 if (preview != null) Text(preview, style = Not.type.caption, color = colors.inkMuted, maxLines = 1)
             }
+        }
+    }
+}
+
+/** "Tomorrow 9:00 ⟳ · Groceries" under a task's title: red once overdue, accent when due today. */
+@Composable
+private fun TaskMeta(task: TaskItem, done: Boolean, listTitle: String?) {
+    val colors = Not.colors
+    val due = task.due
+    if (due == null && listTitle == null) return
+    val today = today()
+    val tint = when {
+        done || due == null -> colors.inkFaint
+        due < today -> colors.danger
+        due == today -> colors.accentInk
+        else -> colors.inkMuted
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (due != null) {
+            Text(scheduleLabel(due, task.dueTime, null) ?: due, style = Not.type.caption, color = tint, maxLines = 1)
+            if (task.repeat != null) Icon(R.drawable.ic_repeat, "Repeats", tint = tint, size = 13.dp)
+        }
+        if (listTitle != null) {
+            Text(if (due != null) "· $listTitle" else listTitle, style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
         }
     }
 }
@@ -281,6 +359,16 @@ private fun ListsSheet(
     Sheet(onDismiss) { close ->
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
             Text("Lists", style = Not.type.title, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 12.dp))
+            ListRow(
+                icon = R.drawable.ic_today,
+                title = "Today",
+                count = state.dueCount,
+                selected = state.isToday,
+                onClick = {
+                    onSelect(TODAY_ID)
+                    close()
+                },
+            )
             state.lists.forEach { list ->
                 ListRow(
                     icon = if (list.id == INBOX_ID) R.drawable.ic_inbox else R.drawable.ic_list,

@@ -164,11 +164,19 @@ fun Button(
 
 /** Round checkbox: a ring that fills with mint and pops a check. 44dp touch target. */
 @Composable
-fun RoundCheck(checked: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier, size: Dp = 24.dp, contentDescription: String? = null) {
+fun RoundCheck(
+    checked: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 24.dp,
+    contentDescription: String? = null,
+    /** Unchecked ring colour, e.g. for a priority; the faint ink by default. */
+    ring: Color? = null,
+) {
     val colors = Not.colors
     val haptics = LocalHapticFeedback.current
     val fill by animateColorAsState(if (checked) colors.accent else Color.Transparent, label = "fill")
-    val ring by animateColorAsState(if (checked) colors.accent else colors.inkFaint, label = "ring")
+    val ring by animateColorAsState(if (checked) colors.accent else ring ?: colors.inkFaint, label = "ring")
     val tick by animateFloatAsState(
         if (checked) 1f else 0f,
         spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),

@@ -17,6 +17,65 @@ pub fn inbox_id() -> String {
     not_core::INBOX.into()
 }
 
+/// "Today", "Tomorrow 9:00", "Fri", "12 Nov" for a due date (`YYYY-MM-DD`) seen on `today`.
+#[uniffi::export]
+pub fn due_label(due: String, due_time: Option<u32>, today: String) -> Result<String, NotError> {
+    Ok(not_core::due_label(date(&due)?, due_time, date(&today)?))
+}
+
+/// "Daily", "Every 2 weeks on Mon" for a task's `repeat` rule; `None` if it isn't one this app reads.
+#[uniffi::export]
+pub fn repeat_label(rule: String) -> Option<String> {
+    not_core::Repeat::parse_rrule(&rule).ok().map(|r| r.label())
+}
+
+fn date(s: &str) -> Result<not_core::date::Date, NotError> {
+    Ok(not_core::date::Date::parse(s)?)
+}
+
+fn schedule(
+    due: Option<String>,
+    due_time: Option<u32>,
+    repeat: Option<String>,
+) -> Result<not_core::Schedule, NotError> {
+    Ok(not_core::Schedule {
+        due: due.as_deref().map(date).transpose()?,
+        time: due_time,
+        repeat: repeat.as_deref().map(not_core::Repeat::parse_rrule).transpose()?,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TokenKind {
+    Date,
+    Time,
+    Repeat,
+    Priority,
+    List,
+}
+
+/// A recognised piece of quick-add input. Offsets are UTF-16 code units.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ParsedToken {
+    pub start: u32,
+    pub end: u32,
+    pub kind: TokenKind,
+    /// Pass back in `dismissed` to keep this text in the title.
+    pub text: String,
+}
+
+/// What quick add will create from some input.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ParsedTask {
+    pub title: String,
+    pub due: Option<String>,
+    pub due_time: Option<u32>,
+    pub repeat: Option<String>,
+    pub priority: u8,
+    pub list_id: Option<String>,
+    pub tokens: Vec<ParsedToken>,
+}
+
 /// Habit `days` mask for a daily habit. Bit 0 = Monday … bit 6 = Sunday.
 #[uniffi::export]
 pub fn every_day() -> u8 {
@@ -140,6 +199,14 @@ pub struct TaskItem {
     pub notes: String,
     /// Unix millis.
     pub completed_at: Option<i64>,
+    /// `YYYY-MM-DD`; see `due_label`.
+    pub due: Option<String>,
+    /// Minutes after midnight.
+    pub due_time: Option<u32>,
+    /// 0 = none, 1 = low, 2 = medium, 3 = high.
+    pub priority: u8,
+    /// Repeat rule; see `repeat_label`.
+    pub repeat: Option<String>,
 }
 
 /// A task in display order with its nesting depth.
@@ -199,6 +266,73 @@ pub struct Folder {
     pub depth: u32,
     /// Notes directly inside.
     pub note_count: u32,
+    /// Notes keep the order they were dragged into, instead of latest edit first.
+    pub manual_order: bool,
+}
+
+/// One line of an exercise's sets, read from shorthand like `24kg x 10 x 3`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SetLine {
+    pub raw: String,
+    /// False: not read as sets; show `label` (the raw text) as a note.
+    pub parsed: bool,
+    pub warmup: bool,
+    /// `None` for bodyweight.
+    pub weight: Option<f64>,
+    pub unit: String,
+    pub reps: Vec<u32>,
+    /// Tidy form, e.g. `24 kg × 10 × 3`.
+    pub label: String,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct WorkoutSummary {
+    pub id: String,
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    /// May be empty.
+    pub title: String,
+    pub exercise_names: Vec<String>,
+    /// Working sets, warm-ups excluded.
+    pub set_count: u32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Workout {
+    pub id: String,
+    pub date: String,
+    pub title: String,
+    pub exercises: Vec<WorkoutExercise>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct WorkoutExercise {
+    pub id: String,
+    pub name: String,
+    /// As typed, one line per group of sets.
+    pub sets: String,
+    pub lines: Vec<SetLine>,
+    /// The latest earlier session with this exercise logged.
+    pub previous: Option<ExerciseLog>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ExerciseLog {
+    pub workout_id: String,
+    pub date: String,
+    pub sets: String,
+    pub lines: Vec<SetLine>,
+    /// Heaviest working set.
+    pub top_weight: Option<f64>,
+    /// Σ weight × reps over working sets.
+    pub volume: f64,
+    pub set_count: u32,
+}
+
+/// Reads exercise sets shorthand, for live previews while typing.
+#[uniffi::export]
+pub fn parse_sets(text: String) -> Vec<SetLine> {
+    not_core::parse_sets(&text).into_iter().map(SetLine::from).collect()
 }
 
 /// A note without its body.
@@ -322,8 +456,76 @@ impl NotStore {
         Ok(self.store.rename(&id, &title)?)
     }
 
-    pub fn set_completed(&self, id: String, completed: bool) -> Result<(), NotError> {
-        Ok(self.store.set_completed(&id, completed)?)
+    /// Completing a repeating task moves it to its next due date after `today` (`YYYY-MM-DD`).
+    pub fn set_completed(&self, id: String, completed: bool, today: String) -> Result<(), NotError> {
+        Ok(self.store.set_completed(&id, completed, date(&today)?)?)
+    }
+
+    /// Adds a task from quick-add input: "Buy milk tomorrow 9am #groceries !1". A `#list` overrides
+    /// `parent_id`. Texts in `dismissed` (from `ParsedToken.text`) stay in the title. Without a date
+    /// in the input the task is due on `default_due`, if given (adding from Today).
+    pub fn quick_add(
+        &self,
+        parent_id: String,
+        input: String,
+        today: String,
+        dismissed: Vec<String>,
+        default_due: Option<String>,
+    ) -> Result<String, NotError> {
+        let default_due = default_due.as_deref().map(date).transpose()?;
+        Ok(self
+            .store
+            .quick_add(&parent_id, &input, date(&today)?, &dismissed, default_due)?)
+    }
+
+    /// What `quick_add` would make of `input`, for live highlighting.
+    pub fn parse_task(
+        &self,
+        input: String,
+        today: String,
+        dismissed: Vec<String>,
+    ) -> Result<ParsedTask, NotError> {
+        let p = self.store.parse_task(&input, date(&today)?, &dismissed)?;
+        Ok(ParsedTask {
+            title: p.title,
+            due: p.schedule.due.map(|d| d.to_string()),
+            due_time: p.schedule.time,
+            repeat: p.schedule.repeat.map(|r| r.to_rrule()),
+            priority: p.priority,
+            list_id: p.list_id,
+            tokens: p
+                .tokens
+                .into_iter()
+                .map(|t| ParsedToken {
+                    start: t.start,
+                    end: t.end,
+                    kind: match t.kind {
+                        not_core::TokenKind::Date => TokenKind::Date,
+                        not_core::TokenKind::Time => TokenKind::Time,
+                        not_core::TokenKind::Repeat => TokenKind::Repeat,
+                        not_core::TokenKind::Priority => TokenKind::Priority,
+                        not_core::TokenKind::List => TokenKind::List,
+                    },
+                    text: t.text,
+                })
+                .collect(),
+        })
+    }
+
+    /// No `due` clears the time and repeat too.
+    pub fn set_schedule(
+        &self,
+        id: String,
+        due: Option<String>,
+        due_time: Option<u32>,
+        repeat: Option<String>,
+    ) -> Result<(), NotError> {
+        Ok(self.store.set_schedule(&id, &schedule(due, due_time, repeat)?)?)
+    }
+
+    /// 0 = none … 3 = high.
+    pub fn set_priority(&self, id: String, priority: u8) -> Result<(), NotError> {
+        Ok(self.store.set_priority(&id, priority)?)
     }
 
     pub fn set_notes(&self, id: String, notes: String) -> Result<(), NotError> {
@@ -344,6 +546,16 @@ impl NotStore {
         Ok(self
             .store
             .move_task_before(&id, &parent_id, before_id.as_deref())?)
+    }
+
+    /// Makes the task a subtask of the open task above it. False if there is none.
+    pub fn indent_task(&self, id: String) -> Result<bool, NotError> {
+        Ok(self.store.indent_task(&id)?)
+    }
+
+    /// Makes a subtask a sibling of its parent, right after it. False for top-level tasks.
+    pub fn outdent_task(&self, id: String) -> Result<bool, NotError> {
+        Ok(self.store.outdent_task(&id)?)
     }
 
     /// Moves a list to `index` among the other lists (the Inbox stays first).
@@ -440,6 +652,17 @@ impl NotStore {
         Ok(self.store.move_note(&id, folder_id.as_deref())?)
     }
 
+    /// Places a note right before `before_id` in its folder, or last. A folder sorted by latest
+    /// edit switches to manual order, keeping the order shown.
+    pub fn move_note_before(&self, id: String, before_id: Option<String>) -> Result<(), NotError> {
+        Ok(self.store.move_note_before(&id, before_id.as_deref())?)
+    }
+
+    /// Manual order starts from the order shown; `false` sorts by latest edit again.
+    pub fn set_folder_manual_order(&self, id: String, manual: bool) -> Result<(), NotError> {
+        Ok(self.store.set_folder_manual_order(&id, manual)?)
+    }
+
     /// Deletes a note, or a folder with everything in it. Undoable.
     pub fn delete_note(&self, id: String) -> Result<(), NotError> {
         Ok(self.store.delete_note_or_folder(&id)?)
@@ -457,6 +680,7 @@ impl NotStore {
                 title: f.title,
                 depth: f.depth,
                 note_count: f.note_count,
+                manual_order: f.manual_order,
             })
             .collect())
     }
@@ -483,6 +707,99 @@ impl NotStore {
 
     pub fn note_body(&self, id: String) -> Result<String, NotError> {
         Ok(self.store.note_body(&id)?)
+    }
+
+    // ---- workouts ----
+    // Dates are local calendar dates, `YYYY-MM-DD`.
+
+    pub fn create_workout(&self, date: String, title: String) -> Result<String, NotError> {
+        Ok(self.store.create_workout(&date, &title)?)
+    }
+
+    /// A new session on `date` with the same title and exercises as `from_id`, sets left empty.
+    pub fn repeat_workout(&self, from_id: String, date: String) -> Result<String, NotError> {
+        Ok(self.store.repeat_workout(&from_id, &date)?)
+    }
+
+    pub fn update_workout(&self, id: String, date: String, title: String) -> Result<(), NotError> {
+        Ok(self.store.update_workout(&id, &date, &title)?)
+    }
+
+    /// Undoable.
+    pub fn delete_workout(&self, id: String) -> Result<(), NotError> {
+        Ok(self.store.delete_workout(&id)?)
+    }
+
+    pub fn add_exercise(&self, workout_id: String, name: String, sets: String) -> Result<String, NotError> {
+        Ok(self.store.add_exercise(&workout_id, &name, &sets)?)
+    }
+
+    pub fn update_exercise(&self, id: String, name: String, sets: String) -> Result<(), NotError> {
+        Ok(self.store.update_exercise(&id, &name, &sets)?)
+    }
+
+    pub fn delete_exercise(&self, id: String) -> Result<(), NotError> {
+        Ok(self.store.delete_exercise(&id)?)
+    }
+
+    pub fn move_exercise(&self, id: String, index: u32) -> Result<(), NotError> {
+        Ok(self.store.move_exercise(&id, index as usize)?)
+    }
+
+    /// Latest first.
+    pub fn workouts(&self) -> Result<Vec<WorkoutSummary>, NotError> {
+        Ok(self
+            .store
+            .workouts()?
+            .into_iter()
+            .map(|w| WorkoutSummary {
+                id: w.id,
+                date: w.date,
+                title: w.title,
+                exercise_names: w.exercise_names,
+                set_count: w.set_count,
+            })
+            .collect())
+    }
+
+    pub fn workout(&self, id: String) -> Result<Workout, NotError> {
+        let w = self.store.workout(&id)?;
+        Ok(Workout {
+            id: w.id,
+            date: w.date,
+            title: w.title,
+            exercises: w
+                .exercises
+                .into_iter()
+                .map(|e| WorkoutExercise {
+                    id: e.id,
+                    name: e.name,
+                    sets: e.sets,
+                    lines: e.lines.into_iter().map(SetLine::from).collect(),
+                    previous: e.previous.map(ExerciseLog::from),
+                })
+                .collect(),
+        })
+    }
+
+    /// Sessions with this exercise (matched by name, ignoring case), latest first.
+    pub fn exercise_history(&self, name: String, limit: u32) -> Result<Vec<ExerciseLog>, NotError> {
+        Ok(self
+            .store
+            .exercise_history(&name, limit)?
+            .into_iter()
+            .map(ExerciseLog::from)
+            .collect())
+    }
+
+    /// Names used so far, most recent first.
+    pub fn exercise_names(&self) -> Result<Vec<String>, NotError> {
+        Ok(self.store.exercise_names()?)
+    }
+
+    /// Adds sessions from a text log (`dd/mm` lines, exercise names, set lines). Returns how many.
+    pub fn import_workouts(&self, text: String, today: String) -> Result<u32, NotError> {
+        Ok(self.store.import_workouts(&text, &today)?)
     }
 
     // ---- undo ----
@@ -523,6 +840,16 @@ impl NotStore {
         Ok(self
             .store
             .tasks(&list_id)?
+            .into_iter()
+            .map(TaskItem::from)
+            .collect())
+    }
+
+    /// Open tasks due on or before `today` from every list, overdue first.
+    pub fn due_tasks(&self, today: String) -> Result<Vec<TaskItem>, NotError> {
+        Ok(self
+            .store
+            .due_tasks(date(&today)?)?
             .into_iter()
             .map(TaskItem::from)
             .collect())
@@ -698,6 +1025,10 @@ impl From<not_core::Task> for TaskItem {
             title: t.title,
             notes: t.notes,
             completed_at: t.completed_at,
+            due: t.due,
+            due_time: t.due_time,
+            priority: t.priority,
+            repeat: t.repeat,
         }
     }
 }
@@ -729,6 +1060,34 @@ impl From<not_core::NoteSummary> for NoteSummary {
             preview: n.preview,
             pinned: n.pinned,
             updated_at: n.updated_at,
+        }
+    }
+}
+
+impl From<not_core::SetLine> for SetLine {
+    fn from(l: not_core::SetLine) -> Self {
+        Self {
+            raw: l.raw,
+            parsed: l.parsed,
+            warmup: l.warmup,
+            weight: l.weight,
+            unit: l.unit,
+            reps: l.reps,
+            label: l.label,
+        }
+    }
+}
+
+impl From<not_core::ExerciseLog> for ExerciseLog {
+    fn from(l: not_core::ExerciseLog) -> Self {
+        Self {
+            workout_id: l.workout_id,
+            date: l.date,
+            sets: l.sets,
+            lines: l.lines.into_iter().map(SetLine::from).collect(),
+            top_weight: l.top_weight,
+            volume: l.volume,
+            set_count: l.set_count,
         }
     }
 }
