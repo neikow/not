@@ -349,13 +349,13 @@ fun ToastHost(state: ToastState, modifier: Modifier = Modifier) {
 // ---- swipe ----
 
 /**
- * A row with two swipe actions: right for [start] (e.g. complete), left for [end] (e.g. delete).
- * Past the threshold the action's icon pops and the phone ticks; letting go there runs it.
+ * A row with swipe actions: right for [start] (e.g. complete), left for [end] (e.g. delete); a
+ * null one leaves that side still. Past the threshold the action's icon pops and the phone ticks; letting go there runs it.
  */
 @Composable
 fun SwipeRow(
-    start: SwipeAction,
-    end: SwipeAction,
+    start: SwipeAction?,
+    end: SwipeAction?,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
@@ -376,7 +376,7 @@ fun SwipeRow(
                 if (nowArmed) haptics.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
             }
         }
-        if (offset != 0f) {
+        if (offset != 0f && action != null) {
             val progress = (abs(offset) / threshold).coerceIn(0f, 1f)
             Box(
                 Modifier
@@ -393,12 +393,15 @@ fun SwipeRow(
             Modifier
                 .offset { IntOffset(offset.roundToInt(), 0) }
                 .draggable(
-                    rememberDraggableState { delta -> offset += delta },
+                    // Only toward a side that has an action.
+                    rememberDraggableState { delta ->
+                        offset = (offset + delta).coerceIn(if (end == null) 0f else -width, if (start == null) 0f else width)
+                    },
                     Orientation.Horizontal,
                     onDragStopped = {
                         val value = offset
                         if (abs(value) > threshold) {
-                            val run = if (value > 0) start else end
+                            val run = (if (value > 0) start else end) ?: return@draggable
                             if (run.dismisses) animate(value, if (value > 0) width else -width, animationSpec = tween(160)) { v, _ -> offset = v }
                             run.onSwipe()
                             offset = 0f

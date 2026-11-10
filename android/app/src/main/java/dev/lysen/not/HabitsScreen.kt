@@ -79,6 +79,8 @@ import dev.lysen.not.ui.Text
 import dev.lysen.not.ui.ToastHost
 import dev.lysen.not.ui.ToastState
 import dev.lysen.not.ui.pressable
+import dev.lysen.not.ui.SwipeAction
+import dev.lysen.not.ui.SwipeRow
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -226,8 +228,23 @@ private fun HabitRow(summary: HabitSummary, day: LocalDate, viewModel: HabitsVie
     val haptics = LocalHapticFeedback.current
     val habit = summary.habit
     val colors = Not.colors
+    // Right adds a check-in (until the day counts as done), left takes one back.
+    SwipeRow(
+        start = SwipeAction(R.drawable.ic_check, colors.accent, colors.onAccent) {
+            if (summary.doneToday) return@SwipeAction
+            val completes = if (habit.isDaily) summary.count + 1u >= habit.goal else summary.progress + 1u >= habit.goal && !summary.done
+            haptics.performHapticFeedback(if (completes) HapticFeedbackType.Confirm else HapticFeedbackType.ToggleOn)
+            viewModel.log(habit.id, 1)
+        },
+        end = SwipeAction(R.drawable.ic_remove, colors.sunken, colors.ink) {
+            if (summary.count == 0u) return@SwipeAction
+            haptics.performHapticFeedback(HapticFeedbackType.ToggleOff)
+            viewModel.log(habit.id, -1)
+        },
+        modifier = modifier,
+    ) {
     Row(
-        modifier
+        Modifier
             .fillMaxWidth()
             .background(colors.background)
             .pressable({ viewModel.open(habit.id) }, pressedScale = 0.985f)
@@ -250,6 +267,7 @@ private fun HabitRow(summary: HabitSummary, day: LocalDate, viewModel: HabitsVie
             }
         }
         WeekStrip(summary, day)
+    }
     }
 }
 

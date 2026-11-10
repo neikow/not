@@ -99,6 +99,8 @@ import dev.lysen.not.ui.Text
 import dev.lysen.not.ui.ToastHost
 import dev.lysen.not.ui.ToastState
 import dev.lysen.not.ui.pressable
+import dev.lysen.not.ui.SwipeAction
+import dev.lysen.not.ui.SwipeRow
 import kotlinx.coroutines.delay
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -203,7 +205,19 @@ private fun WorkoutCard(w: WorkoutSummary, today: LocalDate, viewModel: Workouts
     val colors = Not.colors
     val haptics = LocalHapticFeedback.current
     var menu by remember { mutableStateOf(false) }
-    Box(modifier) {
+    // Right starts a new workout from this one, left deletes it (with Undo).
+    SwipeRow(
+        start = if (w.exerciseNames.isEmpty()) null else SwipeAction(R.drawable.ic_repeat, colors.accent, colors.onAccent) {
+            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+            viewModel.repeat(w.id)
+        },
+        end = SwipeAction(R.drawable.ic_delete, colors.danger, Color.White, dismisses = true) {
+            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+            viewModel.delete(w)
+        },
+        modifier = modifier.clip(RoundedCornerShape(22.dp)),
+    ) {
+    Box {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -245,6 +259,7 @@ private fun WorkoutCard(w: WorkoutSummary, today: LocalDate, viewModel: Workouts
                 viewModel.delete(w)
             })
         }
+    }
     }
 }
 
