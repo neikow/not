@@ -1,7 +1,7 @@
 mod common;
 
 use common::Log;
-use not_core::{EVERY_DAY, HabitDay, Store};
+use not_core::{EVERY_DAY, HabitDay, Period, Store};
 
 const MON: &str = "2026-11-02";
 const WEEKDAYS: u8 = 0b001_1111;
@@ -52,7 +52,7 @@ fn offline_check_ins_add_up() {
 
     mac.log_habit(&water, MON, 2).unwrap();
     phone.log_habit(&water, MON, 3).unwrap();
-    phone.update_habit(&water, "Drink water", 8, EVERY_DAY).unwrap();
+    phone.update_habit(&water, "Drink water", 8, EVERY_DAY, Period::Day).unwrap();
     log.sync(&mac);
     log.sync(&phone);
     log.sync(&mac);
@@ -110,4 +110,50 @@ fn rejects_bad_input() {
     let id = store.create_habit("x", 1, EVERY_DAY).unwrap();
     assert!(store.toggle_habit(&id, "2026-02-30").is_err());
     assert!(store.toggle_habit("nope", MON).is_err());
+}
+
+#[test]
+fn weekly_goals_count_any_days_of_the_week() {
+    let store = Store::open_in_memory().unwrap();
+    let gym = store.create_habit("Gym", 3, EVERY_DAY).unwrap();
+    store.update_habit(&gym, "Gym", 3, WEEKDAYS, Period::Week).unwrap();
+    let s = summary(&store, MON);
+    assert_eq!((s.habit.period, s.habit.days), (Period::Week, EVERY_DAY), "any day counts");
+
+    // A tap is the day's check-in, and a second one takes it back.
+    assert_eq!(store.toggle_habit(&gym, MON).unwrap(), 1);
+    assert_eq!(store.toggle_habit(&gym, MON).unwrap(), 0);
+    store.toggle_habit(&gym, MON).unwrap();
+    store.toggle_habit(&gym, "2026-11-04").unwrap();
+    let wed = summary(&store, "2026-11-04");
+    assert_eq!((wed.count, wed.progress, wed.done), (1, 2, false));
+    // Four days left for one more: not due yet. On Sunday, the last day, it is.
+    assert!(!wed.due);
+    let sun = summary(&store, "2026-11-08");
+    assert_eq!((sun.progress, sun.due), (2, true));
+    // The open week doesn't break the streak; Saturday makes it.
+    assert_eq!(sun.streak, 0);
+    store.toggle_habit(&gym, "2026-11-07").unwrap();
+    let sun = summary(&store, "2026-11-08");
+    assert_eq!((sun.done, sun.due, sun.streak), (true, false, 1));
+    // Next week is open, then missed.
+    assert_eq!(summary(&store, "2026-11-12").streak, 1);
+    let after = summary(&store, "2026-11-16");
+    assert_eq!((after.streak, after.best_streak, after.progress), (0, 1, 0));
+}
+
+#[test]
+fn monthly_goals_follow_the_calendar() {
+    let store = Store::open_in_memory().unwrap();
+    let call = store.create_habit("Call mum", 1, EVERY_DAY).unwrap();
+    store.update_habit(&call, "Call mum", 2, EVERY_DAY, Period::Month).unwrap();
+    for day in ["2026-10-03", "2026-10-30", "2026-11-15"] {
+        store.toggle_habit(&call, day).unwrap();
+    }
+    let s = summary(&store, "2026-11-20");
+    assert_eq!((s.progress, s.done, s.streak, s.best_streak), (1, false, 1, 1));
+    // As of the 29th, one more is needed with two days left: not due. On the 30th it is.
+    assert!(!summary(&store, "2026-11-29").due);
+    assert!(summary(&store, "2026-11-30").due);
+    assert_eq!(summary(&store, "2026-12-01").streak, 0, "November was missed");
 }

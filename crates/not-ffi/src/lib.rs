@@ -225,14 +225,43 @@ pub struct Outline {
     pub completed: Vec<OutlineRow>,
 }
 
+/// What a habit's goal counts over. Weeks run Monday to Sunday, months by the calendar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum HabitPeriod {
+    Day,
+    Week,
+    Month,
+}
+
+impl From<not_core::Period> for HabitPeriod {
+    fn from(p: not_core::Period) -> Self {
+        match p {
+            not_core::Period::Day => Self::Day,
+            not_core::Period::Week => Self::Week,
+            not_core::Period::Month => Self::Month,
+        }
+    }
+}
+
+impl From<HabitPeriod> for not_core::Period {
+    fn from(p: HabitPeriod) -> Self {
+        match p {
+            HabitPeriod::Day => Self::Day,
+            HabitPeriod::Week => Self::Week,
+            HabitPeriod::Month => Self::Month,
+        }
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct Habit {
     pub id: String,
     pub title: String,
-    /// Check-ins per scheduled day.
+    /// Check-ins per period.
     pub goal: u32,
-    /// Scheduled weekdays: bit 0 = Monday … bit 6 = Sunday.
+    /// Scheduled weekdays: bit 0 = Monday … bit 6 = Sunday. All of them for weekly and monthly habits.
     pub days: u8,
+    pub period: HabitPeriod,
 }
 
 /// A habit as of one day (the user's today).
@@ -241,9 +270,13 @@ pub struct HabitSummary {
     pub habit: Habit,
     /// Check-ins that day.
     pub count: u32,
-    /// That day is a scheduled weekday.
+    /// Check-ins in the period so far, that day included; `count` for daily habits.
+    pub progress: u32,
+    /// `progress` reached the goal.
+    pub done: bool,
+    /// Daily: that day is a scheduled weekday. Weekly/monthly: the goal now needs every day left.
     pub due: bool,
-    /// Scheduled days in a row that met the goal; an unfinished today doesn't break it.
+    /// Periods in a row that met the goal (scheduled days, weeks or months); the open one doesn't break it.
     pub streak: u32,
     pub best_streak: u32,
     /// Check-ins of the 7 days ending that day, oldest first.
@@ -625,8 +658,8 @@ impl NotStore {
         Ok(self.store.create_habit(&title, goal, days)?)
     }
 
-    pub fn update_habit(&self, id: String, title: String, goal: u32, days: u8) -> Result<(), NotError> {
-        Ok(self.store.update_habit(&id, &title, goal, days)?)
+    pub fn update_habit(&self, id: String, title: String, goal: u32, days: u8, period: HabitPeriod) -> Result<(), NotError> {
+        Ok(self.store.update_habit(&id, &title, goal, days, period.into())?)
     }
 
     pub fn move_habit(&self, id: String, index: u32) -> Result<(), NotError> {
@@ -1123,8 +1156,11 @@ impl From<not_core::HabitSummary> for HabitSummary {
                 title: s.habit.title,
                 goal: s.habit.goal,
                 days: s.habit.days,
+                period: s.habit.period.into(),
             },
             count: s.count,
+            progress: s.progress,
+            done: s.done,
             due: s.due,
             streak: s.streak,
             best_streak: s.best_streak,

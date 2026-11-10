@@ -18,18 +18,25 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 
 data class HabitsState(
+    /** As of [day]: its check-ins, and the streaks and week up to it. */
     val habits: List<HabitSummary> = emptyList(),
-    /** The user's local date; check-ins land on it. */
+    /** The user's local date. */
     val today: LocalDate = LocalDate.now(),
+    /** The day shown and checked in on: today, or a past one being caught up on. */
+    val day: LocalDate = today,
     /** The habit open in the detail sheet. */
     val openHabitId: String? = null,
+    /** On today's to-do and not done yet, for badges; counted on today even while a past day is shown. */
+    val pending: Int = 0,
     val error: String? = null,
 ) {
     val openHabit: HabitSummary? get() = habits.firstOrNull { it.habit.id == openHabitId }
 
-    /** Due today and not done yet, for badges. */
-    val pending: Int get() = habits.count { it.due && it.count < it.habit.goal }
+    val isToday: Boolean get() = day == today
 }
+
+/** How far back the day picker goes, today included. */
+const val PAST_DAYS = 7
 
 class HabitsViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as NotApp
@@ -48,7 +55,18 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
     fun refreshToday() {
         val now = LocalDate.now()
         if (now != _state.value.today) {
-            _state.update { it.copy(today = now) }
+            // Showing today follows it to the new one; a past day stays put while it's in range.
+            _state.update { it.copy(today = now, day = if (it.isToday || it.day < now.minusDays(PAST_DAYS - 1L)) now else it.day) }
+            reload()
+        }
+    }
+
+    /** Shows [date] (today or one of the past days), so check-ins land on it. */
+    fun selectDay(date: LocalDate) {
+        val today = _state.value.today
+        val day = date.coerceIn(today.minusDays(PAST_DAYS - 1L), today)
+        if (day != _state.value.day) {
+            _state.update { it.copy(day = day) }
             reload()
         }
     }
@@ -57,17 +75,17 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
         if (title.isNotBlank()) run { store.createHabit(title.trim(), 1u, everyDay()) }
     }
 
-    /** A check-in until the goal is met, then back to zero. */
+    /** A check-in on the day shown until the goal is met, then back to zero. */
     fun toggle(id: String) {
-        run { store.toggleHabit(id, today()) }
+        run { store.toggleHabit(id, day()) }
     }
 
     fun log(id: String, delta: Long) {
-        run { store.logHabit(id, today(), delta) }
+        run { store.logHabit(id, day(), delta) }
     }
 
     fun update(habit: Habit) {
-        if (habit.title.isNotBlank()) run { store.updateHabit(habit.id, habit.title.trim(), habit.goal, habit.days) }
+        if (habit.title.isNotBlank()) run { store.updateHabit(habit.id, habit.title.trim(), habit.goal, habit.days, habit.period) }
     }
 
     fun delete(habit: Habit) {
@@ -96,10 +114,17 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun today() = _state.value.today.toString()
 
+    private fun day() = _state.value.day.toString()
+
     private fun reload() {
-        val habits = run { store.habits(today()) } ?: return
+        val habits = run { store.habits(day()) } ?: return
+        val todays = if (_state.value.isToday) habits else run { store.habits(today()) } ?: return
         _state.update { s ->
-            s.copy(habits = habits, openHabitId = s.openHabitId.takeIf { id -> habits.any { it.habit.id == id } })
+            s.copy(
+                habits = habits,
+                openHabitId = s.openHabitId.takeIf { id -> habits.any { it.habit.id == id } },
+                pending = todays.count { it.pending },
+            )
         }
     }
 

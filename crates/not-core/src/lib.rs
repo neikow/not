@@ -16,7 +16,7 @@ mod workouts;
 
 pub use catalog::{CatalogExercise, MuscleSets};
 pub use error::{Error, Result};
-pub use habits::{EVERY_DAY, Habit, HabitDay, HabitSummary};
+pub use habits::{EVERY_DAY, Habit, HabitDay, HabitSummary, Period};
 pub use not_protocol::PairingLink;
 pub use notes::{Folder, NoteSummary};
 pub use parse::{ParsedTask, Token, TokenKind, parse_task};

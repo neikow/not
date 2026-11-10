@@ -88,20 +88,21 @@ private struct HabitRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Button { model.toggleHabit(habit.id) } label: {
-                CheckRing(count: summary.count, goal: habit.goal, due: summary.due)
+                HabitRing(summary: summary)
             }
             .buttonStyle(.plain)
-            .help(summary.count >= habit.goal ? "Done today. Click to reset." : "Check in")
+            .help(summary.doneToday ? (habit.isDaily ? "Done today. Click to reset." : "Checked in today. Click to take it back.") : "Check in")
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(habit.title)
-                    .foregroundStyle(summary.due ? .primary : .secondary)
+                    // Weekly and monthly habits can be done any day, so they never read as off today.
+                    .foregroundStyle(summary.due || !habit.isDaily ? .primary : .secondary)
                 HStack(spacing: 8) {
-                    Text(scheduleText(habit))
+                    Text(scheduleText(habit, summary))
                     if summary.streak > 0 {
-                        Label("\(summary.streak)", systemImage: "flame.fill")
+                        Label("\(summary.streak)\(streakUnit(habit.period))", systemImage: "flame.fill")
                             .foregroundStyle(.orange)
-                            .help("\(summary.streak)-day streak")
+                            .help("\(streakText(summary.streak, habit.period)) streak")
                     }
                 }
                 .font(.caption)
@@ -115,11 +116,28 @@ private struct HabitRow: View {
 }
 
 /// Today's progress: a ring that fills with each check-in and turns solid when the goal is met.
+/// The ring for a habit's goal: the day's for daily habits, the week's or month's otherwise.
+struct HabitRing: View {
+    let summary: HabitSummary
+    var size: CGFloat = 24
+
+    var body: some View {
+        let habit = summary.habit
+        if habit.isDaily {
+            CheckRing(count: summary.count, goal: habit.goal, due: summary.due, size: size)
+        } else {
+            CheckRing(count: summary.progress, goal: habit.goal, due: true, size: size, checkedToday: summary.count > 0)
+        }
+    }
+}
+
+/// [checkedToday] tints the inside, for goals over a week or month that the day already counted toward.
 struct CheckRing: View {
     let count: UInt32
     let goal: UInt32
     let due: Bool
     var size: CGFloat = 24
+    var checkedToday = false
 
     private var progress: Double { min(1, Double(count) / Double(max(goal, 1))) }
 
@@ -131,6 +149,7 @@ struct CheckRing: View {
                     .font(.system(size: size * 0.45, weight: .bold))
                     .foregroundStyle(.white)
             } else {
+                if checkedToday { Circle().fill(.tint.opacity(0.18)) }
                 Circle()
                     .strokeBorder(.secondary.opacity(due ? 0.5 : 0.25),
                                   style: StrokeStyle(lineWidth: 1.5, dash: due ? [] : [2, 2]))
@@ -162,7 +181,7 @@ private struct WeekStrip: View {
                 let back = 6 - index
                 let weekday = (todayWeekday() - back + 7) % 7
                 VStack(spacing: 3) {
-                    DayDot(count: count, goal: summary.habit.goal,
+                    DayDot(count: count, goal: summary.habit.dayGoal,
                            scheduled: isScheduled(summary.habit.days, weekday))
                         .overlay {
                             if back == 0 { Circle().strokeBorder(.primary.opacity(0.35), lineWidth: 1).padding(-3) }
@@ -227,11 +246,16 @@ private struct HabitDetail: View {
 
             Section("Today") {
                 HStack(spacing: 14) {
-                    CheckRing(count: summary.count, goal: habit.goal, due: summary.due, size: 36)
+                    HabitRing(summary: summary, size: 36)
                     VStack(alignment: .leading) {
-                        Text("\(summary.count) of \(habit.goal)").font(.title3.monospacedDigit())
-                        Text(summary.due ? "Due today" : "Not scheduled today")
-                            .font(.caption).foregroundStyle(.secondary)
+                        if habit.isDaily {
+                            Text("\(summary.count) of \(habit.goal)").font(.title3.monospacedDigit())
+                            Text(summary.due ? "Due today" : "Not scheduled today")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("\(summary.progress) of \(habit.goal) this \(periodName(habit.period))").font(.title3.monospacedDigit())
+                            Text(periodStatus(summary)).font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
                     ControlGroup {
@@ -248,14 +272,23 @@ private struct HabitDetail: View {
                     get: { Int(habit.goal) },
                     set: { save(goal: UInt32($0)) }
                 ), in: 1...99) {
-                    Text(habit.goal == 1 ? "Once a day" : "\(habit.goal) times a day")
+                    Text(goalText(habit.goal, habit.period))
                 }
-                WeekdayPicker(days: Binding(get: { habit.days }, set: { save(days: $0) }))
+                Picker("Counts", selection: Binding(get: { habit.period }, set: { save(period: $0) })) {
+                    Text("Per day").tag(HabitPeriod.day)
+                    Text("Per week").tag(HabitPeriod.week)
+                    Text("Per month").tag(HabitPeriod.month)
+                }
+                .pickerStyle(.segmented)
+                // Only daily habits keep to weekdays; a week's or month's goal takes any day.
+                if habit.isDaily {
+                    WeekdayPicker(days: Binding(get: { habit.days }, set: { save(days: $0) }))
+                }
             }
 
             Section("Streak") {
-                LabeledContent("Current", value: days(summary.streak))
-                LabeledContent("Best", value: days(summary.bestStreak))
+                LabeledContent("Current", value: streakText(summary.streak, habit.period))
+                LabeledContent("Best", value: streakText(summary.bestStreak, habit.period))
             }
 
             Section("Last 18 weeks") {
@@ -273,16 +306,15 @@ private struct HabitDetail: View {
         .onDisappear(perform: saveTitle)
     }
 
-    private func days(_ n: UInt32) -> String { n == 1 ? "1 day" : "\(n) days" }
-
     private func saveTitle() {
         let trimmed = title.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, trimmed != habit.title, model.selectedHabit?.habit.id == habit.id else { return }
-        model.updateHabit(Habit(id: habit.id, title: trimmed, goal: habit.goal, days: habit.days))
+        model.updateHabit(Habit(id: habit.id, title: trimmed, goal: habit.goal, days: habit.days, period: habit.period))
     }
 
-    private func save(goal: UInt32? = nil, days: UInt8? = nil) {
-        model.updateHabit(Habit(id: habit.id, title: habit.title, goal: goal ?? habit.goal, days: days ?? habit.days))
+    private func save(goal: UInt32? = nil, days: UInt8? = nil, period: HabitPeriod? = nil) {
+        model.updateHabit(Habit(id: habit.id, title: habit.title, goal: goal ?? habit.goal, days: days ?? habit.days,
+                                period: period ?? habit.period))
     }
 }
 
@@ -332,7 +364,7 @@ private struct HistoryGrid: View {
                         let date = calendar.date(byAdding: .day, value: week * 7 + weekday, to: start)!
                         if date <= today {
                             let key = AppModel.dayString(date)
-                            DayDot(count: history[key] ?? 0, goal: summary.habit.goal,
+                            DayDot(count: history[key] ?? 0, goal: summary.habit.dayGoal,
                                    scheduled: isScheduled(summary.habit.days, weekday), size: 11)
                                 .help("\(date.formatted(date: .abbreviated, time: .omitted)): \(history[key] ?? 0)")
                         } else {
@@ -362,7 +394,8 @@ func isScheduled(_ days: UInt8, _ weekday: Int) -> Bool {
     days & (1 << weekday) != 0
 }
 
-func scheduleText(_ habit: Habit) -> String {
+func scheduleText(_ habit: Habit, _ summary: HabitSummary) -> String {
+    if !habit.isDaily { return "\(goalText(habit.goal, habit.period)) · \(summary.progress) so far" }
     let days: String = switch habit.days {
     case everyDay(): "Every day"
     case 0b001_1111: "Weekdays"
@@ -370,4 +403,69 @@ func scheduleText(_ habit: Habit) -> String {
     default: (0..<7).filter { isScheduled(habit.days, $0) }.map { weekdaySymbols[$0] }.formatted(.list(type: .and))
     }
     return habit.goal > 1 ? "\(days) · \(habit.goal)×" : days
+}
+
+// MARK: - Goal periods
+
+// What a habit's goal period means for the day: daily habits count per scheduled day, weekly and
+// monthly ones on any day, toward a total. Mirrors HabitRules.kt on Android.
+
+extension Habit {
+    var isDaily: Bool { period == .day }
+
+    /// Check-ins that fill one day's dot: the goal for daily habits, one for the others.
+    var dayGoal: UInt32 { isDaily ? goal : 1 }
+}
+
+extension HabitSummary {
+    /// On the day's to-do: a daily habit on a scheduled day, or a weekly or monthly one that needs
+    /// the day to still make its goal, or got a check-in that day.
+    var onToday: Bool { habit.isDaily ? due : due || count > 0 }
+
+    /// Done as far as the day goes: the day's goal met, or for weekly and monthly ones, a check-in.
+    var doneToday: Bool { habit.isDaily ? count >= habit.goal : count > 0 || done }
+
+    /// On the day's to-do and not done yet: what badges count.
+    var pending: Bool { onToday && !doneToday }
+}
+
+func periodName(_ period: HabitPeriod) -> String {
+    switch period {
+    case .day: "day"
+    case .week: "week"
+    case .month: "month"
+    }
+}
+
+/// "Once a day", "3 times a week", "Twice a month".
+func goalText(_ goal: UInt32, _ period: HabitPeriod) -> String {
+    let times = switch goal {
+    case 1: "Once"
+    case 2: "Twice"
+    default: "\(goal) times"
+    }
+    return "\(times) a \(periodName(period))"
+}
+
+/// "4 days", "1 week", "2 months".
+func streakText(_ n: UInt32, _ period: HabitPeriod) -> String {
+    "\(n) \(periodName(period))\(n == 1 ? "" : "s")"
+}
+
+/// After the flame: nothing for days, "w" or "mo" so weeks and months don't read as days.
+func streakUnit(_ period: HabitPeriod) -> String {
+    switch period {
+    case .day: ""
+    case .week: "w"
+    case .month: "mo"
+    }
+}
+
+/// Under a weekly or monthly habit's progress: how the day stands.
+func periodStatus(_ summary: HabitSummary) -> String {
+    if summary.count > 1 { return "\(summary.count) check-ins today" }
+    if summary.count == 1 { return "Checked in today" }
+    if summary.done { return "Goal met" }
+    if summary.due { return "Needed today to make it" }
+    return "Any day counts"
 }

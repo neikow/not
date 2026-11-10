@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.lysen.not.core.Habit
 import dev.lysen.not.core.HabitSummary
+import dev.lysen.not.core.HabitPeriod
 import dev.lysen.not.core.everyDay
 import dev.lysen.not.ui.AddAction
 import dev.lysen.not.ui.Button
@@ -101,16 +102,22 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
     val listState = rememberLazyListState()
     val reorder = rememberReorderState(listState, state.habits) { it.habit.id }
     val scope = rememberCoroutineScope()
-    // Tapping Habits again brings up the first habit still to do today, or the top when all are done.
+    // Tapping Habits again goes back to today, then brings up the first habit still to do, or the
+    // top when all are done.
     OnTabGesture { gesture ->
         if (gesture != TabGesture.Reselect) return@OnTabGesture
-        val next = reorder.items.indexOfFirst { it.due && it.count < it.habit.goal }
+        if (!state.isToday) {
+            viewModel.selectDay(state.today)
+            scope.launch { listState.animateScrollToItem(0) }
+            return@OnTabGesture
+        }
+        val next = reorder.items.indexOfFirst { it.pending }
         // Item 0 is the title.
         scope.launch { listState.animateScrollToItem(if (next < 0) 0 else next + 1) }
     }
 
     Box(Modifier.fillMaxSize()) {
-        LargeTitleScreen(title = "Habits", state = listState, header = { TodayHeader(state) }) {
+        LargeTitleScreen(title = "Habits", state = listState, header = { DayHeader(state, onSelect = viewModel::selectDay) }) {
             if (state.habits.isEmpty()) {
                 item(key = "empty") {
                     EmptyState(R.drawable.ic_repeat, "No habits yet", "Tap + to add one, then check it off each day to build a streak.")
@@ -119,7 +126,7 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
             items(reorder.items, key = { it.habit.id }) { summary ->
                 HabitRow(
                     summary,
-                    state.today,
+                    state.day,
                     viewModel,
                     (if (reorder.isDragging(summary)) Modifier else Modifier.animateItem())
                         .reorderable(reorder, summary, summary.habit.id) {
@@ -141,7 +148,7 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
         }
     }
 
-    state.openHabit?.let { HabitSheet(it, state.today, viewModel, onDismiss = { viewModel.open(null) }) }
+    state.openHabit?.let { HabitSheet(it, state.day, state.today, viewModel, onDismiss = { viewModel.open(null) }) }
     state.error?.let {
         CardDialog(
             title = "Something went wrong",
@@ -151,25 +158,71 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
     }
 }
 
-/** "Monday, November 2" and "1 of 3 done"; keeps its height when empty so nothing jumps. */
+/**
+ * "Monday, November 2" and "1 of 3 done" for the day shown, over the last days to pick one from
+ * (to catch up on check-ins). Keeps its height when empty so nothing jumps.
+ */
 @Composable
-private fun TodayHeader(state: HabitsState) {
-    val due = state.habits.filter { it.due }
-    val done = due.count { it.count >= it.habit.goal }
+private fun DayHeader(state: HabitsState, onSelect: (LocalDate) -> Unit) {
+    val due = state.habits.filter { it.onToday }
+    val done = due.count { it.doneToday }
     val progress = when {
-        due.isEmpty() -> "Nothing due today"
-        done == due.size -> "All done for today"
+        due.isEmpty() -> if (state.isToday) "Nothing due today" else "Nothing was due"
+        done == due.size -> if (state.isToday) "All done for today" else "All done"
         else -> "$done of ${due.size} done"
     }
-    Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(state.today.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), style = Not.type.body, color = Not.colors.inkMuted)
-        Box(Modifier.size(3.dp).clip(CircleShape).background(Not.colors.inkFaint))
-        Text(progress, style = Not.type.body, color = if (due.isNotEmpty() && done == due.size) Not.colors.accentInk else Not.colors.inkMuted)
+    Column {
+        Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(state.day.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), style = Not.type.body, color = Not.colors.inkMuted)
+            Box(Modifier.size(3.dp).clip(CircleShape).background(Not.colors.inkFaint))
+            Text(progress, style = Not.type.body, color = if (due.isNotEmpty() && done == due.size) Not.colors.accentInk else Not.colors.inkMuted)
+        }
+        DayPicker(state.day, state.today, onSelect, Modifier.padding(top = 14.dp))
+    }
+}
+
+/** The last [PAST_DAYS] days, oldest first: weekday over date, the shown one filled in. */
+@Composable
+private fun DayPicker(day: LocalDate, today: LocalDate, onSelect: (LocalDate) -> Unit, modifier: Modifier = Modifier) {
+    val colors = Not.colors
+    val haptics = LocalHapticFeedback.current
+    Row(modifier.fillMaxWidth()) {
+        for (back in PAST_DAYS - 1 downTo 0) {
+            val date = today.minusDays(back.toLong())
+            val selected = date == day
+            val bg by animateColorAsState(if (selected) colors.accent else Color.Transparent, label = "day")
+            Column(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .pressable({
+                        if (!selected) haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                        onSelect(date)
+                    }, pressedScale = 0.92f, onClickLabel = date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")))
+                    .padding(vertical = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    if (back == 0) "Today" else date.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault()),
+                    style = Not.type.caption,
+                    color = if (back == 0) colors.accentInk else colors.inkFaint,
+                    maxLines = 1,
+                )
+                Box(Modifier.size(36.dp).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
+                    Text(
+                        date.dayOfMonth.toString(),
+                        style = if (selected) Not.type.bodyStrong else Not.type.body,
+                        color = if (selected) colors.onAccent else colors.ink,
+                    )
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun HabitRow(summary: HabitSummary, today: LocalDate, viewModel: HabitsViewModel, modifier: Modifier) {
+private fun HabitRow(summary: HabitSummary, day: LocalDate, viewModel: HabitsViewModel, modifier: Modifier) {
     val haptics = LocalHapticFeedback.current
     val habit = summary.habit
     val colors = Not.colors
@@ -182,53 +235,75 @@ private fun HabitRow(summary: HabitSummary, today: LocalDate, viewModel: HabitsV
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        CheckRing(
-            summary.count,
-            habit.goal,
-            summary.due,
-            onClick = {
-                val completes = summary.count + 1u >= habit.goal && summary.count < habit.goal
-                haptics.performHapticFeedback(if (completes) HapticFeedbackType.Confirm else HapticFeedbackType.ToggleOn)
-                viewModel.toggle(habit.id)
-            },
-        )
+        HabitRing(summary, onClick = {
+            val completes = if (habit.isDaily) summary.count + 1u >= habit.goal && summary.count < habit.goal
+            else summary.count == 0u && summary.progress + 1u >= habit.goal && !summary.done
+            haptics.performHapticFeedback(if (completes) HapticFeedbackType.Confirm else HapticFeedbackType.ToggleOn)
+            viewModel.toggle(habit.id)
+        })
         Column(Modifier.weight(1f)) {
-            Text(habit.title, style = Not.type.body, color = if (summary.due) colors.ink else colors.inkMuted, maxLines = 1)
+            // Weekly and monthly habits can be done any day, so they never read as off today.
+            Text(habit.title, style = Not.type.body, color = if (summary.due || !habit.isDaily) colors.ink else colors.inkMuted, maxLines = 1)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(scheduleText(habit), style = Not.type.caption, color = colors.inkMuted, maxLines = 1)
-                if (summary.streak > 0u) Streak(summary.streak)
+                Text(scheduleText(habit, summary), style = Not.type.caption, color = colors.inkMuted, maxLines = 1)
+                if (summary.streak > 0u) Streak(summary.streak, habit.period)
             }
         }
-        WeekStrip(summary, today)
+        WeekStrip(summary, day)
     }
 }
 
+/** The ring for a habit's goal: the day's for daily habits, the week's or month's otherwise. */
 @Composable
-private fun Streak(days: UInt) {
+private fun HabitRing(summary: HabitSummary, onClick: () -> Unit, size: Dp = 32.dp) {
+    val habit = summary.habit
+    if (habit.isDaily) {
+        CheckRing(summary.count, habit.goal, summary.due, onClick, size)
+    } else {
+        CheckRing(summary.progress, habit.goal, due = true, onClick, size, checkedToday = summary.count > 0u)
+    }
+}
+
+/** Flame and count; weeks and months get a unit so they don't read as days. */
+@Composable
+private fun Streak(n: UInt, period: HabitPeriod) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         Icon(R.drawable.ic_flame, null, tint = StreakColor, size = 13.dp)
-        Text(days.toString(), style = Not.type.caption, color = StreakColor)
+        val unit = when (period) {
+            HabitPeriod.DAY -> ""
+            HabitPeriod.WEEK -> "w"
+            HabitPeriod.MONTH -> "mo"
+        }
+        Text("$n$unit", style = Not.type.caption, color = StreakColor)
     }
 }
 
 private val StreakColor = Color(0xFFF08A24)
 
 /**
- * Today's progress: a ring that fills with each check-in and becomes a mint disc with a check once
- * the goal is met. 44dp touch target around [size].
+ * Progress toward a goal: a ring that fills with each check-in and becomes a mint disc with a check
+ * once the goal is met. [checkedToday] tints the inside, for goals over a week or month that the
+ * day has already counted toward. 44dp touch target around [size].
  */
 @Composable
-fun CheckRing(count: UInt, goal: UInt, due: Boolean, onClick: () -> Unit, size: Dp = 32.dp) {
+fun CheckRing(count: UInt, goal: UInt, due: Boolean, onClick: () -> Unit, size: Dp = 32.dp, checkedToday: Boolean = false) {
     val colors = Not.colors
     val progress by animateFloatAsState((count.toFloat() / goal.coerceAtLeast(1u).toFloat()).coerceAtMost(1f), label = "ring")
     val done = count >= goal
-    val fill by animateColorAsState(if (done) colors.accent else Color.Transparent, label = "fill")
+    val fill by animateColorAsState(
+        when {
+            done -> colors.accent
+            checkedToday -> colors.accentSoft
+            else -> Color.Transparent
+        },
+        label = "fill",
+    )
     val tick by animateFloatAsState(if (done) 1f else 0f, spring(Spring.DampingRatioMediumBouncy, Spring.StiffnessMedium), label = "tick")
     Box(
         Modifier
             .size(maxOf(size + 12.dp, 44.dp))
             .clip(CircleShape)
-            .toggleable(done, remember { MutableInteractionSource() }, indication = null, role = Role.Checkbox) { onClick() },
+            .toggleable(done || checkedToday, remember { MutableInteractionSource() }, indication = null, role = Role.Checkbox) { onClick() },
         contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.size(size).background(fill, CircleShape), contentAlignment = Alignment.Center) {
@@ -253,16 +328,16 @@ fun CheckRing(count: UInt, goal: UInt, due: Boolean, onClick: () -> Unit, size: 
     }
 }
 
-/** The last 7 days, oldest first; today is ringed. */
+/** The 7 days up to the one shown, oldest first; that one is ringed. */
 @Composable
-private fun WeekStrip(summary: HabitSummary, today: LocalDate) {
+private fun WeekStrip(summary: HabitSummary, day: LocalDate) {
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         summary.week.forEachIndexed { index, count ->
-            val day = today.minusDays((6 - index).toLong())
+            val date = day.minusDays((6 - index).toLong())
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                DayDot(count, summary.habit.goal, scheduled = isScheduled(summary.habit.days, day.dayOfWeek), size = 10.dp, ringed = index == 6)
+                DayDot(count, summary.habit.dayGoal, scheduled = isScheduled(summary.habit.days, date.dayOfWeek), size = 10.dp, ringed = index == 6)
                 Text(
-                    day.dayOfWeek.getDisplayName(TextStyle.NARROW, Locale.getDefault()),
+                    date.dayOfWeek.getDisplayName(TextStyle.NARROW, Locale.getDefault()),
                     style = Not.type.tiny.merge(fontSize = 9.sp, lineHeight = 10.sp),
                     color = if (index == 6) Not.colors.inkMuted else Not.colors.inkFaint,
                 )
@@ -292,12 +367,12 @@ private fun DayDot(count: UInt, goal: UInt, scheduled: Boolean, size: Dp, ringed
 
 /** Everything about one habit: today's count, schedule, streaks, history, delete. Saves as you go. */
 @Composable
-private fun HabitSheet(summary: HabitSummary, today: LocalDate, viewModel: HabitsViewModel, onDismiss: () -> Unit) {
+private fun HabitSheet(summary: HabitSummary, day: LocalDate, today: LocalDate, viewModel: HabitsViewModel, onDismiss: () -> Unit) {
     val habit = summary.habit
     val colors = Not.colors
     var title by remember(habit.id) { mutableStateOf(habit.title) }
-    fun save(goal: UInt = habit.goal, days: UByte = habit.days) =
-        viewModel.update(Habit(habit.id, title.ifBlank { habit.title }, goal, days))
+    fun save(goal: UInt = habit.goal, days: UByte = habit.days, period: HabitPeriod = habit.period) =
+        viewModel.update(Habit(habit.id, title.ifBlank { habit.title }, goal, days, period))
 
     Sheet(onDismiss = {
         if (title.isNotBlank() && title != habit.title) save()
@@ -309,16 +384,32 @@ private fun HabitSheet(summary: HabitSummary, today: LocalDate, viewModel: Habit
         ) {
             Field(title, { title = it }, "Habit", style = Not.type.title, onDone = { save() }, modifier = Modifier.fillMaxWidth())
 
-            // Today, in a soft card: the ring and a stepper for extra or mistaken check-ins.
+            // The day shown, in a soft card: the ring and a stepper for extra or mistaken check-ins.
+            val onDay = if (day == today) "today" else "on ${day.format(DateTimeFormatter.ofPattern("EEEE d"))}"
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(colors.background).padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                CheckRing(summary.count, habit.goal, summary.due, onClick = { viewModel.toggle(habit.id) }, size = 48.dp)
+                HabitRing(summary, onClick = { viewModel.toggle(habit.id) }, size = 48.dp)
                 Column(Modifier.weight(1f)) {
-                    Text("${summary.count} of ${habit.goal} today", style = Not.type.bodyStrong)
-                    Text(if (summary.due) "Due today" else "Not scheduled today", style = Not.type.caption, color = colors.inkMuted)
+                    if (habit.isDaily) {
+                        Text("${summary.count} of ${habit.goal} $onDay", style = Not.type.bodyStrong)
+                        Text(if (summary.due) "Due $onDay" else "Not scheduled $onDay", style = Not.type.caption, color = colors.inkMuted)
+                    } else {
+                        Text("${summary.progress} of ${habit.goal} this ${periodName(habit.period)}", style = Not.type.bodyStrong)
+                        Text(
+                            when {
+                                summary.count > 1u -> "${summary.count} check-ins $onDay"
+                                summary.count == 1u -> "Checked in $onDay"
+                                summary.done -> "Goal met"
+                                summary.due -> "Needed $onDay to make it"
+                                else -> "Any day counts"
+                            },
+                            style = Not.type.caption,
+                            color = colors.inkMuted,
+                        )
+                    }
                 }
                 Stepper(
                     onMinus = { viewModel.log(habit.id, -1) },
@@ -331,7 +422,7 @@ private fun HabitSheet(summary: HabitSummary, today: LocalDate, viewModel: Habit
 
             Section("Goal") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (habit.goal == 1u) "Once a day" else "${habit.goal} times a day", style = Not.type.body, modifier = Modifier.weight(1f))
+                    Text(goalText(habit.goal, habit.period), style = Not.type.body, modifier = Modifier.weight(1f))
                     Stepper(
                         onMinus = { save(goal = habit.goal - 1u) },
                         onPlus = { save(goal = habit.goal + 1u) },
@@ -341,13 +432,15 @@ private fun HabitSheet(summary: HabitSummary, today: LocalDate, viewModel: Habit
                         plusLabel = "More",
                     )
                 }
+                PeriodPicker(habit.period, onChange = { save(period = it) })
             }
 
-            Section("Repeat") { WeekdayPicker(habit.days, onChange = { save(days = it) }) }
+            // Only daily habits keep to weekdays; a week's or month's goal takes any day.
+            if (habit.isDaily) Section("Repeat") { WeekdayPicker(habit.days, onChange = { save(days = it) }) }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Stat("Current streak", days(summary.streak), Modifier.weight(1f))
-                Stat("Best", days(summary.bestStreak), Modifier.weight(1f))
+                Stat("Current streak", streakText(summary.streak, habit.period), Modifier.weight(1f))
+                Stat("Best", streakText(summary.bestStreak, habit.period), Modifier.weight(1f))
             }
 
             Section("Last 15 weeks") { HistoryGrid(summary, today, viewModel, weeks = 15) }
@@ -393,7 +486,6 @@ private fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
     }
 }
 
-private fun days(n: UInt) = if (n == 1u) "1 day" else "$n days"
 
 /** Seven round toggles, Monday first. At least one day stays selected. */
 @Composable
@@ -426,6 +518,29 @@ private fun WeekdayPicker(days: UByte, onChange: (UByte) -> Unit) {
     }
 }
 
+/** Per day, week or month: three pills, the habit's one filled in. */
+@Composable
+private fun PeriodPicker(period: HabitPeriod, onChange: (HabitPeriod) -> Unit) {
+    val colors = Not.colors
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        HabitPeriod.entries.forEach { p ->
+            val on = p == period
+            val bg by animateColorAsState(if (on) colors.accent else colors.sunken, label = "period")
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(40.dp)
+                    .clip(CircleShape)
+                    .background(bg)
+                    .pressable({ if (!on) onChange(p) }, role = Role.RadioButton, pressedScale = 0.94f),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Per ${periodName(p)}", style = Not.type.label, color = if (on) colors.onAccent else colors.inkMuted)
+            }
+        }
+    }
+}
+
 /** Weeks as columns (oldest left), Monday on top. */
 @Composable
 private fun HistoryGrid(summary: HabitSummary, today: LocalDate, viewModel: HabitsViewModel, weeks: Int) {
@@ -440,7 +555,7 @@ private fun HistoryGrid(summary: HabitSummary, today: LocalDate, viewModel: Habi
                     if (date.isAfter(today)) {
                         Spacer(Modifier.size(14.dp))
                     } else {
-                        DayDot(history[date] ?: 0u, summary.habit.goal, scheduled = isScheduled(summary.habit.days, weekday), size = 14.dp, ringed = date == today)
+                        DayDot(history[date] ?: 0u, summary.habit.dayGoal, scheduled = isScheduled(summary.habit.days, weekday), size = 14.dp, ringed = date == today)
                     }
                 }
             }
@@ -450,7 +565,8 @@ private fun HistoryGrid(summary: HabitSummary, today: LocalDate, viewModel: Habi
 
 private fun isScheduled(days: UByte, day: DayOfWeek) = days.toInt() and (1 shl day.ordinal) != 0
 
-private fun scheduleText(habit: Habit): String {
+private fun scheduleText(habit: Habit, summary: HabitSummary): String {
+    if (!habit.isDaily) return "${goalText(habit.goal, habit.period)} · ${summary.progress} so far"
     val days = when (habit.days.toInt()) {
         everyDay().toInt() -> "Every day"
         0b001_1111 -> "Weekdays"

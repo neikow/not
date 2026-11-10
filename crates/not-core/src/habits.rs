@@ -13,19 +13,72 @@ use crate::projection::{DELETED_AT, TITLE, meta_i64, meta_str};
 use crate::store::{Store, clean_title, now_millis};
 use crate::{Error, Result};
 
-/// Times per scheduled day it takes to complete a habit.
+/// Check-ins per period it takes to complete a habit.
 const GOAL: &str = "goal";
+/// What the goal counts over: `"day"` (the default), `"week"` or `"month"`.
+const PERIOD: &str = "period";
 /// Scheduled weekdays as a bit mask, bit 0 = Monday … bit 6 = Sunday.
 const DAYS: &str = "days";
 pub const EVERY_DAY: u8 = 0b111_1111;
+
+/// What a habit's goal counts over. Weeks run Monday to Sunday, months by the calendar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Period {
+    /// `goal` check-ins on each scheduled weekday.
+    #[default]
+    Day,
+    /// `goal` check-ins over the week, on any days.
+    Week,
+    /// `goal` check-ins over the month, on any days.
+    Month,
+}
+
+impl Period {
+    fn as_str(self) -> &'static str {
+        match self {
+            Period::Day => "day",
+            Period::Week => "week",
+            Period::Month => "month",
+        }
+    }
+
+    /// Unknown values (from a newer app) read as daily.
+    fn parse(s: &str) -> Self {
+        match s {
+            "week" => Period::Week,
+            "month" => Period::Month,
+            _ => Period::Day,
+        }
+    }
+
+    /// The first day of the period `date` falls in.
+    fn start(self, date: Date) -> Date {
+        match self {
+            Period::Day => date,
+            Period::Week => date.monday(),
+            Period::Month => date.add_days(1 - date.day()),
+        }
+    }
+
+    /// The first day of the period after the one starting on `start`.
+    fn next(self, start: Date) -> Date {
+        match self {
+            Period::Day => start.add_days(1),
+            Period::Week => start.add_days(7),
+            Period::Month => start.add_months(1),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Habit {
     pub id: String,
     pub title: String,
     pub goal: u32,
-    /// Bit 0 = Monday … bit 6 = Sunday; [`EVERY_DAY`] for daily habits.
+    /// Bit 0 = Monday … bit 6 = Sunday; [`EVERY_DAY`] for daily habits. Only daily habits are
+    /// scheduled; weekly and monthly ones take [`EVERY_DAY`].
     pub days: u8,
+    pub period: Period,
 }
 
 /// A habit as of a given day, for the habits screen.
@@ -34,10 +87,15 @@ pub struct HabitSummary {
     pub habit: Habit,
     /// Check-ins on that day.
     pub count: u32,
-    /// The day is one of the habit's scheduled weekdays.
+    /// Check-ins in the period so far, that day included; the same as `count` for daily habits.
+    pub progress: u32,
+    /// `progress` reached the goal.
+    pub done: bool,
+    /// Daily habits: the day is one of the scheduled weekdays. Weekly and monthly ones: the goal
+    /// can only still be met by checking in on every day left in the period, that one included.
     pub due: bool,
-    /// Scheduled days in a row that met the goal, up to that day. A due day that isn't done yet
-    /// doesn't break it.
+    /// Periods in a row that met the goal (scheduled days for daily habits, else weeks or
+    /// months), up to that day. The current one doesn't break it while it's still open.
     pub streak: u32,
     pub best_streak: u32,
     /// Check-ins on the 7 days ending with that day, oldest first.
@@ -52,6 +110,7 @@ pub struct HabitDay {
 }
 
 impl Store {
+    /// A daily habit; [`Store::update_habit`] makes it weekly or monthly.
     pub fn create_habit(&self, title: &str, goal: u32, days: u8) -> Result<String> {
         let title = clean_title(title)?;
         validate(goal, days)?;
@@ -65,9 +124,11 @@ impl Store {
         })
     }
 
-    pub fn update_habit(&self, id: &str, title: &str, goal: u32, days: u8) -> Result<()> {
+    pub fn update_habit(&self, id: &str, title: &str, goal: u32, days: u8, period: Period) -> Result<()> {
         let title = clean_title(title)?;
         validate(goal, days)?;
+        // A goal over the week or month can be met on any day.
+        let days = if period == Period::Day { days } else { EVERY_DAY };
         let id = self.habit_node(id)?;
         self.transact(|| {
             let meta = self.habits.get_meta(id)?;
@@ -80,6 +141,9 @@ impl Store {
             }
             if meta_i64(&meta, DAYS) != Some(i64::from(days)) {
                 meta.insert(DAYS, i64::from(days))?;
+            }
+            if period_of(&meta) != period {
+                meta.insert(PERIOD, period.as_str())?;
             }
             Ok(())
         })
@@ -125,10 +189,15 @@ impl Store {
         })
     }
 
-    /// One tap on a habit: a check-in until the goal is met, then back to zero.
+    /// One tap on a habit. Daily: a check-in until the day's goal is met, then back to zero.
+    /// Weekly and monthly: the day's check-in, or taking it back.
     pub fn toggle_habit(&self, id: &str, date: &str) -> Result<u32> {
         let node = self.habit_node(id)?;
-        let goal = meta_i64(&self.habits.get_meta(node)?, GOAL).unwrap_or(1);
+        let meta = self.habits.get_meta(node)?;
+        let goal = match period_of(&meta) {
+            Period::Day => meta_i64(&meta, GOAL).unwrap_or(1),
+            Period::Week | Period::Month => 1,
+        };
         let count = i64::from(self.habit_count(node, Date::parse(date)?));
         self.log_habit(id, date, if count >= goal { -count } else { 1 })
     }
@@ -139,7 +208,7 @@ impl Store {
         let inner = self.lock();
         let mut stmt = inner
             .db
-            .prepare_cached("SELECT id, title, goal, days FROM habit ORDER BY position, id")?;
+            .prepare_cached("SELECT id, title, goal, days, period FROM habit ORDER BY position, id")?;
         let habits = stmt
             .query_map([], |r| {
                 Ok(Habit {
@@ -147,6 +216,7 @@ impl Store {
                     title: r.get(1)?,
                     goal: r.get(2)?,
                     days: r.get(3)?,
+                    period: Period::parse(&r.get::<_, String>(4)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -156,9 +226,20 @@ impl Store {
                 let log = load_log(&inner.db, &habit.id)?;
                 let at = |d: Date| log.get(&d).copied().unwrap_or(0);
                 let (streak, best_streak) = streaks(&habit, &log, date);
+                let start = habit.period.start(date);
+                let progress = log.range(start..=date).map(|(_, &c)| c).sum();
+                let due = match habit.period {
+                    Period::Day => scheduled(habit.days, date),
+                    Period::Week | Period::Month => {
+                        let days_left = habit.period.next(start).days_since(date);
+                        progress < habit.goal && days_left <= i64::from(habit.goal - progress)
+                    }
+                };
                 Ok(HabitSummary {
                     count: at(date),
-                    due: scheduled(habit.days, date),
+                    progress,
+                    done: progress >= habit.goal,
+                    due,
                     week: (0..7).rev().map(|back| at(date.add_days(-back))).collect(),
                     streak,
                     best_streak,
@@ -212,27 +293,35 @@ fn scheduled(days: u8, date: Date) -> bool {
     days & (1 << date.weekday()) != 0
 }
 
-/// (current, best) streaks of scheduled days that met the goal, as of `today`.
+/// (current, best) streaks of periods that met the goal, as of `today`: scheduled days for daily
+/// habits, else weeks or months.
 fn streaks(habit: &Habit, log: &BTreeMap<Date, u32>, today: Date) -> (u32, u32) {
     let Some(&first) = log.keys().next() else {
         return (0, 0);
     };
-    let met = |d: Date| log.get(&d).is_some_and(|&c| c >= habit.goal);
+    let period = habit.period;
     let (mut run, mut best) = (0, 0);
-    let mut day = first;
-    while day <= today {
-        if scheduled(habit.days, day) {
-            if met(day) {
+    let mut start = period.start(first);
+    let current = period.start(today);
+    while start <= current {
+        let end = if start == current { today } else { period.next(start).add_days(-1) };
+        if period != Period::Day || scheduled(habit.days, start) {
+            let total: u32 = log.range(start..=end).map(|(_, &c)| c).sum();
+            if total >= habit.goal {
                 run += 1;
                 best = u32::max(best, run);
-            } else if day != today {
-                // Today is still open.
+            } else if start != current {
+                // The current day, week or month is still open.
                 run = 0;
             }
         }
-        day = day.add_days(1);
+        start = period.next(start);
     }
     (run, best)
+}
+
+fn period_of(meta: &LoroMap) -> Period {
+    meta_str(meta, PERIOD).map_or(Period::Day, |p| Period::parse(&p))
 }
 
 fn load_log(db: &Connection, habit_id: &str) -> Result<BTreeMap<Date, u32>> {
@@ -262,8 +351,9 @@ fn is_alive(tree: &LoroTree, id: TreeID) -> bool {
 /// Rewrites the `habit` table from the tree.
 pub fn project_habits(tree: &LoroTree, db: &Connection) -> Result<()> {
     db.execute("DELETE FROM habit", [])?;
-    let mut insert =
-        db.prepare_cached("INSERT INTO habit (id, title, goal, days, position) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+    let mut insert = db.prepare_cached(
+        "INSERT INTO habit (id, title, goal, days, period, position) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
     for id in tree.roots() {
         if !is_alive(tree, id) {
             continue;
@@ -274,6 +364,7 @@ pub fn project_habits(tree: &LoroTree, db: &Connection) -> Result<()> {
             meta_str(&meta, TITLE).unwrap_or_default(),
             meta_i64(&meta, GOAL).unwrap_or(1),
             meta_i64(&meta, DAYS).unwrap_or(i64::from(EVERY_DAY)),
+            period_of(&meta).as_str(),
             tree.fractional_index(id).unwrap_or_default(),
         ])?;
     }

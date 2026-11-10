@@ -81,7 +81,7 @@ private struct Sidebar: View {
                     .tag(SidebarItem.list(inbox.id))
             }
             Label("Habits", systemImage: "repeat")
-                .badge(model.habits.count { $0.due && $0.count < $0.habit.goal })
+                .badge(model.habits.count { $0.pending })
                 .tag(SidebarItem.habits)
             Label("Workouts", systemImage: "dumbbell")
                 .tag(SidebarItem.workouts)

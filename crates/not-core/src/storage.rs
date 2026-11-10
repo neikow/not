@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::Result;
 
 /// Bump when the read-model tables change; a mismatch triggers a full rebuild from the docs.
-pub const READ_MODEL_VERSION: i64 = 7;
+pub const READ_MODEL_VERSION: i64 = 8;
 
 /// Local update rows per doc before they are folded into a snapshot on open.
 const COMPACT_AFTER: i64 = 200;
@@ -76,6 +76,7 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
             title    TEXT NOT NULL,
             goal     INTEGER NOT NULL,
             days     INTEGER NOT NULL,
+            period   TEXT NOT NULL,
             position TEXT NOT NULL
         );
         CREATE TABLE habit_log (

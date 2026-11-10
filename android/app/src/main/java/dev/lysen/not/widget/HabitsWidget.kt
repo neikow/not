@@ -1,5 +1,11 @@
 package dev.lysen.not.widget
 
+import dev.lysen.not.doneToday
+import dev.lysen.not.isDaily
+import dev.lysen.not.onToday
+import dev.lysen.not.periodName
+import dev.lysen.not.streakText
+
 import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -68,7 +74,7 @@ class HabitsWidget : GlanceAppWidget() {
                     emptyList()
                 }
             }
-            HabitsWidgetContent(all.filter { it.due }, hasAny = all.isNotEmpty())
+            HabitsWidgetContent(all.filter { it.onToday }, hasAny = all.isNotEmpty())
         }
     }
 }
@@ -93,7 +99,7 @@ class ToggleHabit : ActionCallback {
 private fun HabitsWidgetContent(habits: List<HabitSummary>, hasAny: Boolean) {
     val context = LocalContext.current
     val open = actionStartActivity(MainActivity.openTab(context, Tab.Habits))
-    val left = habits.count { it.count < it.habit.goal }
+    val left = habits.count { !it.doneToday }
     WidgetSurface {
         WidgetHeader(
             title = "Habits",
@@ -123,7 +129,7 @@ private fun HabitsWidgetContent(habits: List<HabitSummary>, hasAny: Boolean) {
 @Composable
 private fun HabitRow(summary: HabitSummary) {
     val habit = summary.habit
-    val done = summary.count >= habit.goal
+    val done = summary.doneToday
     val started = summary.count > 0u && !done
     Row(
         GlanceModifier
@@ -162,8 +168,12 @@ private fun HabitRow(summary: HabitSummary) {
                 style = TextStyle(color = if (done) WidgetColors.inkMuted else WidgetColors.ink, fontSize = 15.sp),
             )
             val details = listOfNotNull(
-                if (habit.goal > 1u) "${summary.count} of ${habit.goal}" else null,
-                if (summary.streak > 0u) "${summary.streak}-day streak" else null,
+                when {
+                    !habit.isDaily -> "${summary.progress} of ${habit.goal} this ${periodName(habit.period)}"
+                    habit.goal > 1u -> "${summary.count} of ${habit.goal}"
+                    else -> null
+                },
+                if (summary.streak > 0u) "${streakText(summary.streak, habit.period)} streak" else null,
             )
             if (details.isNotEmpty()) {
                 Text(

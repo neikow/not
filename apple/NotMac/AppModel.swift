@@ -412,7 +412,7 @@ final class AppModel {
     }
 
     func updateHabit(_ habit: Habit) {
-        run { try store.updateHabit(id: habit.id, title: habit.title, goal: habit.goal, days: habit.days) }
+        run { try store.updateHabit(id: habit.id, title: habit.title, goal: habit.goal, days: habit.days, period: habit.period) }
     }
 
     /// A check-in until the goal is met, then back to zero.
