@@ -1,6 +1,11 @@
 package dev.lysen.not
 
 import android.text.format.DateUtils
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.draw.rotate
+import dev.lysen.not.ui.RoundCheck
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -55,71 +60,215 @@ import dev.lysen.not.widget.NotesWidgetReceiver
 import dev.lysen.not.widget.TasksWidgetReceiver
 import kotlinx.coroutines.launch
 
-@Composable
-fun SettingsScreen(viewModel: TasksViewModel, onBack: () -> Unit) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+/** What Settings holds, one page each. */
+private enum class SettingsPage(val title: String, val icon: Int) {
+    Sync("Sync", R.drawable.ic_sync),
+    Widgets("Widgets and shortcuts", R.drawable.ic_add_task),
+    Workouts("Workouts", R.drawable.ic_fitness),
+    About("About", R.drawable.ic_note),
+}
 
-    LargeTitleScreen(
-        title = "Settings",
-        navigation = { IconButton(R.drawable.ic_arrow_back, "Back", onBack) },
-        bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
-    ) {
-        item(key = "sync") {
-            Section("Sync") {
-                if (state.syncInfo == null) PairForm(state, viewModel) else PairedInfo(state, viewModel)
-            }
-        }
-        item(key = "shortcuts") {
-            Section("Widgets and shortcuts", padded = false) {
-                ShortcutRow(R.drawable.ic_task_alt, "Tasks widget", "Open tasks of a list, with checkboxes and quick add") {
-                    scope.launch { Shortcuts.requestWidget(context, TasksWidgetReceiver::class.java) }
-                }
-                Divider(Modifier.padding(start = 56.dp))
-                ShortcutRow(R.drawable.ic_repeat, "Habits widget", "Today's habits; tap one to check in") {
-                    scope.launch { Shortcuts.requestWidget(context, HabitsWidgetReceiver::class.java) }
-                }
-                Divider(Modifier.padding(start = 56.dp))
-                ShortcutRow(R.drawable.ic_note, "Notes widget", "Pinned and recent notes of a folder") {
-                    scope.launch { Shortcuts.requestWidget(context, NotesWidgetReceiver::class.java) }
-                }
-                Divider(Modifier.padding(start = 56.dp))
-                ShortcutRow(R.drawable.ic_checklist, "Note widget", "One note, with tickable checklists") {
-                    scope.launch { Shortcuts.requestWidget(context, NoteWidgetReceiver::class.java) }
-                }
-                if (Shortcuts.canRequestTile) {
-                    Divider(Modifier.padding(start = 56.dp))
-                    ShortcutRow(R.drawable.ic_add_task, "Quick Settings tile", "Add a task from the notification shade") {
-                        Shortcuts.requestTile(context)
+/** A list of categories; each opens its own page, and back returns to the list. */
+@Composable
+fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: () -> Unit) {
+    val state by tasks.state.collectAsStateWithLifecycle()
+    var page by rememberSaveable { mutableStateOf<SettingsPage?>(null) }
+    val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    val shown = page
+    if (shown == null) {
+        LargeTitleScreen(
+            title = "Settings",
+            navigation = { IconButton(R.drawable.ic_arrow_back, "Back", onBack) },
+            bottomPadding = bottom,
+        ) {
+            item(key = "pages") {
+                Card {
+                    SettingsPage.entries.forEachIndexed { i, p ->
+                        if (i > 0) Divider(Modifier.padding(start = 56.dp))
+                        CategoryRow(p, detail = summary(p, state)) { page = p }
                     }
                 }
             }
         }
-        item(key = "about") {
-            Text(
-                "not ${BuildConfig.VERSION_NAME}\nExercise data from wger.de by its contributors, CC-BY-SA 4.0 / 3.0 or CC0",
-                style = Not.type.caption,
-                color = Not.colors.inkFaint,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
+    } else {
+        BackHandler { page = null }
+        // Keyed so each page starts at its top.
+        key(shown) {
+            LargeTitleScreen(
+                title = shown.title,
+                navigation = { IconButton(R.drawable.ic_arrow_back, "Settings", { page = null }) },
+                bottomPadding = bottom,
+            ) {
+                when (shown) {
+                    SettingsPage.Sync -> item(key = "sync") {
+                        Section(null) { if (state.syncInfo == null) PairForm(state, tasks) else PairedInfo(state, tasks) }
+                    }
+                    SettingsPage.Widgets -> item(key = "widgets") { WidgetsPage() }
+                    SettingsPage.Workouts -> item(key = "workouts") { WorkoutsPage(workouts) }
+                    SettingsPage.About -> item(key = "about") { AboutPage() }
+                }
+            }
         }
     }
 
     state.error?.let {
         CardDialog(
             title = "Something went wrong",
-            onDismiss = viewModel::dismissError,
-            buttons = { Button("OK", viewModel::dismissError) },
+            onDismiss = tasks::dismissError,
+            buttons = { Button("OK", tasks::dismissError) },
         ) { Text(it, color = Not.colors.inkMuted) }
     }
 }
 
+/** The line under a category: where things stand there, at a glance. */
+private fun summary(page: SettingsPage, state: UiState): String = when (page) {
+    SettingsPage.Sync -> state.syncInfo?.let { "${it.serverUrl.removePrefix("https://").removePrefix("http://")} · ${syncStatus(state.sync)}" } ?: "Not paired"
+    SettingsPage.Widgets -> "Home screen widgets and quick add"
+    SettingsPage.Workouts -> "Rest timer, import from text"
+    SettingsPage.About -> "Version ${BuildConfig.VERSION_NAME}, credits"
+}
+
 @Composable
-private fun Section(title: String, padded: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.padding(horizontal = 16.dp).padding(top = 20.dp)) {
-        Text(title, style = Not.type.label, color = Not.colors.inkMuted, modifier = Modifier.padding(start = 8.dp, bottom = 8.dp))
+private fun CategoryRow(page: SettingsPage, detail: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .pressable(onClick, pressedScale = 0.985f)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) { Icon(page.icon, null, tint = Not.colors.accentInk, size = 22.dp) }
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(page.title, style = Not.type.body)
+            Text(detail, style = Not.type.caption, color = Not.colors.inkMuted, maxLines = 1)
+        }
+        Icon(R.drawable.ic_expand_more, null, tint = Not.colors.inkFaint, size = 20.dp, modifier = Modifier.rotate(-90f))
+    }
+}
+
+@Composable
+private fun WidgetsPage() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    Section("Home screen", padded = false) {
+        ShortcutRow(R.drawable.ic_task_alt, "Tasks widget", "Open tasks of a list, with checkboxes and quick add") {
+            scope.launch { Shortcuts.requestWidget(context, TasksWidgetReceiver::class.java) }
+        }
+        Divider(Modifier.padding(start = 56.dp))
+        ShortcutRow(R.drawable.ic_repeat, "Habits widget", "Today's habits; tap one to check in") {
+            scope.launch { Shortcuts.requestWidget(context, HabitsWidgetReceiver::class.java) }
+        }
+        Divider(Modifier.padding(start = 56.dp))
+        ShortcutRow(R.drawable.ic_note, "Notes widget", "Pinned and recent notes of a folder") {
+            scope.launch { Shortcuts.requestWidget(context, NotesWidgetReceiver::class.java) }
+        }
+        Divider(Modifier.padding(start = 56.dp))
+        ShortcutRow(R.drawable.ic_checklist, "Note widget", "One note, with tickable checklists") {
+            scope.launch { Shortcuts.requestWidget(context, NoteWidgetReceiver::class.java) }
+        }
+    }
+    if (Shortcuts.canRequestTile) {
+        Section("Quick Settings", padded = false) {
+            ShortcutRow(R.drawable.ic_add_task, "Quick Settings tile", "Add a task from the notification shade") {
+                Shortcuts.requestTile(context)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkoutsPage(viewModel: WorkoutsViewModel) {
+    val colors = Not.colors
+    val auto by viewModel.timer.startsAfterSet.collectAsStateWithLifecycle()
+    Section("Rest timer", padded = false) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .pressable({ viewModel.timer.setStartsAfterSet(!auto) }, pressedScale = 0.985f)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Start after each set", style = Not.type.body)
+                Text("Logging a working set starts the countdown", style = Not.type.caption, color = colors.inkMuted)
+            }
+            RoundCheck(auto, { viewModel.timer.setStartsAfterSet(!auto) })
+        }
+    }
+
+    var text by rememberSaveable { mutableStateOf("") }
+    // How many the last import added; null before one, or once the text changes.
+    var added by remember { mutableStateOf<Int?>(null) }
+    Section("Import from text") {
+        Text(
+            "Paste your log: a date like 30/10 starts a workout, a line like “24kg x 10 x 3” adds sets, any other line names an exercise.",
+            style = Not.type.caption,
+            color = colors.inkMuted,
+        )
+        Field(
+            text,
+            {
+                text = it
+                added = null
+            },
+            "30/10\nTirage vertical\n66kg x 8 x 3",
+            singleLine = false,
+            minLines = 6,
+            filled = true,
+            style = Not.type.body.merge(fontFamily = FontFamily.Monospace),
+            modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button("Import", {
+                val n = viewModel.import(text)
+                if (n > 0) text = ""
+                added = n
+            }, kind = ButtonKind.Secondary, enabled = text.isNotBlank())
+            added?.let { n ->
+                Text(
+                    if (n == 0) "No dated workouts found." else if (n == 1) "Added 1 workout." else "Added $n workouts.",
+                    style = Not.type.caption,
+                    color = if (n == 0) colors.danger else colors.inkMuted,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AboutPage() {
+    Section(null) {
+        Text("not ${BuildConfig.VERSION_NAME}", style = Not.type.bodyStrong)
+        Text("Tasks, habits, notes and workouts, synced through your own server.", style = Not.type.caption, color = Not.colors.inkMuted)
+    }
+    Section("Exercise data") {
+        Text(
+            "Exercise names, muscles and equipment come from the free exercise database of wger.de, shared by its contributors under CC-BY-SA 4.0, CC-BY-SA 3.0 or CC0. Each exercise credits its author in its history.",
+            style = Not.type.caption,
+            color = Not.colors.inkMuted,
+        )
+    }
+}
+
+/** The rounded group the category list sits in. */
+@Composable
+private fun Card(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .padding(horizontal = 16.dp)
+            .padding(top = 8.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(Not.colors.surface),
+        content = content,
+    )
+}
+
+@Composable
+private fun Section(title: String?, padded: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.padding(horizontal = 16.dp).padding(top = if (title == null) 8.dp else 20.dp)) {
+        if (title != null) Text(title, style = Not.type.label, color = Not.colors.inkMuted, modifier = Modifier.padding(start = 8.dp, bottom = 8.dp))
         Column(
             Modifier
                 .fillMaxWidth()

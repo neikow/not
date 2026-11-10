@@ -5,11 +5,11 @@ import SwiftUI
 /// Sessions, latest first, beside the selected session's exercises.
 struct WorkoutsView: View {
     @Bindable var model: AppModel
-    @State private var importing = false
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         HSplitView {
-            WorkoutList(model: model, importing: $importing)
+            WorkoutList(model: model)
                 .frame(minWidth: 220, idealWidth: 260, maxWidth: 360)
             Group {
                 if let workout = model.workout {
@@ -25,7 +25,8 @@ struct WorkoutsView: View {
                     } actions: {
                         Button("Start Workout") { model.newWorkout() }
                         if model.workouts.isEmpty {
-                            Button("Import from Text…") { importing = true }
+                            // Importing lives in Settings → Workouts.
+                            Button("Import from Text…") { openSettings() }
                         }
                     }
                 }
@@ -46,8 +47,6 @@ struct WorkoutsView: View {
                             }
                         }
                     }
-                    Divider()
-                    Button("Import from Text…") { importing = true }
                 } label: {
                     Label("New Workout", systemImage: "plus")
                 } primaryAction: {
@@ -56,7 +55,6 @@ struct WorkoutsView: View {
                 .help("New workout (⌘N)")
             }
         }
-        .sheet(isPresented: $importing) { ImportSheet(model: model) }
     }
 }
 
@@ -64,7 +62,6 @@ struct WorkoutsView: View {
 
 private struct WorkoutList: View {
     @Bindable var model: AppModel
-    @Binding var importing: Bool
 
     var body: some View {
         List(selection: $model.selectedWorkoutID) {
@@ -642,46 +639,6 @@ private struct RestTimerButton: View {
             timer.isRunning ? timer.stop() : timer.start()
         }
         .help(timer.isRunning ? "Stop the rest timer" : "Start a \(RestTimer.format(timer.duration)) rest")
-    }
-}
-
-// MARK: - Import
-
-private struct ImportSheet: View {
-    let model: AppModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var text = ""
-    @State private var result: Int?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Import Workouts").font(.title2.bold())
-            Text("Paste a log: a date like 30/10 starts a workout, a line like “24kg x 10 x 3” adds sets, any other line names an exercise.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            TextEditor(text: $text)
-                .font(.body.monospaced())
-                .frame(minHeight: 260)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-            HStack {
-                if let result {
-                    Text(result == 0 ? "No dated workouts found." : "Added \(result) workout\(result == 1 ? "" : "s").")
-                        .foregroundStyle(result == 0 ? .orange : .secondary)
-                }
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Import") {
-                    let added = model.importWorkouts(text)
-                    result = added
-                    if added > 0 { dismiss() }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 520)
     }
 }
 

@@ -1,5 +1,21 @@
 package dev.lysen.not.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.TransformOrigin
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.composed
@@ -65,11 +81,19 @@ import androidx.compose.ui.unit.dp
 /** Room the floating tab bar takes at the bottom (0 where it's hidden); lists pad by it. */
 val LocalBottomBarHeight = compositionLocalOf { 0.dp }
 
-private val TopBarHeight = 52.dp
+private val TopBarHeight = 56.dp
+
+/** Opens Settings; screens at the root of a tab show a profile circle for it in their top-right corner. */
+val LocalOpenSettings = compositionLocalOf<(() -> Unit)?> { null }
+
+/** How far the content scrolls before what passes under the bar has fully faded. */
+private val CollapseDistance = 64.dp
 
 /**
- * A screen with a big title that scrolls with the content; once it's scrolled away, its name
- * fades into a slim bar at the top. [header] goes under the title (subtitles, chips).
+ * A screen whose big title sits in the top bar beside its buttons and stays put, one size, while
+ * the content scrolls under it and fades out as it passes. [header] goes under the title
+ * (subtitles, chips) and scrolls with the content. With [onSwipe], sideways drags step through
+ * whatever the title names, and [next] shows beside the title what forward leads to.
  */
 @Composable
 fun LargeTitleScreen(
@@ -84,57 +108,172 @@ fun LargeTitleScreen(
     bottomPadding: Dp = LocalBottomBarHeight.current,
     pull: PullAction? = null,
     onSwipe: ((forward: Boolean) -> Unit)? = null,
+    next: String? = null,
     content: LazyListScope.() -> Unit,
 ) {
     val colors = Not.colors
-    val collapsed by remember { derivedStateOf { state.firstVisibleItemIndex > 0 || state.firstVisibleItemScrollOffset > 90 } }
-    val barAlpha by animateFloatAsState(if (collapsed) 1f else 0f, label = "bar")
+    val collapsePx = with(LocalDensity.current) { CollapseDistance.toPx() }
+    // 0 with the list at its top, 1 once it has scrolled CollapseDistance. Read while drawing, so
+    // scrolling doesn't recompose.
+    val progress = remember(state, collapsePx) {
+        derivedStateOf {
+            if (state.firstVisibleItemIndex > 0) 1f else (state.firstVisibleItemScrollOffset / collapsePx).coerceIn(0f, 1f)
+        }
+    }
     val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val barBottom = top + TopBarHeight
     val pulling = rememberPullDown(pull?.onPull)
+    val scope = rememberCoroutineScope()
+    // The finger's sideways drag: the title follows it a little and springs back.
+    val drag = remember { Animatable(0f) }
+    // Which way the last swipe went, so the new title slides in from that side.
+    var forward by remember { mutableStateOf(true) }
+    val latestSwipe by rememberUpdatedState(onSwipe)
+    val openSettings = LocalOpenSettings.current
     Box(
         modifier
             .fillMaxSize()
             .background(colors.background)
             .then(if (pull != null) Modifier.nestedScroll(pulling.connection) else Modifier)
-            .then(if (onSwipe != null) Modifier.swipeSideways(onSwipe) else Modifier),
+            .then(
+                if (onSwipe == null) Modifier
+                else Modifier.swipeSideways(
+                    onDrag = { x -> scope.launch { drag.snapTo(x) } },
+                    onEnd = { swiped ->
+                        if (swiped != null) {
+                            forward = swiped
+                            latestSwipe?.invoke(swiped)
+                        }
+                        scope.launch { drag.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)) }
+                    },
+                ),
+            ),
     ) {
         LazyColumn(
-            Modifier.fillMaxSize(),
+            Modifier.fillMaxSize().fadeUnder(barBottom) { progress.value },
             state = state,
-            contentPadding = PaddingValues(top = top + TopBarHeight, bottom = bottomPadding + 24.dp),
+            contentPadding = PaddingValues(top = barBottom, bottom = bottomPadding + 24.dp),
         ) {
-            item(key = "title") {
-                Column(Modifier.padding(horizontal = 24.dp).padding(top = 4.dp, bottom = 12.dp)) {
-                    Row(
-                        Modifier.then(if (onTitleClick != null) Modifier.pressable(onTitleClick, pressedScale = 0.98f) else Modifier),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(title, style = Not.type.display, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
-                        titleAccessory?.invoke()
-                    }
-                    header?.invoke()
-                }
+            if (header != null) {
+                item(key = "header") { Box(Modifier.padding(horizontal = 24.dp).padding(bottom = 12.dp)) { header() } }
             }
             content()
         }
-        // The slim bar: always holds the buttons; the title and a hairline appear once scrolled.
-        Column(Modifier.fillMaxWidth().background(colors.background.copy(alpha = barAlpha)).statusBarsPadding()) {
-            Row(
-                Modifier.fillMaxWidth().height(TopBarHeight).padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = top)
+                .height(TopBarHeight)
+                .padding(start = if (navigation != null) 8.dp else 24.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            navigation?.invoke(this)
+            Box(
+                Modifier
+                    .weight(1f)
+                    .padding(start = if (navigation != null) 4.dp else 0.dp)
+                    .graphicsLayer {
+                        translationX = drag.value * 0.3f
+                    },
             ) {
-                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) { navigation?.invoke(this) }
-                Text(title, style = Not.type.heading, maxLines = 1, modifier = Modifier.alpha(barAlpha).padding(horizontal = 8.dp))
-                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                    actions?.invoke(this)
+                Row(
+                    Modifier.then(if (onTitleClick != null) Modifier.pressable(onTitleClick, pressedScale = 0.98f) else Modifier),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AnimatedContent(
+                        title,
+                        transitionSpec = {
+                            val side = if (forward) 1 else -1
+                            (slideInHorizontally { it / 4 * side } + fadeIn()) togetherWith
+                                (slideOutHorizontally { -it / 4 * side } + fadeOut()) using SizeTransform(clip = false)
+                        },
+                        label = "title",
+                        modifier = Modifier.weight(1f, fill = false),
+                    ) { Text(it, style = Not.type.display, maxLines = 1) }
+                    titleAccessory?.let { Box(Modifier.padding(start = 6.dp)) { it() } }
+                    if (next != null) NextPeek(next) { drag.value }
                 }
             }
-            Divider(Modifier.alpha(barAlpha))
+            Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                actions?.invoke(this)
+                // Only on a tab's own screen; screens with a way back have somewhere to go instead.
+                if (navigation == null && openSettings != null) {
+                    ProfileButton(openSettings)
+                }
+            }
         }
-        if (pull != null) PullHint(pull, pulling, Modifier.align(Alignment.TopCenter).padding(top = top + TopBarHeight + 4.dp))
+        if (pull != null) PullHint(pull, pulling, Modifier.align(Alignment.TopCenter).padding(top = barBottom + 4.dp))
     }
 }
+
+/** A profile circle: who's on this device, and the way into Settings. */
+@Composable
+private fun ProfileButton(onClick: () -> Unit) {
+    val colors = Not.colors
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .pressable(onClick, pressedScale = 0.88f, onClickLabel = "Settings"),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(dev.lysen.not.R.drawable.ic_account_circle, "Settings", tint = colors.inkMuted, size = 30.dp)
+    }
+}
+
+/**
+ * What a forward swipe shows, faint beside the title and fading out at its end; it brightens as
+ * the finger drags toward it, moving with the title so it never runs into the caret.
+ */
+@Composable
+private fun NextPeek(next: String, drag: () -> Float) {
+    val colors = Not.colors
+    val threshold = with(LocalDensity.current) { SwipeThreshold.toPx() }
+    Text(
+        next,
+        style = Not.type.heading,
+        color = colors.inkFaint,
+        maxLines = 1,
+        modifier = Modifier
+            .padding(start = 14.dp)
+            .widthIn(max = 128.dp)
+            .graphicsLayer {
+                val toward = (-drag() / threshold).coerceIn(0f, 1f)
+                alpha = 0.75f + 0.25f * toward
+                compositingStrategy = CompositingStrategy.Offscreen
+            }
+            .drawWithContent {
+                drawContent()
+                // Fades out over its last quarter, so a cut-off name reads as more to come.
+                drawRect(
+                    Brush.horizontalGradient(0.7f to Color.Black, 1f to Color.Transparent),
+                    blendMode = BlendMode.DstIn,
+                )
+            },
+    )
+}
+
+/**
+ * Fades the content out as it scrolls up under the top bar ending at [barBottom], by [amount] (0
+ * leaves it be, 1 fully hides what's under the bar). The content below shows through untouched.
+ */
+private fun Modifier.fadeUnder(barBottom: Dp, amount: () -> Float): Modifier =
+    graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            val a = amount()
+            if (a <= 0f) return@drawWithContent
+            val end = barBottom.toPx()
+            drawRect(
+                Brush.verticalGradient(
+                    0f to Color.Black.copy(alpha = 1f - a),
+                    1f to Color.Black,
+                    startY = end - 8.dp.toPx(),
+                    endY = end + 28.dp.toPx(),
+                ),
+                blendMode = BlendMode.DstIn,
+            )
+        }
 
 /** What pulling a [LargeTitleScreen] down past its top does, and the hint that says so. */
 class PullAction(val label: String, val icon: Int, val onPull: () -> Unit)
@@ -211,21 +350,29 @@ private fun PullHint(pull: PullAction, state: PullDown, modifier: Modifier) {
     }
 }
 
+private val SwipeThreshold = 72.dp
+
 /**
- * Calls [onSwipe] for a sideways flick across the screen: forward when moving left. Rows with swipe
- * actions of their own take the drag first, so this only sees it on the title, gaps and empty space.
+ * Follows a sideways drag across the screen: [onDrag] gets how far it has gone, [onEnd] whether it
+ * went far enough to count, forward when moving left (null when it didn't). Rows with swipe actions
+ * of their own take the drag first, so this only sees it on the title, gaps and empty space.
  */
-fun Modifier.swipeSideways(onSwipe: (forward: Boolean) -> Unit): Modifier = composed {
-    val threshold = with(LocalDensity.current) { 72.dp.toPx() }
-    val latest by rememberUpdatedState(onSwipe)
+fun Modifier.swipeSideways(onDrag: (Float) -> Unit = {}, onEnd: (forward: Boolean?) -> Unit): Modifier = composed {
+    val threshold = with(LocalDensity.current) { SwipeThreshold.toPx() }
+    val latestDrag by rememberUpdatedState(onDrag)
+    val latestEnd by rememberUpdatedState(onEnd)
     pointerInput(threshold) {
         var total = 0f
         detectHorizontalDragGestures(
             onDragStart = { total = 0f },
-            onDragEnd = { if (abs(total) > threshold) latest(total < 0f) },
-            onDragCancel = { total = 0f },
+            onDragEnd = { latestEnd(if (abs(total) > threshold) total < 0f else null) },
+            onDragCancel = {
+                total = 0f
+                latestEnd(null)
+            },
         ) { change, amount ->
             total += amount
+            latestDrag(total)
             change.consume()
         }
     }

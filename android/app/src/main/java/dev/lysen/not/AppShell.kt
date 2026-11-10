@@ -31,6 +31,7 @@ import dev.lysen.not.ui.AddActionHolder
 import dev.lysen.not.ui.BottomBar
 import dev.lysen.not.ui.LocalAddAction
 import dev.lysen.not.ui.LocalBottomBarHeight
+import dev.lysen.not.ui.LocalOpenSettings
 import dev.lysen.not.ui.LocalTabGestures
 import dev.lysen.not.ui.TabGesture
 import dev.lysen.not.ui.TabGestures
@@ -47,7 +48,7 @@ enum class Tab(val label: String, val icon: Int, val holdLabel: String? = null) 
     Workouts("Workouts", R.drawable.ic_fitness, "Start a workout"),
 }
 
-/** Tasks, Habits, Notes and Workouts under a floating tab bar; Settings opens over them from the lists sheet. */
+/** Tasks, Habits, Notes and Workouts under a floating tab bar; Settings opens over them from each one's top-right profile circle. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun NotAppUi(
@@ -71,7 +72,7 @@ fun NotAppUi(
     }
     if (showsSettings) {
         BackHandler { showsSettings = false }
-        SettingsScreen(tasks, onBack = { showsSettings = false })
+        SettingsScreen(tasks, workouts, onBack = { showsSettings = false })
         return
     }
     val pendingHabits = habits.state.collectAsStateWithLifecycle().value.pending
@@ -86,7 +87,8 @@ fun NotAppUi(
 
     val addAction = remember { AddActionHolder() }
     val gestures = remember { TabGestures() }
-    CompositionLocalProvider(LocalAddAction provides addAction, LocalTabGestures provides gestures) {
+    val openSettings = remember { { showsSettings = true } }
+    CompositionLocalProvider(LocalAddAction provides addAction, LocalTabGestures provides gestures, LocalOpenSettings provides openSettings) {
     Box(Modifier.fillMaxSize().background(Not.colors.background)) {
         CompositionLocalProvider(LocalBottomBarHeight provides barHeight) {
             when (tab) {

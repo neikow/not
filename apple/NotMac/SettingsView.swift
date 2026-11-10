@@ -10,6 +10,9 @@ struct SettingsView: View {
             Tab("General", systemImage: "gearshape") {
                 GeneralSettings()
             }
+            Tab("Workouts", systemImage: "dumbbell") {
+                WorkoutSettings(model: model)
+            }
             Tab("Credits", systemImage: "heart") {
                 Form {
                     Section("Exercise data") {
@@ -30,6 +33,42 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460)
+    }
+}
+
+/// Bringing in sessions logged elsewhere, as pasted text.
+private struct WorkoutSettings: View {
+    let model: AppModel
+    @State private var text = ""
+    @State private var result: Int?
+
+    var body: some View {
+        Form {
+            Section {
+                TextEditor(text: $text)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 200)
+                    .onChange(of: text) { if !text.isEmpty { result = nil } }
+                HStack {
+                    if let result {
+                        Text(result == 0 ? "No dated workouts found." : "Added \(result) workout\(result == 1 ? "" : "s").")
+                            .foregroundStyle(result == 0 ? .orange : .secondary)
+                    }
+                    Spacer()
+                    Button("Import") {
+                        let added = model.importWorkouts(text)
+                        if added > 0 { text = "" }
+                        result = added
+                    }
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            } header: {
+                Text("Import from text")
+            } footer: {
+                Text("Paste a log: a date like 30/10 starts a workout, a line like “24kg x 10 x 3” adds sets, any other line names an exercise.")
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

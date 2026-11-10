@@ -110,7 +110,6 @@ fun WorkoutsScreen(viewModel: WorkoutsViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val toasts = remember { ToastState() }
     var starting by remember { mutableStateOf(false) }
-    var importing by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.undoables.collect { undoable ->
@@ -142,7 +141,7 @@ fun WorkoutsScreen(viewModel: WorkoutsViewModel) {
                 holdLabel = if (last != null) "Repeat last workout" else null,
                 onHold = last?.let { { viewModel.repeat(it.id) } },
             ) { if (last != null) starting = true else viewModel.newWorkout() }
-            WorkoutList(state, viewModel, onImport = { importing = true })
+            WorkoutList(state, viewModel)
         }
         ToastHost(
             toasts,
@@ -151,7 +150,6 @@ fun WorkoutsScreen(viewModel: WorkoutsViewModel) {
     }
 
     if (starting) StartSheet(state, viewModel, onDismiss = { starting = false })
-    if (importing) ImportSheet(viewModel, onDismiss = { importing = false })
     state.error?.let {
         CardDialog(
             title = "Something went wrong",
@@ -164,26 +162,14 @@ fun WorkoutsScreen(viewModel: WorkoutsViewModel) {
 // ---- list ----------------------------------------------------------------------------------------
 
 @Composable
-private fun WorkoutList(state: WorkoutsState, viewModel: WorkoutsViewModel, onImport: () -> Unit) {
-    var menu by remember { mutableStateOf(false) }
+private fun WorkoutList(state: WorkoutsState, viewModel: WorkoutsViewModel) {
     LargeTitleScreen(
         title = "Workouts",
-        actions = {
-            Box {
-                IconButton(R.drawable.ic_more_vert, "More", { menu = true })
-                Menu(menu, onDismiss = { menu = false }) {
-                    MenuItem("Import from text…", icon = R.drawable.ic_note, onClick = {
-                        menu = false
-                        onImport()
-                    })
-                }
-            }
-        },
         header = { WeekHeader(state) },
     ) {
         if (state.workouts.isEmpty()) {
             item(key = "empty") {
-                EmptyState(R.drawable.ic_fitness, "No workouts yet", "Tap + when you start. Logged them in another app? Import from the menu.")
+                EmptyState(R.drawable.ic_fitness, "No workouts yet", "Tap + when you start. Logged them in another app? Import them in Settings.")
             }
         }
         items(state.workouts, key = { it.id }) { w ->
@@ -345,35 +331,6 @@ private fun SheetRow(icon: Int, title: String, detail: String? = null, accent: B
         Spacer(Modifier.width(14.dp))
         Text(title, style = Not.type.body, color = if (accent) colors.accentInk else colors.ink, maxLines = 1, modifier = Modifier.weight(1f))
         if (detail != null) Text(detail, style = Not.type.caption, color = colors.inkFaint, modifier = Modifier.padding(start = 8.dp))
-    }
-}
-
-@Composable
-private fun ImportSheet(viewModel: WorkoutsViewModel, onDismiss: () -> Unit) {
-    var text by remember { mutableStateOf("") }
-    var nothing by remember { mutableStateOf(false) }
-    Sheet(onDismiss) { close ->
-        Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Import workouts", style = Not.type.title, modifier = Modifier.padding(top = 4.dp))
-            Text(
-                "Paste your log: a date like 30/10 starts a workout, a line like “24kg x 10 x 3” adds sets, any other line names an exercise.",
-                style = Not.type.caption,
-                color = Not.colors.inkMuted,
-            )
-            Field(
-                text,
-                { text = it; nothing = false },
-                "30/10\nTirage vertical\n66kg x 8 x 3",
-                singleLine = false,
-                minLines = 6,
-                filled = true,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
-            )
-            if (nothing) Text("No dated workouts found.", style = Not.type.caption, color = Not.colors.danger)
-            Button("Import", {
-                if (viewModel.import(text) > 0) close() else nothing = true
-            }, Modifier.fillMaxWidth(), enabled = text.isNotBlank())
-        }
     }
 }
 
@@ -642,7 +599,8 @@ private fun ExerciseCard(
             }
         }
 
-        val info = remember(exercise.name, exercise.sets) { viewModel.exerciseInfo(exercise.name) }
+        val revision = viewModel.state.collectAsStateWithLifecycle().value.revision
+        val info = remember(exercise.name, revision) { viewModel.exerciseInfo(exercise.name) }
         if (info != null) {
             Text((info.muscles + info.equipment).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint)
         }
@@ -760,19 +718,16 @@ private fun LineEditor(initial: String, onDone: (String) -> Unit) {
 @Composable
 private fun HistorySheet(name: String, viewModel: WorkoutsViewModel, today: LocalDate, onDismiss: () -> Unit) {
     val colors = Not.colors
-    // Re-read after linking: history follows the link.
-    var version by remember { mutableStateOf(0) }
-    val logs = remember(version) { viewModel.history(name) }
-    val info = remember(version) { viewModel.exerciseInfo(name) }
+    // Re-read on every change, linking included: history follows the link.
+    val revision = viewModel.state.collectAsStateWithLifecycle().value.revision
+    val logs = remember(name, revision) { viewModel.history(name) }
+    val info = remember(name, revision) { viewModel.exerciseInfo(name) }
     var linking by remember { mutableStateOf(false) }
     Sheet(onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(name, style = Not.type.title, modifier = Modifier.padding(top = 4.dp))
             if (linking) {
-                LinkPicker(name, info, viewModel, onDone = {
-                    linking = false
-                    version++
-                })
+                LinkPicker(name, info, viewModel, onDone = { linking = false })
                 return@Column
             }
             if (info != null) {

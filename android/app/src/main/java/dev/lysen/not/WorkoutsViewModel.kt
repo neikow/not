@@ -32,6 +32,8 @@ data class WorkoutsState(
     val today: LocalDate = LocalDate.now(),
     /** Working sets per muscle since Monday. */
     val weekMuscles: List<MuscleSets> = emptyList(),
+    /** Bumped on every change to the store, for what's read from it outside this state (links, history). */
+    val revision: Long = 0,
     val error: String? = null,
 )
 
@@ -118,7 +120,8 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
 
     /** Null unlinks the name from the catalogue. */
     fun link(name: String, catalogId: String?) {
-        run { store.linkExercise(name, catalogId) }
+        run { store.linkExercise(name, catalogId) } ?: return
+        reload()
     }
 
     /** Sessions from a pasted text log; returns how many were added. */
@@ -175,7 +178,7 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
         val open = openId?.let { run { store.workout(it) } }
         val today = _state.value.today
         val muscles = run { store.muscleSets(today.minusDays(today.dayOfWeek.value - 1L).toString(), today.toString()) }.orEmpty()
-        _state.update { it.copy(workouts = workouts, exerciseNames = names, openId = openId, open = open, weekMuscles = muscles) }
+        _state.update { it.copy(workouts = workouts, exerciseNames = names, openId = openId, open = open, weekMuscles = muscles, revision = it.revision + 1) }
     }
 
     private fun <T> run(body: () -> T): T? =

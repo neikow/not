@@ -116,14 +116,12 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             pull = PullAction("Lists", R.drawable.ic_list) { showsLists = true },
             // Sideways steps through Today and the lists, in the order the sheet shows them.
             onSwipe = { forward ->
-                val ids = listOf(TODAY_ID) + state.lists.map { it.id }
-                val at = ids.indexOf(if (state.isToday) TODAY_ID else state.selectedListId)
-                val next = ids.getOrNull(if (forward) at + 1 else at - 1)
-                if (at >= 0 && next != null) {
+                neighbour(state, forward)?.let { (id, _) ->
                     haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                    viewModel.select(next)
+                    viewModel.select(id)
                 }
             },
+            next = neighbour(state, forward = true)?.second,
         ) {
             val outline = state.outline
             if (outline.open.isEmpty()) {
@@ -201,7 +199,6 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             onNewList = { newList = true },
             onRename = { renaming = it },
             onDelete = viewModel::deleteList,
-            onSettings = onOpenSettings,
             onDismiss = { showsLists = false },
         )
     }
@@ -262,6 +259,14 @@ private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>,
 }
 
 /** "3 tasks"; keeps its line when there are none, so the list below doesn't jump. */
+/** The id and title of the list before or after the shown one, in the lists sheet's order. */
+private fun neighbour(state: UiState, forward: Boolean): Pair<String, String>? {
+    val lists = listOf(TODAY_ID to "Today") + state.lists.map { it.id to it.title }
+    val at = lists.indexOfFirst { it.first == if (state.isToday) TODAY_ID else state.selectedListId }
+    if (at < 0) return null
+    return lists.getOrNull(if (forward) at + 1 else at - 1)
+}
+
 @Composable
 private fun Subtitle(state: UiState) {
     val open = state.outline.open.count { it.depth == 0u }
@@ -359,7 +364,7 @@ private fun CompletedHeader(count: Int, expanded: Boolean, onToggle: () -> Unit,
     }
 }
 
-/** Every list, new list and settings: what the drawer used to hold. */
+/** Every list and a new one: what the drawer used to hold. */
 @Composable
 private fun ListsSheet(
     state: UiState,
@@ -367,7 +372,6 @@ private fun ListsSheet(
     onNewList: () -> Unit,
     onRename: (TaskList) -> Unit,
     onDelete: (TaskList) -> Unit,
-    onSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     Sheet(onDismiss) { close ->
@@ -410,11 +414,6 @@ private fun ListsSheet(
                 )
             }
             ListRow(R.drawable.ic_add, "New list", accent = true, onClick = onNewList)
-            Divider(Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
-            ListRow(R.drawable.ic_settings, "Settings", onClick = {
-                close()
-                onSettings()
-            })
         }
     }
 }

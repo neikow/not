@@ -613,12 +613,18 @@ final class AppModel {
     }
 
     func exerciseInfo(_ name: String) -> CatalogExercise? {
-        store.exerciseInfo(name: name)
+        // Read so views showing a link redraw when it changes; the store itself isn't observed.
+        _ = linksRevision
+        return store.exerciseInfo(name: name)
     }
+
+    /// Bumped by each link change, so views calling ``exerciseInfo(_:)`` redraw.
+    private(set) var linksRevision = 0
 
     /// `nil` unlinks the name from the catalogue.
     func linkExercise(_ name: String, to catalogID: String?) {
         run { try store.linkExercise(name: name, catalogId: catalogID) }
+        linksRevision += 1
     }
 
     /// Adds sessions from a pasted text log; returns how many.
