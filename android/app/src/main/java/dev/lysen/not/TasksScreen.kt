@@ -69,6 +69,8 @@ import dev.lysen.not.ui.MenuItem
 import dev.lysen.not.ui.Not
 import dev.lysen.not.ui.PromptDialog
 import dev.lysen.not.ui.RoundCheck
+import dev.lysen.not.ui.OnTabGesture
+import dev.lysen.not.ui.PullAction
 import dev.lysen.not.ui.Sheet
 import dev.lysen.not.ui.SwipeAction
 import dev.lysen.not.ui.SwipeRow
@@ -89,6 +91,9 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
     var newList by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<TaskList?>(null) }
     val title = state.title
+    val haptics = LocalHapticFeedback.current
+    // The title is a long reach: tapping or holding Tasks in the tab bar opens the lists too.
+    OnTabGesture { showsLists = true }
 
     // Destructive actions confirm after the fact, with Undo, instead of asking first.
     LaunchedEffect(Unit) {
@@ -106,14 +111,19 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             state = listState,
             onTitleClick = { showsLists = true },
             titleAccessory = { Icon(R.drawable.ic_expand_more, "Switch list", tint = Not.colors.inkFaint, size = 28.dp) },
-            actions = {
-                SyncStatus(state.sync, onClick = onOpenSettings)
-                val list = state.selectedList
-                if (list != null && list.id != INBOX_ID) {
-                    ListMenu(onRename = { renaming = list }, onDelete = { viewModel.deleteList(list) })
+            actions = { SyncStatus(state.sync, onClick = onOpenSettings) },
+            header = { Subtitle(state) },
+            pull = PullAction("Lists", R.drawable.ic_list) { showsLists = true },
+            // Sideways steps through Today and the lists, in the order the sheet shows them.
+            onSwipe = { forward ->
+                val ids = listOf(TODAY_ID) + state.lists.map { it.id }
+                val at = ids.indexOf(if (state.isToday) TODAY_ID else state.selectedListId)
+                val next = ids.getOrNull(if (forward) at + 1 else at - 1)
+                if (at >= 0 && next != null) {
+                    haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                    viewModel.select(next)
                 }
             },
-            header = { Subtitle(state) },
         ) {
             val outline = state.outline
             if (outline.open.isEmpty()) {
@@ -162,7 +172,7 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
         }
 
         // The + beside the tab bar opens the composer above the keyboard.
-        AddAction("New task", enabled = !composing) { composing = true }
+        AddAction("New task", enabled = !composing, holdLabel = "New list", onHold = { newList = true }) { composing = true }
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
@@ -189,6 +199,8 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             state = state,
             onSelect = viewModel::select,
             onNewList = { newList = true },
+            onRename = { renaming = it },
+            onDelete = viewModel::deleteList,
             onSettings = onOpenSettings,
             onDismiss = { showsLists = false },
         )
@@ -353,6 +365,8 @@ private fun ListsSheet(
     state: UiState,
     onSelect: (String) -> Unit,
     onNewList: () -> Unit,
+    onRename: (TaskList) -> Unit,
+    onDelete: (TaskList) -> Unit,
     onSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -368,6 +382,7 @@ private fun ListsSheet(
                     onSelect(TODAY_ID)
                     close()
                 },
+                menu = NoMenu,
             )
             state.lists.forEach { list ->
                 ListRow(
@@ -378,6 +393,19 @@ private fun ListsSheet(
                     onClick = {
                         onSelect(list.id)
                         close()
+                    },
+                    // The inbox is where tasks land, so it can't be renamed or deleted.
+                    menu = if (list.id == INBOX_ID) NoMenu else {
+                        {
+                            ListMenu(
+                                onRename = { onRename(list) },
+                                onDelete = {
+                                    // Close so the Undo toast underneath shows.
+                                    close()
+                                    onDelete(list)
+                                },
+                            )
+                        }
                     },
                 )
             }
@@ -392,7 +420,15 @@ private fun ListsSheet(
 }
 
 @Composable
-private fun ListRow(icon: Int, title: String, onClick: () -> Unit, count: Int = 0, selected: Boolean = false, accent: Boolean = false) {
+private fun ListRow(
+    icon: Int,
+    title: String,
+    onClick: () -> Unit,
+    count: Int = 0,
+    selected: Boolean = false,
+    accent: Boolean = false,
+    menu: (@Composable () -> Unit)? = null,
+) {
     val colors = Not.colors
     Row(
         Modifier
@@ -401,7 +437,7 @@ private fun ListRow(icon: Int, title: String, onClick: () -> Unit, count: Int = 
             .background(if (selected) colors.accentSoft else Color.Transparent)
             .pressable(onClick, pressedScale = 0.98f)
             .heightIn(min = 52.dp)
-            .padding(horizontal = 14.dp),
+            .padding(start = 14.dp, end = if (menu != null) 2.dp else 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(icon, null, tint = if (accent || selected) colors.accentInk else colors.inkMuted)
@@ -414,14 +450,18 @@ private fun ListRow(icon: Int, title: String, onClick: () -> Unit, count: Int = 
             modifier = Modifier.weight(1f),
         )
         if (count > 0) Text(count.toString(), style = Not.type.label, color = colors.inkFaint)
+        menu?.invoke()
     }
 }
+
+/** Keeps a row's count in line with the rows that have a menu. */
+private val NoMenu: @Composable () -> Unit = { Spacer(Modifier.size(44.dp)) }
 
 @Composable
 private fun ListMenu(onRename: () -> Unit, onDelete: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        IconButton(R.drawable.ic_more_vert, "List options", { open = true })
+        IconButton(R.drawable.ic_more_vert, "List options", { open = true }, tint = Not.colors.inkFaint)
         Menu(open, onDismiss = { open = false }) {
             MenuItem("Rename list", icon = R.drawable.ic_edit, onClick = {
                 open = false

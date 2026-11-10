@@ -1,5 +1,9 @@
 package dev.lysen.not
 
+import androidx.compose.runtime.rememberCoroutineScope
+import dev.lysen.not.ui.OnTabGesture
+import dev.lysen.not.ui.TabGesture
+import kotlinx.coroutines.launch
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -96,6 +100,14 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
 
     val listState = rememberLazyListState()
     val reorder = rememberReorderState(listState, state.habits) { it.habit.id }
+    val scope = rememberCoroutineScope()
+    // Tapping Habits again brings up the first habit still to do today, or the top when all are done.
+    OnTabGesture { gesture ->
+        if (gesture != TabGesture.Reselect) return@OnTabGesture
+        val next = reorder.items.indexOfFirst { it.due && it.count < it.habit.goal }
+        // Item 0 is the title.
+        scope.launch { listState.animateScrollToItem(if (next < 0) 0 else next + 1) }
+    }
 
     Box(Modifier.fillMaxSize()) {
         LargeTitleScreen(title = "Habits", state = listState, header = { TodayHeader(state) }) {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -95,6 +96,8 @@ fun Modifier.pressable(
     role: Role = Role.Button,
     pressedScale: Float = 0.96f,
     onClickLabel: String? = null,
+    onLongClick: (() -> Unit)? = null,
+    onLongClickLabel: String? = null,
 ): Modifier = composed {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -103,7 +106,24 @@ fun Modifier.pressable(
         spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
         label = "press",
     )
-    scale(scale).clickable(interaction, indication = null, enabled = enabled, role = role, onClickLabel = onClickLabel, onClick = onClick)
+    if (onLongClick == null) {
+        scale(scale).clickable(interaction, indication = null, enabled = enabled, role = role, onClickLabel = onClickLabel, onClick = onClick)
+    } else {
+        val haptics = LocalHapticFeedback.current
+        scale(scale).combinedClickable(
+            interaction,
+            indication = null,
+            enabled = enabled,
+            role = role,
+            onClickLabel = onClickLabel,
+            onLongClickLabel = onLongClickLabel,
+            onLongClick = {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onLongClick()
+            },
+            onClick = onClick,
+        )
+    }
 }
 
 /** A 44dp round touch target around a 22dp icon. */

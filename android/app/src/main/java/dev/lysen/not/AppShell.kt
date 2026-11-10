@@ -31,16 +31,20 @@ import dev.lysen.not.ui.AddActionHolder
 import dev.lysen.not.ui.BottomBar
 import dev.lysen.not.ui.LocalAddAction
 import dev.lysen.not.ui.LocalBottomBarHeight
+import dev.lysen.not.ui.LocalTabGestures
+import dev.lysen.not.ui.TabGesture
+import dev.lysen.not.ui.TabGestures
 import dev.lysen.not.ui.Not
 import dev.lysen.not.ui.TabItem
 import dev.lysen.not.ui.floatingTabBarHeight
 import kotlinx.coroutines.flow.StateFlow
 
-enum class Tab(val label: String, val icon: Int) {
-    Tasks("Tasks", R.drawable.ic_task_alt),
+/** [holdLabel] says what holding the tab does, for screen readers. */
+enum class Tab(val label: String, val icon: Int, val holdLabel: String? = null) {
+    Tasks("Tasks", R.drawable.ic_task_alt, "Show lists"),
     Habits("Habits", R.drawable.ic_repeat),
-    Notes("Notes", R.drawable.ic_note),
-    Workouts("Workouts", R.drawable.ic_fitness),
+    Notes("Notes", R.drawable.ic_note, "Show folders"),
+    Workouts("Workouts", R.drawable.ic_fitness, "Start a workout"),
 }
 
 /** Tasks, Habits, Notes and Workouts under a floating tab bar; Settings opens over them from the lists sheet. */
@@ -81,7 +85,8 @@ fun NotAppUi(
     val barHeight = if (showsBar) floatingTabBarHeight() else 0.dp
 
     val addAction = remember { AddActionHolder() }
-    CompositionLocalProvider(LocalAddAction provides addAction) {
+    val gestures = remember { TabGestures() }
+    CompositionLocalProvider(LocalAddAction provides addAction, LocalTabGestures provides gestures) {
     Box(Modifier.fillMaxSize().background(Not.colors.background)) {
         CompositionLocalProvider(LocalBottomBarHeight provides barHeight) {
             when (tab) {
@@ -98,9 +103,19 @@ fun NotAppUi(
             exit = slideOutVertically { it } + fadeOut(),
         ) {
             BottomBar(
-                tabs = Tab.entries.map { TabItem(it.label, it.icon, badge = if (it == Tab.Habits) pendingHabits else 0) },
+                tabs = Tab.entries.map { TabItem(it.label, it.icon, badge = if (it == Tab.Habits) pendingHabits else 0, holdLabel = it.holdLabel) },
                 selected = tab.ordinal,
-                onSelect = { tab = Tab.entries[it] },
+                // Tapping the current tab again, or holding any tab, is the screen's to handle
+                // (Tasks opens its lists); holding another tab switches to it first.
+                onSelect = { if (it == tab.ordinal) gestures.send(TabGesture.Reselect) else tab = Tab.entries[it] },
+                onHold = {
+                    if (it == tab.ordinal) {
+                        gestures.send(TabGesture.Hold)
+                    } else {
+                        gestures.sendToNext(TabGesture.Hold)
+                        tab = Tab.entries[it]
+                    }
+                },
             )
         }
     }

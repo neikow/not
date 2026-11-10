@@ -1,5 +1,7 @@
 package dev.lysen.not
 
+import dev.lysen.not.ui.OnTabGesture
+import dev.lysen.not.ui.TabGesture
 import android.Manifest
 import android.app.DatePickerDialog
 import android.content.pm.PackageManager
@@ -8,7 +10,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.ui.draw.rotate
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -113,13 +119,29 @@ fun WorkoutsScreen(viewModel: WorkoutsViewModel) {
     }
 
     val open = state.open
+    // Tapping Workouts again goes back into today's session, if there is one; holding it offers
+    // the ways to start one.
+    OnTabGesture { gesture ->
+        val todays = state.workouts.firstOrNull { it.date == state.today.toString() }
+        when {
+            gesture == TabGesture.Reselect && todays != null -> viewModel.open(todays.id)
+            // With nothing to repeat, the sheet would only offer an empty workout; a stray
+            // re-tap shouldn't make one, a deliberate hold can.
+            state.workouts.none { it.exerciseNames.isNotEmpty() } -> if (gesture == TabGesture.Hold) viewModel.newWorkout()
+            else -> starting = true
+        }
+    }
     Box(Modifier.fillMaxSize()) {
         if (open != null) {
             BackHandler { viewModel.open(null) }
             WorkoutEditor(open, state, viewModel)
         } else {
-            val repeatable = state.workouts.any { it.exerciseNames.isNotEmpty() }
-            AddAction("New workout") { if (repeatable) starting = true else viewModel.newWorkout() }
+            val last = state.workouts.firstOrNull { it.exerciseNames.isNotEmpty() }
+            AddAction(
+                "New workout",
+                holdLabel = if (last != null) "Repeat last workout" else null,
+                onHold = last?.let { { viewModel.repeat(it.id) } },
+            ) { if (last != null) starting = true else viewModel.newWorkout() }
             WorkoutList(state, viewModel, onImport = { importing = true })
         }
         ToastHost(
@@ -240,9 +262,19 @@ private fun WorkoutCard(w: WorkoutSummary, today: LocalDate, viewModel: Workouts
     }
 }
 
-/** + with past sessions: start empty, or from one of them. */
+/**
+ * What + opens: start empty, repeat a named workout (they're the routines, so they lead), or one of
+ * the recent unnamed sessions, folded away until asked for.
+ */
 @Composable
 private fun StartSheet(state: WorkoutsState, viewModel: WorkoutsViewModel, onDismiss: () -> Unit) {
+    val past = state.workouts.filter { it.exerciseNames.isNotEmpty() }
+    // The latest of each name, then of each unnamed set of exercises; both latest first.
+    val named = past.filter { it.title.isNotBlank() }.distinctBy { it.title.trim().lowercase() }
+    val recent = past.filter { it.title.isBlank() }.distinctBy { it.exerciseNames }.take(8)
+    // With no routines yet, there's nothing to fold the recent ones under.
+    var showsRecent by remember { mutableStateOf(named.isEmpty()) }
+    val chevron by animateFloatAsState(if (showsRecent) 180f else 0f, label = "chevron")
     Sheet(onDismiss) { close ->
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
             Text("Start a workout", style = Not.type.title, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 12.dp))
@@ -250,17 +282,49 @@ private fun StartSheet(state: WorkoutsState, viewModel: WorkoutsViewModel, onDis
                 viewModel.newWorkout()
                 close()
             }
-            Text("Repeat", style = Not.type.label, color = Not.colors.inkMuted, modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 4.dp))
-            // One per kind of session (same title and exercises), latest first.
-            state.workouts.filter { it.exerciseNames.isNotEmpty() }
-                .distinctBy { it.title to it.exerciseNames }
-                .take(6)
-                .forEach { w ->
-                    SheetRow(R.drawable.ic_repeat, w.title.ifEmpty { w.exerciseNames.take(3).joinToString(", ") }, detail = dayLabel(w.date, state.today)) {
-                        viewModel.repeat(w.id)
-                        close()
+            named.forEach { w ->
+                SheetRow(R.drawable.ic_repeat, w.title.trim(), detail = dayLabel(w.date, state.today)) {
+                    viewModel.repeat(w.id)
+                    close()
+                }
+            }
+            if (recent.isNotEmpty()) {
+                if (named.isNotEmpty()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(CircleShape)
+                            .pressable({ showsRecent = !showsRecent }, pressedScale = 0.98f)
+                            .heightIn(min = 44.dp)
+                            .padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text("Recent", style = Not.type.label, color = Not.colors.inkMuted)
+                        Text(recent.size.toString(), style = Not.type.label, color = Not.colors.inkFaint)
+                        Icon(
+                            R.drawable.ic_expand_more,
+                            if (showsRecent) "Hide recent" else "Show recent",
+                            tint = Not.colors.inkFaint,
+                            size = 20.dp,
+                            modifier = Modifier.rotate(chevron),
+                        )
                     }
                 }
+                AnimatedVisibility(showsRecent, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                    Column {
+                        recent.forEach { w ->
+                            // "+1" keeps sessions that differ past the third exercise apart.
+                            val more = w.exerciseNames.size - 3
+                            val label = w.exerciseNames.take(3).joinToString(", ") + if (more > 0) " +$more" else ""
+                            SheetRow(R.drawable.ic_history, label, detail = dayLabel(w.date, state.today)) {
+                                viewModel.repeat(w.id)
+                                close()
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

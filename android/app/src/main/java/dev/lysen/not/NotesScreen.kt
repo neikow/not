@@ -1,5 +1,8 @@
 package dev.lysen.not
 
+import dev.lysen.not.ui.OnTabGesture
+import dev.lysen.not.ui.PullAction
+import dev.lysen.not.ui.TabGesture
 import android.text.format.DateUtils
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
@@ -87,13 +90,23 @@ fun NotesScreen(viewModel: NotesViewModel) {
     }
 
     val open = state.openNote
+    var showsFolders by remember { mutableStateOf(false) }
+    // Tapping Notes again searches (or stops); holding it shows the folders.
+    OnTabGesture { gesture ->
+        when (gesture) {
+            TabGesture.Reselect -> if (open == null) viewModel.search(if (state.query == null) "" else null)
+            TabGesture.Hold -> {
+                viewModel.open(null)
+                showsFolders = true
+            }
+        }
+    }
     Box(Modifier.fillMaxSize()) {
         if (open != null) {
             BackHandler { viewModel.open(null) }
             NoteEditor(open, state, viewModel)
         } else {
-            AddAction("New note", onClick = viewModel::newNote)
-            NoteList(state, viewModel)
+            NoteList(state, viewModel, showsFolders, onShowFolders = { showsFolders = it })
         }
         ToastHost(
             toasts,
@@ -111,7 +124,7 @@ fun NotesScreen(viewModel: NotesViewModel) {
 }
 
 @Composable
-private fun NoteList(state: NotesState, viewModel: NotesViewModel) {
+private fun NoteList(state: NotesState, viewModel: NotesViewModel, showsFolders: Boolean, onShowFolders: (Boolean) -> Unit) {
     var newFolder by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Folder?>(null) }
     var moving by remember { mutableStateOf<NoteSummary?>(null) }
@@ -122,27 +135,21 @@ private fun NoteList(state: NotesState, viewModel: NotesViewModel) {
     // Only a folder has an order of its own; All mixes folders and search ranks by match.
     val canReorder = state.folder != null && !searching
 
+    AddAction("New note", holdLabel = "New folder", onHold = { newFolder = true }, onClick = viewModel::newNote)
     LargeTitleScreen(
         title = state.folder?.title ?: "Notes",
         state = listState,
         actions = {
             if (!searching) IconButton(R.drawable.ic_search, "Search", { viewModel.search("") })
-            state.folder?.let { folder ->
-                FolderMenu(
-                    folder,
-                    onRename = { renaming = folder },
-                    onManualOrder = { viewModel.setManualOrder(folder, it) },
-                    onDelete = { viewModel.deleteFolder(folder) },
-                )
-            }
         },
         header = {
             if (searching) {
                 SearchField(state.query.orEmpty(), viewModel::search, onClose = { viewModel.search(null) })
             } else {
-                FolderChips(state, viewModel, onNewFolder = { newFolder = true })
+                FolderChips(state, viewModel, onNewFolder = { newFolder = true }, onRename = { renaming = it })
             }
         },
+        pull = if (searching) null else PullAction("Search", R.drawable.ic_search) { viewModel.search("") },
     ) {
         if (state.notes.isEmpty()) {
             item(key = "empty") {
@@ -207,6 +214,99 @@ private fun NoteList(state: NotesState, viewModel: NotesViewModel) {
         )
     }
     moving?.let { note -> MoveSheet(note, state.folders, viewModel, onDismiss = { moving = null }) }
+    if (showsFolders) {
+        FoldersSheet(
+            state,
+            viewModel,
+            onNewFolder = { newFolder = true },
+            onRename = { renaming = it },
+            onDismiss = { onShowFolders(false) },
+        )
+    }
+}
+
+/** Every folder, to pick one or change it; held Notes tab opens it. */
+@Composable
+private fun FoldersSheet(
+    state: NotesState,
+    viewModel: NotesViewModel,
+    onNewFolder: () -> Unit,
+    onRename: (Folder) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Sheet(onDismiss) { close ->
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
+            Text("Folders", style = Not.type.title, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 12.dp))
+            FolderRow(R.drawable.ic_note, "All notes", selected = state.folderId == null, onClick = {
+                viewModel.selectFolder(null)
+                close()
+            })
+            state.folders.forEach { folder ->
+                var menu by remember { mutableStateOf(false) }
+                FolderRow(
+                    R.drawable.ic_folder,
+                    folder.title,
+                    selected = folder.id == state.folderId,
+                    depth = folder.depth.toInt(),
+                    onClick = {
+                        viewModel.selectFolder(folder.id)
+                        close()
+                    },
+                ) {
+                    Box {
+                        IconButton(R.drawable.ic_more_vert, "Folder options", { menu = true }, tint = Not.colors.inkFaint)
+                        FolderMenu(
+                            folder,
+                            menu,
+                            onDismiss = { menu = false },
+                            onRename = { onRename(folder) },
+                            onManualOrder = { viewModel.setManualOrder(folder, it) },
+                            onDelete = {
+                                // Close so the Undo toast underneath shows.
+                                close()
+                                viewModel.deleteFolder(folder)
+                            },
+                        )
+                    }
+                }
+            }
+            FolderRow(R.drawable.ic_new_folder, "New folder", accent = true, onClick = onNewFolder)
+        }
+    }
+}
+
+@Composable
+private fun FolderRow(
+    icon: Int,
+    title: String,
+    onClick: () -> Unit,
+    selected: Boolean = false,
+    accent: Boolean = false,
+    depth: Int = 0,
+    menu: (@Composable () -> Unit)? = null,
+) {
+    val colors = Not.colors
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(CircleShape)
+            .background(if (selected) colors.accentSoft else Color.Transparent)
+            .pressable(onClick, pressedScale = 0.98f)
+            .heightIn(min = 52.dp)
+            .padding(start = (14 + 20 * depth).dp, end = if (menu != null) 2.dp else 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = if (accent || selected) colors.accentInk else colors.inkMuted)
+        Spacer(Modifier.width(14.dp))
+        Text(
+            title,
+            style = if (selected) Not.type.bodyStrong else Not.type.body,
+            color = if (accent) colors.accentInk else colors.ink,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
+        )
+        menu?.invoke()
+    }
 }
 
 @Composable
@@ -231,21 +331,39 @@ private fun SearchField(query: String, onQuery: (String) -> Unit, onClose: () ->
 
 /** All, each folder, and + Folder, as a scrolling row of pills. */
 @Composable
-private fun FolderChips(state: NotesState, viewModel: NotesViewModel, onNewFolder: () -> Unit) {
+private fun FolderChips(state: NotesState, viewModel: NotesViewModel, onNewFolder: () -> Unit, onRename: (Folder) -> Unit) {
     LazyRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.padding(top = 12.dp),
     ) {
         item { Chip("All", selected = state.folderId == null, onClick = { viewModel.selectFolder(null) }) }
         items(state.folders, key = { it.id }) { folder ->
-            Chip(folderPath(folder, state.folders), selected = folder.id == state.folderId, icon = R.drawable.ic_folder, onClick = { viewModel.selectFolder(folder.id) })
+            // Holding a folder's chip offers what's done to the folder.
+            var menu by remember { mutableStateOf(false) }
+            Box {
+                Chip(
+                    folderPath(folder, state.folders),
+                    selected = folder.id == state.folderId,
+                    icon = R.drawable.ic_folder,
+                    onClick = { viewModel.selectFolder(folder.id) },
+                    onHold = { menu = true },
+                )
+                FolderMenu(
+                    folder,
+                    menu,
+                    onDismiss = { menu = false },
+                    onRename = { onRename(folder) },
+                    onManualOrder = { viewModel.setManualOrder(folder, it) },
+                    onDelete = { viewModel.deleteFolder(folder) },
+                )
+            }
         }
         item { Chip("Folder", selected = false, icon = R.drawable.ic_new_folder, quiet = true, onClick = onNewFolder) }
     }
 }
 
 @Composable
-private fun Chip(text: String, selected: Boolean, onClick: () -> Unit, icon: Int? = null, quiet: Boolean = false) {
+private fun Chip(text: String, selected: Boolean, onClick: () -> Unit, icon: Int? = null, quiet: Boolean = false, onHold: (() -> Unit)? = null) {
     val colors = Not.colors
     val bg by animateColorAsState(
         when {
@@ -264,7 +382,7 @@ private fun Chip(text: String, selected: Boolean, onClick: () -> Unit, icon: Int
         Modifier
             .clip(CircleShape)
             .background(bg)
-            .pressable(onClick, pressedScale = 0.94f)
+            .pressable(onClick, pressedScale = 0.94f, onLongClick = onHold, onLongClickLabel = if (onHold != null) "Folder options" else null)
             .heightIn(min = 38.dp)
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -348,28 +466,31 @@ private fun NoteCard(
 }
 
 @Composable
-private fun FolderMenu(folder: Folder, onRename: () -> Unit, onManualOrder: (Boolean) -> Unit, onDelete: () -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        IconButton(R.drawable.ic_more_vert, "Folder options", { open = true })
-        Menu(open, onDismiss = { open = false }) {
-            MenuItem(
-                if (folder.manualOrder) "Sort by latest edit" else "Sort by hand",
-                icon = R.drawable.ic_sort,
-                onClick = {
-                    open = false
-                    onManualOrder(!folder.manualOrder)
-                },
-            )
-            MenuItem("Rename folder", icon = R.drawable.ic_edit, onClick = {
-                open = false
-                onRename()
-            })
-            MenuItem("Delete folder", icon = R.drawable.ic_delete, danger = true, onClick = {
-                open = false
-                onDelete()
-            })
-        }
+private fun FolderMenu(
+    folder: Folder,
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onManualOrder: (Boolean) -> Unit,
+    onDelete: () -> Unit,
+) {
+    Menu(expanded, onDismiss = onDismiss) {
+        MenuItem(
+            if (folder.manualOrder) "Sort by latest edit" else "Sort by hand",
+            icon = R.drawable.ic_sort,
+            onClick = {
+                onDismiss()
+                onManualOrder(!folder.manualOrder)
+            },
+        )
+        MenuItem("Rename folder", icon = R.drawable.ic_edit, onClick = {
+            onDismiss()
+            onRename()
+        })
+        MenuItem("Delete folder", icon = R.drawable.ic_delete, danger = true, onClick = {
+            onDismiss()
+            onDelete()
+        })
     }
 }
 
@@ -410,7 +531,7 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
     val text = editor.text.toString()
     // What the store had when last loaded or saved, to tell local edits from synced ones.
     var saved by remember(note.id) { mutableStateOf(text) }
-    var menu by remember { mutableStateOf(false) }
+    var actions by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val colors = Not.colors
@@ -452,26 +573,8 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
                 maxLines = 1,
                 modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
             )
-            IconButton(
-                R.drawable.ic_pin,
-                if (note.pinned) "Unpin" else "Pin",
-                { viewModel.togglePin(note) },
-                tint = if (note.pinned) colors.accentInk else colors.inkMuted,
-                background = if (note.pinned) colors.accentSoft else Color.Transparent,
-            )
-            Box {
-                IconButton(R.drawable.ic_more_vert, "More", { menu = true })
-                Menu(menu, onDismiss = { menu = false }) {
-                    MenuItem("Move to…", icon = R.drawable.ic_folder, onClick = {
-                        menu = false
-                        moving = true
-                    })
-                    MenuItem("Delete", icon = R.drawable.ic_delete, danger = true, onClick = {
-                        menu = false
-                        viewModel.delete(note)
-                    })
-                }
-            }
+            // Pinning moved down to the format bar's sheet; this just says so.
+            if (note.pinned) Icon(R.drawable.ic_pin, "Pinned", tint = colors.accentInk, size = 16.dp, modifier = Modifier.padding(end = 14.dp))
         }
         MarkdownField(
             editor,
@@ -482,15 +585,16 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
                 .padding(horizontal = 24.dp, vertical = 8.dp)
                 .focusRequester(focus),
         )
-        FormatBar(editor)
+        FormatBar(editor, onMore = { actions = true })
     }
+    if (actions) NoteActionsSheet(note, viewModel, onMove = { moving = true }, onDismiss = { actions = false })
     if (moving) MoveSheet(note, state.folders, viewModel, onDismiss = { moving = false })
 }
 
 /** Formatting for the caret's line or the selection, riding above the keyboard; undo stays put at the end. */
 @OptIn(ExperimentalFoundationApi::class) // undoState
 @Composable
-private fun FormatBar(editor: TextFieldState) {
+private fun FormatBar(editor: TextFieldState, onMore: () -> Unit) {
     val muted = Not.colors.inkMuted
     Column(Modifier.navigationBarsPadding().imePadding()) {
         Divider()
@@ -508,6 +612,40 @@ private fun FormatBar(editor: TextFieldState) {
             val undo = editor.undoState
             IconButton(R.drawable.ic_undo, "Undo", { if (undo.canUndo) undo.undo() }, tint = if (undo.canUndo) muted else Not.colors.inkFaint.copy(alpha = 0.5f))
             IconButton(R.drawable.ic_redo, "Redo", { if (undo.canRedo) undo.redo() }, tint = if (undo.canRedo) muted else Not.colors.inkFaint.copy(alpha = 0.5f))
+            IconButton(R.drawable.ic_more_vert, "Note options", onMore, tint = muted)
+        }
+    }
+}
+
+/** Pin, move and delete for the open note, within thumb reach of the format bar. */
+@Composable
+private fun NoteActionsSheet(note: NoteSummary, viewModel: NotesViewModel, onMove: () -> Unit, onDismiss: () -> Unit) {
+    Sheet(onDismiss) { close ->
+        Column(Modifier.padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
+            FolderRow(R.drawable.ic_pin, if (note.pinned) "Unpin" else "Pin to top", onClick = {
+                viewModel.togglePin(note)
+                close()
+            })
+            FolderRow(R.drawable.ic_folder, "Move to…", onClick = {
+                close()
+                onMove()
+            })
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(CircleShape)
+                    .pressable({
+                        close()
+                        viewModel.delete(note)
+                    }, pressedScale = 0.98f)
+                    .heightIn(min = 52.dp)
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(R.drawable.ic_delete, null, tint = Not.colors.danger)
+                Spacer(Modifier.width(14.dp))
+                Text("Delete", style = Not.type.body, color = Not.colors.danger)
+            }
         }
     }
 }
