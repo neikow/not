@@ -11,6 +11,14 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,9 +76,32 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
         }
     }
 
+    // Samsung Keyboard sends Return as a key press before it commits the (autocorrected) word it
+    // was composing. Taken as it comes, the newline ends the composition, so the word then lands
+    // again after it. So a Return key waits a moment for that commit (the field doesn't say whether
+    // a word is being composed), then goes in after it.
+    val returns = remember { Channel<Unit>(Channel.UNLIMITED) }
+    // One at a time, so a second Return doesn't take the first for typing.
+    LaunchedEffect(state) {
+        for (unit in returns) {
+            val before = state.text.toString()
+            val at = state.selection.min
+            val after = withTimeoutOrNull(RETURN_WAIT_MS) { snapshotFlow { state.text.toString() }.first { it != before } }
+            // Text added right at the caret was typed after Return, so Return goes before it;
+            // anything else is the keyboard committing its word, and Return goes after that.
+            val typedAhead = after != null && after.length > before.length &&
+                after.startsWith(before.substring(0, at)) && after.endsWith(before.substring(at))
+            state.typeNewline(if (typedAhead) at else null)
+        }
+    }
+    val heldReturn = Modifier.onPreviewKeyEvent { event ->
+        if (event.key != Key.Enter && event.key != Key.NumPadEnter) return@onPreviewKeyEvent false
+        if (event.type == KeyEventType.KeyDown) returns.trySend(Unit)
+        true
+    }
+
     // The state-based field (not the TextFieldValue one): its input pipeline keeps the keyboard's
-    // edits in order. With the old one, Samsung Keyboard's Enter landed before the autocorrected
-    // word it commits with it, so the word was inserted again after the newline.
+    // edits in order, as long as Return waits for the word being composed (above).
     BasicTextField(
         state = state,
         inputTransformation = ListEditing,
@@ -79,6 +110,7 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
         cursorBrush = SolidColor(colors.accentInk),
         onTextLayout = { result -> layout = result() },
         modifier = modifier
+            .then(heldReturn)
             // Taps on a box tick it instead of moving the caret there.
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -169,6 +201,22 @@ private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: NotColors) {
 
 private fun TextFieldState.toggleBox(box: ListMark.Box) = edit {
     apply(toggleBox(asCharSequence().toString(), box.at, selection.start, selection.end))
+}
+
+/** How long a Return key waits for the keyboard to commit the word it was composing. */
+private const val RETURN_WAIT_MS = 60L
+
+/**
+ * Return at the caret, as if typed: replaces the selection, then continues lists. With [at], it
+ * goes in there instead, before what was typed since, and the caret stays after that.
+ */
+private fun TextFieldState.typeNewline(at: Int? = null) = edit {
+    val start = at ?: selection.min
+    val ahead = if (at == null) 0 else selection.min - at
+    replace(start, if (at == null) selection.max else start, "\n")
+    val change = onNewline(asCharSequence().toString(), start + 1)
+    if (change != null) replace(change.start, change.end, change.text)
+    selection = TextRange((change?.selStart ?: (start + 1)) + ahead)
 }
 
 private fun TextFieldBuffer.apply(change: Change?) {
