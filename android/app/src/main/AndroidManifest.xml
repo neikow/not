@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <!-- Android 16+: the rest countdown as a Live Update (status bar chip, Now Bar). -->
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <!-- Keeps the rest countdown ticking in its notification while the app is in the background. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission
         android:name="android.permission.SCHEDULE_EXACT_ALARM"
         android:maxSdkVersion="32" />
@@ -70,6 +73,15 @@
         <receiver
             android:name=".RestTimerReceiver"
             android:exported="false" />
+
+        <service
+            android:name=".RestTimerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Rest countdown between workout sets, shown as a live notification" />
+        </service>
 
         <receiver
             android:name=".ReminderReceiver"
