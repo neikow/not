@@ -98,6 +98,9 @@ import dev.lysen.not.ui.Menu
 import dev.lysen.not.ui.MenuItem
 import dev.lysen.not.ui.Not
 import dev.lysen.not.ui.RoundCheck
+import androidx.compose.foundation.lazy.rememberLazyListState
+import dev.lysen.not.ui.reorderable
+import dev.lysen.not.ui.rememberReorderState
 import dev.lysen.not.ui.Sheet
 import dev.lysen.not.ui.Text
 import dev.lysen.not.ui.ToastHost
@@ -368,6 +371,9 @@ private fun WorkoutEditor(workout: Workout, state: WorkoutsState, viewModel: Wor
     var focusSetsOf by remember { mutableStateOf<String?>(null) }
     var history by remember { mutableStateOf<String?>(null) }
     val addFocus = remember { FocusRequester() }
+    val listState = rememberLazyListState()
+    // Hold an exercise to drag it up or down the session.
+    val reorder = rememberReorderState(listState, workout.exercises) { it.id }
 
     LaunchedEffect(workout.title) { if (!titleFocused) title = workout.title }
     LaunchedEffect(workout.id) { if (workout.exercises.isEmpty()) addFocus.requestFocus() }
@@ -409,6 +415,7 @@ private fun WorkoutEditor(workout: Workout, state: WorkoutsState, viewModel: Wor
             if (workout.exercises.isNotEmpty()) SessionProgress(workout.exercises)
             LazyColumn(
                 Modifier.weight(1f).imePadding(),
+                state = listState,
                 contentPadding = PaddingValues(bottom = 120.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -429,17 +436,24 @@ private fun WorkoutEditor(workout: Workout, state: WorkoutsState, viewModel: Wor
                             },
                     )
                 }
-                itemsIndexed(workout.exercises, key = { _, e -> e.id }) { index, exercise ->
+                itemsIndexed(reorder.items, key = { _, e -> e.id }) { index, exercise ->
                     ExerciseCard(
                         exercise,
                         index,
-                        workout.exercises.size,
+                        reorder.items.size,
                         state.today,
                         viewModel,
                         focusSets = focusSetsOf == exercise.id,
                         onFocused = { focusSetsOf = null },
                         onHistory = { history = exercise.name },
-                        modifier = Modifier.animateItem().padding(horizontal = 16.dp),
+                        modifier = (if (reorder.isDragging(exercise)) Modifier else Modifier.animateItem())
+                            .reorderable(reorder, exercise, exercise.id) {
+                                reorder.start(exercise, canSwap = { true }, onDrop = { order ->
+                                    viewModel.moveExercise(exercise, order.indexOfFirst { it.id == exercise.id })
+                                })
+                            }
+                            .padding(horizontal = 16.dp),
+                        wasHeld = { reorder.consumeHold(exercise.id) },
                     )
                 }
                 item(key = "add") {
@@ -560,10 +574,16 @@ private fun ExerciseCard(
     onFocused: () -> Unit,
     onHistory: () -> Unit,
     modifier: Modifier,
+    /** True when a tap is really the release of a hold (a drag that didn't move). */
+    wasHeld: () -> Boolean = { false },
 ) {
     val colors = Not.colors
     var name by remember(exercise.id) { mutableStateOf(exercise.name) }
     var nameFocused by remember { mutableStateOf(false) }
+    // The name shows as text until tapped, so holding it drags the card instead of selecting.
+    var editingName by remember(exercise.id) { mutableStateOf(exercise.name.isBlank()) }
+    val nameFocus = remember { FocusRequester() }
+    LaunchedEffect(editingName) { if (editingName && exercise.name.isNotBlank()) nameFocus.requestFocus() }
     var draft by remember(exercise.id) { mutableStateOf("") }
     var editing by remember { mutableStateOf<Int?>(null) }
     var menu by remember { mutableStateOf(false) }
@@ -593,19 +613,34 @@ private fun ExerciseCard(
                 { viewModel.setDone(exercise, !exercise.done) },
                 contentDescription = if (exercise.done) "Mark not done" else "Mark done",
             )
-            Field(
-                name,
-                { name = it },
-                "Exercise",
-                style = Not.type.heading,
-                onDone = { viewModel.rename(exercise, name) },
-                modifier = Modifier.weight(1f).padding(start = 4.dp).alpha(fade).onFocusChanged {
-                    if (nameFocused && !it.isFocused) {
-                        if (name.isBlank()) name = exercise.name else viewModel.rename(exercise, name)
-                    }
-                    nameFocused = it.isFocused
-                },
-            )
+            if (editingName) {
+                Field(
+                    name,
+                    { name = it },
+                    "Exercise",
+                    style = Not.type.heading,
+                    onDone = { viewModel.rename(exercise, name) },
+                    modifier = Modifier.weight(1f).padding(start = 4.dp).alpha(fade).focusRequester(nameFocus).onFocusChanged {
+                        if (nameFocused && !it.isFocused) {
+                            if (name.isBlank()) name = exercise.name else viewModel.rename(exercise, name)
+                            editingName = name.isBlank()
+                        }
+                        nameFocused = it.isFocused
+                    },
+                )
+            } else {
+                Text(
+                    exercise.name,
+                    style = Not.type.heading,
+                    maxLines = 2,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 4.dp)
+                        .alpha(fade)
+                        .pressable({ if (!wasHeld()) editingName = true }, pressedScale = 1f, onClickLabel = "Rename")
+                        .padding(vertical = 6.dp),
+                )
+            }
             IconButton(R.drawable.ic_chart, "History", onHistory, tint = colors.inkMuted)
             Box {
                 IconButton(R.drawable.ic_more_vert, "Exercise options", { menu = true }, tint = colors.inkMuted)
