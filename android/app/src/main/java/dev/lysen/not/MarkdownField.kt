@@ -1,5 +1,8 @@
 package dev.lysen.not
 
+import dev.lysen.not.ui.Text
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -84,6 +87,8 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
     // One at a time, so a second Return doesn't take the first for typing.
     LaunchedEffect(state) {
         for (unit in returns) {
+            // Return on the empty title line: today's date becomes the title, then on to the body.
+            if (state.fillTitleWithDate()) continue
             val before = state.text.toString()
             val at = state.selection.min
             val after = withTimeoutOrNull(RETURN_WAIT_MS) { snapshotFlow { state.text.toString() }.first { it != before } }
@@ -102,11 +107,20 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
 
     // The state-based field (not the TextFieldValue one): its input pipeline keeps the keyboard's
     // edits in order, as long as Return waits for the word being composed (above).
+    // An empty note is typed at title size, so the caret shows a title is being written, with
+    // today's date as the hint (Return keeps it).
+    val empty = text.isEmpty()
     BasicTextField(
         state = state,
         inputTransformation = ListEditing,
         outputTransformation = styling,
-        textStyle = Not.type.body.copy(color = colors.ink, lineHeight = 26.sp),
+        textStyle = if (empty) TitleStyle.copy(color = colors.ink) else Not.type.body.copy(color = colors.ink, lineHeight = 26.sp),
+        decorator = { inner ->
+            Box {
+                if (empty) Text(todayTitle(), style = TitleStyle, color = colors.inkFaint, maxLines = 1)
+                inner()
+            }
+        },
         cursorBrush = SolidColor(colors.accentInk),
         onTextLayout = { result -> layout = result() },
         modifier = modifier
@@ -232,8 +246,8 @@ private class MarkdownStyling(private val colors: NotColors) : OutputTransformat
         val spans = markdownSpans(raw)
         val styled = this
         titleRange(raw, spans)?.let { (start, end) ->
-            styled.addStyle(ParagraphStyle(lineHeight = 36.sp), start, end)
-            styled.addStyle(SpanStyle(fontFamily = Bricolage, fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp), start, end)
+            styled.addStyle(ParagraphStyle(lineHeight = TitleStyle.lineHeight), start, end)
+            styled.addStyle(TitleStyle.toSpanStyle(), start, end)
         }
         val hidden = SpanStyle(color = Color.Transparent)
         // Two spaces are too narrow to read as nesting; widen each level to about a box's step.
@@ -287,6 +301,26 @@ private class MarkdownStyling(private val colors: NotColors) : OutputTransformat
         MarkdownStyle.Done -> SpanStyle(textDecoration = TextDecoration.LineThrough, color = colors.inkMuted)
         MarkdownStyle.Syntax -> SpanStyle(color = colors.inkFaint)
     }
+}
+
+/** How a note's first line, its title, reads. */
+private val TitleStyle = TextStyle(fontFamily = Bricolage, fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp, lineHeight = 36.sp)
+
+/** "Wednesday 11 November": what an untitled note is called when Return is pressed on its title. */
+private fun todayTitle(): String =
+    java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("EEEE d MMMM", java.util.Locale.getDefault()))
+
+/** With the caret on an empty first line: puts today's date there and starts the next line. */
+private fun TextFieldState.fillTitleWithDate(): Boolean {
+    val raw = text.toString()
+    val end = raw.indexOf('\n').let { if (it < 0) raw.length else it }
+    if (raw.substring(0, end).isNotBlank() || selection.min > end) return false
+    val title = todayTitle()
+    edit {
+        replace(0, end, title + if (end == raw.length) "\n" else "")
+        selection = TextRange(title.length + 1)
+    }
+    return true
 }
 
 /** The first non-blank line, which titles the note, unless it is already a heading or list item. */
