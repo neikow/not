@@ -6,6 +6,10 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.draw.rotate
 import dev.lysen.not.ui.RoundCheck
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import android.os.Build
+import android.Manifest
 import dev.lysen.not.ui.EmptyState
 import dev.lysen.not.ui.SwipeAction
 import dev.lysen.not.ui.SwipeRow
@@ -71,6 +75,7 @@ import kotlinx.coroutines.launch
 /** What Settings holds, one page each. */
 private enum class SettingsPage(val title: String, val icon: Int) {
     Sync("Sync", R.drawable.ic_sync),
+    Reminders("Reminders", R.drawable.ic_schedule),
     Archive("Archive", R.drawable.ic_history),
     Widgets("Widgets and shortcuts", R.drawable.ic_add_task),
     Workouts("Workouts", R.drawable.ic_fitness),
@@ -115,6 +120,7 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
                     SettingsPage.Sync -> item(key = "sync") {
                         Section(null) { if (state.syncInfo == null) PairForm(state, tasks) else PairedInfo(state, tasks) }
                     }
+                    SettingsPage.Reminders -> item(key = "reminders") { RemindersPage() }
                     SettingsPage.Archive -> archivePage(state, tasks, toasts)
                     SettingsPage.Widgets -> item(key = "widgets") { WidgetsPage() }
                     SettingsPage.Workouts -> item(key = "workouts") { WorkoutsPage(workouts) }
@@ -138,6 +144,7 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
 /** The line under a category: where things stand there, at a glance. */
 private fun summary(page: SettingsPage, state: UiState): String = when (page) {
     SettingsPage.Sync -> state.syncInfo?.let { "${it.serverUrl.removePrefix("https://").removePrefix("http://")} · ${syncStatus(state.sync)}" } ?: "Not paired"
+    SettingsPage.Reminders -> "Task times, morning summary, habits in the evening"
     SettingsPage.Archive -> when (val n = state.archive.size) {
         0 -> "Tasks done over a day ago"
         1 -> "1 task done over a day ago"
@@ -301,6 +308,77 @@ private fun LazyListScope.archivePage(state: UiState, viewModel: TasksViewModel,
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun RemindersPage() {
+    val context = LocalContext.current
+    val reminders = (context.applicationContext as NotApp).reminders
+    val s by reminders.settings.collectAsStateWithLifecycle()
+    var allowed by remember { mutableStateOf(reminders.canNotify) }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed = it }
+    if (!allowed) {
+        Section(null) {
+            Text("Notifications are off for not, so reminders can't show.", style = Not.type.body)
+            Button("Allow notifications", {
+                if (Build.VERSION.SDK_INT >= 33) ask.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }, icon = R.drawable.ic_schedule)
+        }
+    }
+    Section("Tasks", padded = false) {
+        ToggleRow("When a task is due", "Tasks with a time, like “fri 9am”; Done and snooze from the notification", s.tasks) {
+            reminders.update(s.copy(tasks = it))
+        }
+        Divider(Modifier.padding(start = 16.dp))
+        ToggleRow("Morning summary", "What's due today, and anything overdue", s.digest) { reminders.update(s.copy(digest = it)) }
+        if (s.digest) TimeRow("Every day at", s.digestAt) { reminders.update(s.copy(digestAt = it)) }
+    }
+    Section("Habits", padded = false) {
+        ToggleRow("Evening nudge", "Names the habits still to do today; quiet when all are done", s.habits) {
+            reminders.update(s.copy(habits = it))
+        }
+        if (s.habits) TimeRow("Every day at", s.habitsAt) { reminders.update(s.copy(habitsAt = it)) }
+    }
+    Text(
+        "Reminders are set on this phone only.",
+        style = Not.type.caption,
+        color = Not.colors.inkFaint,
+        modifier = Modifier.padding(horizontal = 28.dp, vertical = 12.dp),
+    )
+}
+
+@Composable
+private fun ToggleRow(title: String, detail: String, on: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .pressable({ onChange(!on) }, pressedScale = 0.985f)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = Not.type.body)
+            Text(detail, style = Not.type.caption, color = Not.colors.inkMuted)
+        }
+        RoundCheck(on, { onChange(!on) })
+    }
+}
+
+@Composable
+private fun TimeRow(label: String, minutes: Int, onChange: (Int) -> Unit) {
+    val context = LocalContext.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .pressable({
+                android.app.TimePickerDialog(context, { _, h, m -> onChange(h * 60 + m) }, minutes / 60, minutes % 60, true).show()
+            }, pressedScale = 0.985f, onClickLabel = "Change time")
+            .padding(start = 16.dp, end = 20.dp, top = 4.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = Not.type.caption, color = Not.colors.inkMuted, modifier = Modifier.weight(1f))
+        Text("%d:%02d".format(minutes / 60, minutes % 60), style = Not.type.label, color = Not.colors.accentInk)
     }
 }
 

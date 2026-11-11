@@ -8,7 +8,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             Tab("General", systemImage: "gearshape") {
-                GeneralSettings()
+                GeneralSettings(model: model)
             }
             Tab("Archive", systemImage: "archivebox") {
                 ArchiveSettings(model: model)
@@ -120,6 +120,7 @@ private struct WorkoutSettings: View {
 }
 
 private struct GeneralSettings: View {
+    let model: AppModel
     @AppStorage(MenuBarPanel.visibleKey) private var showsMenuBarExtra = true
 
     var body: some View {
@@ -130,6 +131,7 @@ private struct GeneralSettings: View {
                 Text("Add and tick off tasks from the menu bar without switching apps.")
                     .foregroundStyle(.secondary)
             }
+            ReminderSettings(model: model)
         }
         .fixedSize(horizontal: false, vertical: true)
     }

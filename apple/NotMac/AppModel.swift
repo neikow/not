@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import NotCore
 import Observation
@@ -102,6 +103,7 @@ final class AppModel {
 
     @ObservationIgnored private let store: NotStore
     @ObservationIgnored private var observer: ModelObserver?
+    @ObservationIgnored private(set) lazy var reminders = Reminders(model: self)
 
     private static let panelListKey = "panelList"
 
@@ -470,6 +472,45 @@ final class AppModel {
         reloadTasks()
     }
 
+    /// Parses `YYYY-MM-DD` as local midnight.
+    static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    // ---- reminders ----
+
+    /// Open tasks that may want a reminder: due by today, and upcoming.
+    func reminderTasks() -> [TaskItem] {
+        (run { try store.dueTasks(today: today) } ?? []) + upcoming
+    }
+
+    /// Open tasks due on or before `day`, for the morning summary.
+    func reminderDue(on day: String) -> [TaskItem] {
+        run { try store.dueTasks(today: day) } ?? []
+    }
+
+    /// Titles of habits due on `day` and not done yet.
+    func reminderHabitsLeft(on day: String) -> [String] {
+        (run { try store.habits(date: day) } ?? []).filter { $0.due && !$0.done }.map(\.habit.title)
+    }
+
+    /// From a notification's Done button.
+    func complete(taskID: String) {
+        run { try store.setCompleted(id: taskID, completed: true, today: today) }
+    }
+
+    /// From clicking a notification: the task in its list, selected.
+    func reveal(taskID: String) {
+        guard let task = reminderTasks().first(where: { $0.id == taskID }) else { return }
+        selectedListID = task.listId
+        selectedTaskID = taskID
+        NSApp.activate()
+    }
+
     static func dayString(_ date: Date) -> String {
         let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
@@ -685,6 +726,7 @@ final class AppModel {
     // MARK: Reading
 
     fileprivate func reload() {
+        reminders.reschedule()
         guard let lists = run({ try store.lists() }) else { return }
         self.lists = lists
         canUndo = store.canUndo()

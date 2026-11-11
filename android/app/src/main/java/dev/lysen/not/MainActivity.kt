@@ -97,7 +97,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         /** List id to show (or, for quick add, to add to). */
         const val EXTRA_LIST = "dev.lysen.not.LIST"
-        private const val EXTRA_TAB = "dev.lysen.not.TAB"
+        const val EXTRA_TAB = "dev.lysen.not.TAB"
         private const val EXTRA_NOTE = "dev.lysen.not.NOTE"
         /** Folder id for the new note, "" for none. */
         private const val EXTRA_NEW_NOTE = "dev.lysen.not.NEW_NOTE"

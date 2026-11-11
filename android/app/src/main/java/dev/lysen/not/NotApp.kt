@@ -60,6 +60,8 @@ class NotApp : Application() {
 
     val restTimer: RestTimer by lazy { RestTimer(this) }
 
+    val reminders: Reminders by lazy { Reminders(this) }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @OptIn(FlowPreview::class)
@@ -72,6 +74,8 @@ class NotApp : Application() {
                 listOf(TasksWidget(), HabitsWidget(), NotesWidget(), NoteWidget()).forEach { it.updateAll(this@NotApp) }
             }
         }
+        // Alarms follow the tasks: a new time, a completion, a pull from another device.
+        scope.launch { changes.debounce(1000).collect { reminders.reschedule() } }
     }
 
     fun clearSyncState() {
