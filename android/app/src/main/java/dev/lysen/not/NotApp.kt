@@ -7,6 +7,7 @@ import dev.lysen.not.core.NotStore
 import dev.lysen.not.core.StoreObserver
 import dev.lysen.not.core.SyncState
 import dev.lysen.not.widget.HabitsWidget
+import dev.lysen.not.widget.NextWidget
 import dev.lysen.not.widget.NoteWidget
 import dev.lysen.not.widget.NotesWidget
 import dev.lysen.not.widget.TasksWidget
@@ -71,7 +72,7 @@ class NotApp : Application() {
         // Widgets whose session ended need a nudge to re-render; coalesce bursts like a big pull.
         scope.launch {
             changes.drop(1).debounce(300).collect {
-                listOf(TasksWidget(), HabitsWidget(), NotesWidget(), NoteWidget()).forEach { it.updateAll(this@NotApp) }
+                listOf(TasksWidget(), NextWidget(), HabitsWidget(), NotesWidget(), NoteWidget()).forEach { it.updateAll(this@NotApp) }
             }
         }
         // Alarms follow the tasks: a new time, a completion, a pull from another device.

@@ -82,6 +82,7 @@ class MainActivity : ComponentActivity() {
                 "habits" -> HabitsWidgetReceiver::class.java
                 "notes" -> NotesWidgetReceiver::class.java
                 "note" -> NoteWidgetReceiver::class.java
+                "next" -> dev.lysen.not.widget.NextWidgetReceiver::class.java
                 else -> TasksWidgetReceiver::class.java
             }
             lifecycleScope.launch { Shortcuts.requestWidget(this@MainActivity, receiver) }

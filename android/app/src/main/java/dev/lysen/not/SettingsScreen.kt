@@ -189,6 +189,10 @@ private fun WidgetsPage() {
             scope.launch { Shortcuts.requestWidget(context, HabitsWidgetReceiver::class.java) }
         }
         Divider(Modifier.padding(start = 56.dp))
+        ShortcutRow(R.drawable.ic_today, "Up next widget", "The next task due, to tick off at a glance") {
+            scope.launch { Shortcuts.requestWidget(context, dev.lysen.not.widget.NextWidgetReceiver::class.java) }
+        }
+        Divider(Modifier.padding(start = 56.dp))
         ShortcutRow(R.drawable.ic_note, "Notes widget", "Pinned and recent notes of a folder") {
             scope.launch { Shortcuts.requestWidget(context, NotesWidgetReceiver::class.java) }
         }

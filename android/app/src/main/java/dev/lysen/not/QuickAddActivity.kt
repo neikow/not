@@ -45,14 +45,24 @@ class QuickAddActivity : ComponentActivity() {
         val wanted = intent.getStringExtra(MainActivity.EXTRA_LIST) ?: INBOX_ID
         // The list may have been deleted since the widget last rendered: fall back to the Inbox.
         val list = lists.firstOrNull { it.id == wanted } ?: lists.firstOrNull()
+        // From a Today or Upcoming widget: into the Inbox, due today or tomorrow unless typed.
+        val due = when (wanted) {
+            TODAY_ID -> today()
+            UPCOMING_ID -> java.time.LocalDate.now().plusDays(1).toString()
+            else -> null
+        }
         setContent {
             NotTheme {
                 QuickAddDialog(
-                    listTitle = list?.title ?: "Inbox",
+                    listTitle = when (wanted) {
+                        TODAY_ID -> "Today"
+                        UPCOMING_ID -> "Tomorrow"
+                        else -> list?.title ?: "Inbox"
+                    },
                     lists = lists,
                     onAdd = { draft ->
                         try {
-                            store.quickAdd(list?.id ?: INBOX_ID, draft.text, today(), draft.dismissed, null)
+                            store.quickAdd(list?.id ?: INBOX_ID, draft.text, today(), draft.dismissed, due)
                             SyncWorker.pushSoon(this)
                         } catch (e: NotException) {
                             Toast.makeText(this, e.userMessage, Toast.LENGTH_LONG).show()

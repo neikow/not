@@ -85,7 +85,9 @@ class WidgetConfigActivity : PickerConfigActivity() {
     override val dialogTitle = "Show in widget"
     override val widget = TasksWidget()
 
-    override fun options(store: NotStore) = store.lists().map { PickerOption(it.id, it.title) }
+    override fun options(store: NotStore) =
+        listOf(PickerOption(dev.lysen.not.TODAY_ID, "Today"), PickerOption(dev.lysen.not.UPCOMING_ID, "Upcoming")) +
+            store.lists().map { PickerOption(it.id, it.title) }
 
     override fun save(prefs: MutablePreferences, choice: String) {
         prefs[LIST_KEY] = choice

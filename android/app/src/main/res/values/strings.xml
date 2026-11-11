@@ -1,6 +1,8 @@
 <resources>
     <string name="app_name">not</string>
     <string name="widget_tasks">Tasks</string>
+    <string name="widget_next">Up next</string>
+    <string name="widget_next_description">The next task due, to tick off from the home screen</string>
     <string name="widget_tasks_description">Open tasks of one list, with checkboxes and quick add</string>
     <string name="widget_habits">Habits</string>
     <string name="widget_habits_description">Today\'s habits; tap one to check in</string>
