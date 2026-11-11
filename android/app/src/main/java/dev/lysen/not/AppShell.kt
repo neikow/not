@@ -1,5 +1,6 @@
 package dev.lysen.not
 
+import androidx.compose.ui.platform.LocalContext
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
@@ -59,7 +60,9 @@ fun NotAppUi(
     requestedTab: StateFlow<Tab?>,
     onTabShown: () -> Unit,
 ) {
-    var tab by rememberSaveable { mutableStateOf(Tab.Tasks) }
+    val memory = (LocalContext.current.applicationContext as NotApp).screenMemory
+    var tab by rememberSaveable { mutableStateOf(memory.tab) }
+    LaunchedEffect(tab) { memory.tab = tab }
     var showsSettings by rememberSaveable { mutableStateOf(false) }
     // Links from widgets and shortcuts switch tabs.
     val requested by requestedTab.collectAsStateWithLifecycle()

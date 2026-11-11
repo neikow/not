@@ -1,5 +1,7 @@
 package dev.lysen.not
 
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -42,7 +44,8 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
     private val app = application as NotApp
     private val store = app.store
     val timer: RestTimer = app.restTimer
-    private val _state = MutableStateFlow(WorkoutsState())
+    private val memory = app.screenMemory
+    private val _state = MutableStateFlow(WorkoutsState(openId = memory.workout))
     val state: StateFlow<WorkoutsState> = _state.asStateFlow()
 
     private val _undoables = Channel<Undoable>(Channel.CONFLATED)
@@ -50,6 +53,8 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
 
     init {
         viewModelScope.launch { app.changes.collect { reload() } }
+        // Cleared by reload() if the workout was deleted meanwhile.
+        viewModelScope.launch { state.map { it.openId }.distinctUntilChanged().collect { memory.workout = it } }
     }
 
     fun refreshToday() {

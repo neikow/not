@@ -63,6 +63,9 @@ class NotApp : Application() {
 
     val reminders: Reminders by lazy { Reminders(this) }
 
+    /** Where the app was left, to reopen there. */
+    val screenMemory: ScreenMemory by lazy { ScreenMemory(this) }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @OptIn(FlowPreview::class)

@@ -1,5 +1,7 @@
 package dev.lysen.not
 
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -38,7 +40,8 @@ data class NotesState(
 class NotesViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as NotApp
     private val store = app.store
-    private val _state = MutableStateFlow(NotesState())
+    private val memory = app.screenMemory
+    private val _state = MutableStateFlow(NotesState(folderId = memory.folder, openNoteId = memory.note))
     val state: StateFlow<NotesState> = _state.asStateFlow()
 
     private val _undoables = Channel<Undoable>(Channel.CONFLATED)
@@ -46,6 +49,12 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch { app.changes.collect { reload() } }
+        viewModelScope.launch {
+            state.map { it.folderId to it.openNoteId }.distinctUntilChanged().collect { (folder, note) ->
+                memory.folder = folder
+                memory.note = note
+            }
+        }
     }
 
     fun selectFolder(id: String?) {

@@ -1,5 +1,7 @@
 package dev.lysen.not
 
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import android.app.Application
 import android.os.Build
 import android.provider.Settings
@@ -80,7 +82,8 @@ const val UPCOMING_ID = "upcoming"
 class TasksViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as NotApp
     private val store = app.store
-    private val _state = MutableStateFlow(UiState())
+    private val memory = app.screenMemory
+    private val _state = MutableStateFlow(UiState(selectedListId = memory.list ?: INBOX_ID))
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val _undoables = Channel<Undoable>(Channel.CONFLATED)
@@ -95,6 +98,7 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         app.deleteSharedPreferences("sync")
         _state.update { it.copy(syncInfo = run { store.syncInfo() }) }
         viewModelScope.launch { app.changes.collect { reload() } }
+        viewModelScope.launch { state.map { it.selectedListId }.distinctUntilChanged().collect { memory.list = it } }
         viewModelScope.launch { app.syncState.collect { sync -> _state.update { it.copy(sync = sync) } } }
     }
 
