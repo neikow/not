@@ -1065,6 +1065,23 @@ impl NotStore {
         })
     }
 
+    // ---- export ----
+
+    /// Everything as readable JSON: lists and tasks, habits and check-ins, notes, workouts.
+    pub fn export_json(&self, today: String) -> Result<String, NotError> {
+        Ok(self.store.export_json(date(&today)?)?)
+    }
+
+    /// The whole workspace with its history, as one file for `restore_backup`.
+    pub fn backup(&self) -> Result<Vec<u8>, NotError> {
+        Ok(self.store.backup()?)
+    }
+
+    /// Merges a backup file in, like a sync: nothing on this device is lost or undone.
+    pub fn restore_backup(&self, bytes: Vec<u8>) -> Result<(), NotError> {
+        Ok(self.store.restore_backup(&bytes)?)
+    }
+
     // ---- sync ----
 
     /// `None` until this device is paired.

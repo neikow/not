@@ -3,6 +3,7 @@
 mod catalog;
 pub mod date;
 mod error;
+mod export;
 mod habits;
 pub mod markdown;
 mod notes;

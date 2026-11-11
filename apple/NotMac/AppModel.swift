@@ -481,6 +481,38 @@ final class AppModel {
         return f
     }()
 
+    // ---- export ----
+
+    /// Asks where, then writes everything as readable JSON.
+    func exportJSON() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "not-export-\(today).json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url,
+              let json = run({ try store.exportJson(today: today) }) else { return }
+        do { try Data(json.utf8).write(to: url) } catch { errorMessage = error.localizedDescription }
+    }
+
+    func saveBackup() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "not-backup-\(today).notbackup"
+        guard panel.runModal() == .OK, let url = panel.url, let bytes = run({ try store.backup() }) else { return }
+        do { try bytes.write(to: url) } catch { errorMessage = error.localizedDescription }
+    }
+
+    /// Merges a backup file in, like a sync.
+    func restoreBackup() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let bytes = try Data(contentsOf: url)
+            run { try store.restoreBackup(bytes: bytes) }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     // ---- reminders ----
 
     /// Open tasks that may want a reminder: due by today, and upcoming.

@@ -539,6 +539,19 @@ impl Store {
         self.write(|tree| Ok(tree.get_meta(id)?.insert(DELETED_AT, now_millis())?))
     }
 
+    /// Imports Loro bytes from outside sync (a backup), persisting and projecting them.
+    pub(crate) fn import_local(&self, bytes: &[u8]) -> Result<()> {
+        let (result, changed) = {
+            let mut inner = self.lock();
+            let result = self.doc.import(bytes).map(|_| ()).map_err(Error::from);
+            (result, self.flush(&mut inner)?)
+        };
+        if changed {
+            self.notify(ChangeOrigin::Remote);
+        }
+        result
+    }
+
     // ---- undo -----------------------------------------------------------------------------
 
     /// Reverts this session's last change (from any window or widget of this app). Returns false if

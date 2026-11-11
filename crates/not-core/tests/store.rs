@@ -746,3 +746,19 @@ fn search_finds_tasks_by_title_and_notes() {
     assert!(s.search_tasks("  ", 10).unwrap().is_empty());
     assert_eq!(s.search_tasks("milk", 1).unwrap().len(), 1);
 }
+
+#[test]
+fn export_and_backup_carry_everything() {
+    let s = Store::open_in_memory().unwrap();
+    let list = s.create_list("Home").unwrap();
+    s.quick_add(&list, "bins tomorrow 7am", today(), &[], None).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&s.export_json(today()).unwrap()).unwrap();
+    assert_eq!(json["lists"][1]["title"], "Home");
+    assert_eq!(json["lists"][1]["tasks"][0]["due_time"], "07:00");
+
+    let backup = s.backup().unwrap();
+    let fresh = Store::open_in_memory().unwrap();
+    fresh.restore_backup(&backup).unwrap();
+    assert_eq!(titles(&fresh.tasks(&list).unwrap()), ["bins"]);
+    assert!(fresh.restore_backup(b"hello").is_err());
+}

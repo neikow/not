@@ -132,6 +132,18 @@ private struct GeneralSettings: View {
                     .foregroundStyle(.secondary)
             }
             ReminderSettings(model: model)
+            Section {
+                HStack {
+                    Button("Export as JSON…") { model.exportJSON() }
+                    Button("Save Backup…") { model.saveBackup() }
+                    Button("Restore Backup…") { model.restoreBackup() }
+                }
+            } header: {
+                Text("Data")
+            } footer: {
+                Text("JSON is readable anywhere. A backup holds everything with its history; restoring merges it in like a sync, so nothing here is lost.")
+                    .foregroundStyle(.secondary)
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
     }

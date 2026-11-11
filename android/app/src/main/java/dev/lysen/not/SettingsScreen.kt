@@ -77,6 +77,7 @@ private enum class SettingsPage(val title: String, val icon: Int) {
     Sync("Sync", R.drawable.ic_sync),
     Reminders("Reminders", R.drawable.ic_schedule),
     Archive("Archive", R.drawable.ic_history),
+    Backup("Export and backup", R.drawable.ic_copy),
     Widgets("Widgets and shortcuts", R.drawable.ic_add_task),
     Workouts("Workouts", R.drawable.ic_fitness),
     About("About", R.drawable.ic_note),
@@ -122,6 +123,7 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
                     }
                     SettingsPage.Reminders -> item(key = "reminders") { RemindersPage() }
                     SettingsPage.Archive -> archivePage(state, tasks, toasts)
+                    SettingsPage.Backup -> item(key = "backup") { BackupPage(toasts) }
                     SettingsPage.Widgets -> item(key = "widgets") { WidgetsPage() }
                     SettingsPage.Workouts -> item(key = "workouts") { WorkoutsPage(workouts) }
                     SettingsPage.About -> item(key = "about") { AboutPage() }
@@ -150,6 +152,7 @@ private fun summary(page: SettingsPage, state: UiState): String = when (page) {
         1 -> "1 task done over a day ago"
         else -> "$n tasks done over a day ago"
     }
+    SettingsPage.Backup -> "Everything as JSON, or a backup file to restore"
     SettingsPage.Widgets -> "Home screen widgets and quick add"
     SettingsPage.Workouts -> "Rest timer, import from text"
     SettingsPage.About -> "Version ${BuildConfig.VERSION_NAME}, credits"
@@ -307,6 +310,67 @@ private fun LazyListScope.archivePage(state: UiState, viewModel: TasksViewModel,
                     Text(listOfNotNull(state.listTitle(task.listId), done).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
                 }
             }
+        }
+    }
+}
+
+/** Files go wherever the system picker says: Downloads, Drive, a USB stick. */
+@Composable
+private fun BackupPage(toasts: ToastState) {
+    val context = LocalContext.current
+    val store = (context.applicationContext as NotApp).store
+    val scope = rememberCoroutineScope()
+    fun say(message: String) = scope.launch { toasts.show(message) }
+    fun write(uri: android.net.Uri?, bytes: () -> ByteArray, done: String) {
+        uri ?: return
+        runCatching { context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(bytes()) } }
+            .onSuccess { say(done) }
+            .onFailure { say("Couldn't save: ${it.message}") }
+    }
+    val stamp = java.time.LocalDate.now().toString()
+    val exportJson = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        write(uri, { store.exportJson(stamp).toByteArray() }, "Exported")
+    }
+    val saveBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        write(uri, { store.backup() }, "Backup saved")
+    }
+    val restore = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        runCatching {
+            val bytes = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+            store.restoreBackup(bytes)
+        }.onSuccess { say("Backup merged in") }
+            .onFailure { say(if (it is dev.lysen.not.core.NotException) it.userMessage else "Couldn't read that file") }
+    }
+    Section("Export", padded = false) {
+        ActionRow(R.drawable.ic_code, "Export as JSON", "Lists, tasks, habits, notes and workouts, readable anywhere") {
+            exportJson.launch("not-export-$stamp.json")
+        }
+    }
+    Section("Backup", padded = false) {
+        ActionRow(R.drawable.ic_copy, "Save a backup file", "Everything with its history, to restore on any device") {
+            saveBackup.launch("not-backup-$stamp.notbackup")
+        }
+        Divider(Modifier.padding(start = 56.dp))
+        ActionRow(R.drawable.ic_history, "Restore from a backup", "Merges it in like a sync; nothing here is lost") {
+            restore.launch(arrayOf("*/*"))
+        }
+    }
+}
+
+@Composable
+private fun ActionRow(icon: Int, title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .pressable(onClick, pressedScale = 0.985f)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) { Icon(icon, null, tint = Not.colors.accentInk, size = 22.dp) }
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(title, style = Not.type.body)
+            Text(subtitle, style = Not.type.caption, color = Not.colors.inkMuted)
         }
     }
 }
