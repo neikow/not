@@ -72,6 +72,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
@@ -375,11 +376,17 @@ private fun WorkoutEditor(workout: Workout, state: WorkoutsState, viewModel: Wor
     // Hold an exercise to drag it up or down the session.
     val reorder = rememberReorderState(listState, workout.exercises) { it.id }
 
+    // Back while typing (a name, sets, the title) ends the edit, which saves it; only the next back
+    // leaves the workout. Registered after the screen's own handler, so it goes first.
+    var editing by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    BackHandler(enabled = editing) { focusManager.clearFocus() }
+
     LaunchedEffect(workout.title) { if (!titleFocused) title = workout.title }
     LaunchedEffect(workout.id) { if (workout.exercises.isEmpty()) addFocus.requestFocus() }
 
     Box(Modifier.fillMaxSize().background(colors.background)) {
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().onFocusChanged { editing = it.hasFocus }) {
             Row(
                 Modifier.fillMaxWidth().statusBarsPadding().height(56.dp).padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
