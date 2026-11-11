@@ -598,6 +598,7 @@ private fun ExerciseCard(
     LaunchedEffect(editingName) { if (editingName && exercise.name.isNotBlank()) nameFocus.requestFocus() }
     var draft by remember(exercise.id) { mutableStateOf("") }
     var editing by remember { mutableStateOf<Int?>(null) }
+    var pendingEdit by remember { mutableStateOf<Int?>(null) }
     var menu by remember { mutableStateOf(false) }
     val setsFocus = remember { FocusRequester() }
 
@@ -706,22 +707,41 @@ private fun ExerciseCard(
         val rows = exercise.lines.flatMapIndexed { i, line ->
             if (line.parsed && line.reps.size > 1) line.reps.indices.map { k -> i to k } else listOf(i to null)
         }
+        // The row tapped while its group was being split: opened once the split lines are in.
+        LaunchedEffect(exercise.lines, pendingEdit) {
+            if (pendingEdit != null && rows.size == exercise.lines.size) {
+                editing = pendingEdit
+                pendingEdit = null
+            }
+        }
         var number = 0
         rows.forEachIndexed { row, (i, k) ->
             val line = exercise.lines[i]
             val counts = line.parsed && !line.warmup && line.reps.isNotEmpty()
             if (counts) number++
             if (editing == row) {
-                LineEditor(line.raw, onDone = { text ->
-                    editing = null
-                    val lines = exercise.lines.map { it.raw }.toMutableList()
-                    if (text.isBlank()) lines.removeAt(i) else lines[i] = text.trim()
-                    if (lines != exercise.lines.map { it.raw }) viewModel.setSets(exercise, expandSets(lines.joinToString("\n")).lines())
-                })
+                LineEditor(
+                    line.raw,
+                    onDone = { text ->
+                        editing = null
+                        val lines = exercise.lines.map { it.raw }.toMutableList()
+                        if (text.isBlank()) lines.removeAt(i) else lines[i] = text.trim()
+                        if (lines != exercise.lines.map { it.raw }) viewModel.setSets(exercise, expandSets(lines.joinToString("\n")).lines())
+                    },
+                    // Backspace on an emptied line removes it and carries on at the end of the one above.
+                    onBackspaceWhenEmpty = {
+                        viewModel.setSets(exercise, exercise.lines.map { it.raw }.filterIndexed { n, _ -> n != i })
+                        editing = (row - 1).takeIf { it >= 0 }
+                    },
+                )
             } else {
                 SetRow(line, rep = k, number = number.takeIf { counts }, isLast = k == null || k == line.reps.lastIndex, onClick = {
-                    if (rows.size != exercise.lines.size) viewModel.setSets(exercise, expandSets(exercise.lines.joinToString("\n") { it.raw }).lines())
-                    editing = row
+                    if (rows.size != exercise.lines.size) {
+                        viewModel.setSets(exercise, expandSets(exercise.lines.joinToString("\n") { it.raw }).lines())
+                        pendingEdit = row
+                    } else {
+                        editing = row
+                    }
                 })
             }
         }
@@ -825,9 +845,11 @@ private fun SetLine.short(): String {
 }
 
 @Composable
-private fun LineEditor(initial: String, onDone: (String) -> Unit) {
+private fun LineEditor(initial: String, onDone: (String) -> Unit, onBackspaceWhenEmpty: (() -> Unit)? = null) {
     var text by remember { mutableStateOf(initial) }
     var wasFocused by remember { mutableStateOf(false) }
+    // Once backspace has removed the line, losing focus on the way out must not "save" it again.
+    var finished by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
     Field(
@@ -835,13 +857,19 @@ private fun LineEditor(initial: String, onDone: (String) -> Unit) {
         { text = it },
         "Empty removes the line",
         filled = true,
-        onDone = { onDone(text) },
+        onDone = { if (!finished) onDone(text) },
+        onBackspaceWhenEmpty = onBackspaceWhenEmpty?.let { back ->
+            {
+                finished = true
+                back()
+            }
+        },
         modifier = Modifier
             .fillMaxWidth()
             .padding(end = 12.dp)
             .focusRequester(focus)
             .onFocusChanged {
-                if (wasFocused && !it.isFocused) onDone(text)
+                if (wasFocused && !it.isFocused && !finished) onDone(text)
                 wasFocused = it.isFocused
             },
     )

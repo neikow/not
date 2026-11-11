@@ -1,5 +1,15 @@
 package dev.lysen.not.ui
 
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
@@ -255,7 +265,8 @@ fun Divider(modifier: Modifier = Modifier, color: Color = Not.colors.line) {
 
 /**
  * A text field without Material chrome: optional sunken pill, placeholder in faint ink. [onDone]
- * runs on the keyboard's Done for single-line fields.
+ * runs on the keyboard's Done for single-line fields. Text put in from outside lands with the
+ * cursor at its end. [onBackspaceWhenEmpty] runs when backspace is pressed with nothing left.
  */
 @Composable
 fun Field(
@@ -273,18 +284,35 @@ fun Field(
     imeAction: ImeAction = if (singleLine) ImeAction.Done else ImeAction.Default,
     onDone: () -> Unit = {},
     placeholderColor: Color? = null,
+    onBackspaceWhenEmpty: (() -> Unit)? = null,
 ) {
     val colors = Not.colors
+    var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
+    val latestBackspace by rememberUpdatedState(onBackspaceWhenEmpty)
     BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
+        value = field,
+        onValueChange = {
+            field = it
+            if (it.text != value) onValueChange(it.text)
+        },
         singleLine = singleLine,
         minLines = minLines,
         textStyle = style.merge(color = colors.ink),
         cursorBrush = SolidColor(colors.accentInk),
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = imeAction),
         keyboardActions = KeyboardActions(onDone = { onDone() }),
-        modifier = modifier,
+        modifier = modifier.then(
+            if (onBackspaceWhenEmpty == null) Modifier
+            else Modifier.onPreviewKeyEvent { event ->
+                if (event.key == Key.Backspace && field.text.isEmpty()) {
+                    if (event.type == KeyEventType.KeyDown) latestBackspace?.invoke()
+                    true
+                } else {
+                    false
+                }
+            },
+        ),
         decorationBox = { inner ->
             Row(
                 Modifier
