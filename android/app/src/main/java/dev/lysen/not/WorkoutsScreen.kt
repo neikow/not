@@ -427,11 +427,13 @@ private fun WorkoutEditor(workout: Workout, state: WorkoutsState, viewModel: Wor
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 item(key = "title") {
+                    // Untitled sessions are known by their date: shown as a real title, not a hint.
                     Field(
                         title,
                         { title = it },
-                        dayLabel(workout.date, state.today),
+                        if (titleFocused) "Name this workout" else dayLabel(workout.date, state.today),
                         style = Not.type.display,
+                        placeholderColor = if (titleFocused) colors.inkFaint else colors.ink,
                         onDone = { viewModel.update(workout, title = title) },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -668,22 +670,29 @@ private fun ExerciseCard(
             }
         }
 
-        Column(Modifier.padding(start = 8.dp).alpha(fade), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        val revision = viewModel.state.collectAsStateWithLifecycle().value.revision
-        val info = remember(exercise.name, revision) { viewModel.exerciseInfo(exercise.name) }
-        if (info != null) {
-            Text((info.muscles + info.equipment).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint)
-        }
-
-        exercise.previous?.takeUnless { exercise.done }?.let { previous ->
-            Row(Modifier.padding(end = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Column(Modifier.weight(1f)) {
-                    Text("Last · ${dayLabel(previous.date, today)}", style = Not.type.caption, color = colors.inkMuted)
-                    Text(previous.lines.joinToString("  ·  ") { it.label }, style = Not.type.caption, color = colors.inkFaint, maxLines = 2)
-                }
-                if (exercise.sets.isEmpty()) {
-                    Button("Same again", { viewModel.setSets(exercise, previous.lines.map { it.raw }) }, kind = ButtonKind.Quiet, icon = R.drawable.ic_copy)
-                }
+        // Lined up under the name, past the check.
+        Column(Modifier.padding(start = 46.dp).alpha(fade), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // Last time: only until the first set is in, as one line with a copy button. After that
+        // the history (chart icon) has it, and the card shows just today.
+        val previous = exercise.previous
+        if (previous != null && exercise.sets.isEmpty() && !exercise.done) {
+            Row(
+                Modifier
+                    .padding(end = 12.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.sunken)
+                    .padding(start = 12.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Last ${dayLabel(previous.date, today)} · ${previous.lines.filter { it.parsed && !it.warmup }.ifEmpty { previous.lines }.joinToString(", ") { it.short() }}",
+                    style = Not.type.caption,
+                    color = colors.inkMuted,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(R.drawable.ic_copy, "Same as last time", { viewModel.setSets(exercise, previous.lines.map { it.raw }) }, tint = colors.accentInk)
             }
         }
 
@@ -706,7 +715,8 @@ private fun ExerciseCard(
         Field(
             draft,
             { draft = it },
-            exercise.previous?.lines?.lastOrNull { it.parsed && !it.warmup }?.raw ?: "24kg x 10 x 3",
+            // Says what it's for, so it never reads as a set already logged.
+            "Add set, e.g. ${exercise.previous?.lines?.lastOrNull { it.parsed && !it.warmup }?.raw ?: "24kg x 10 x 3"}",
             leading = { Icon(R.drawable.ic_add, null, tint = colors.inkFaint, size = 18.dp) },
             trailing = {
                 if (preview != null) {
@@ -747,7 +757,7 @@ private fun SessionProgress(exercises: List<WorkoutExercise>) {
             Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().clip(CircleShape).background(colors.accent))
         }
         Text(
-            if (done == exercises.size) "All done" else "$done of ${exercises.size}",
+            if (done == exercises.size) "All done" else "$done of ${exercises.size} done",
             style = Not.type.caption,
             color = if (done == exercises.size) colors.accentInk else colors.inkMuted,
         )
@@ -757,36 +767,58 @@ private fun SessionProgress(exercises: List<WorkoutExercise>) {
 @Composable
 private fun SetRow(line: SetLine, onClick: () -> Unit) {
     val colors = Not.colors
+    val working = line.parsed && !line.warmup
     Row(
         Modifier
             .fillMaxWidth()
             .pressable(onClick, pressedScale = 0.98f, onClickLabel = "Edit")
-            .heightIn(min = 32.dp)
+            .heightIn(min = 36.dp)
             .padding(end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Box(
-            Modifier
-                .size(7.dp)
-                .clip(CircleShape)
-                .background(
-                    when {
-                        !line.parsed -> Color.Transparent
-                        line.warmup -> colors.inkFaint
-                        else -> colors.accent
-                    },
-                ),
-        )
-        Text(
-            line.label,
-            style = if (line.parsed && !line.warmup) Not.type.bodyStrong else Not.type.body.merge(fontStyle = if (line.parsed) FontStyle.Normal else FontStyle.Italic),
-            color = if (line.parsed && !line.warmup) colors.ink else colors.inkMuted,
-        )
+        when {
+            !line.parsed -> Text(line.raw, style = Not.type.body.merge(fontStyle = FontStyle.Italic), color = colors.inkMuted, modifier = Modifier.weight(1f))
+            line.reps.isEmpty() -> Text(line.label, style = Not.type.bodyStrong, color = colors.ink, modifier = Modifier.weight(1f))
+            else -> {
+                if (line.warmup) Tag("Warm-up")
+                // "24 kg · 10 reps", the number of sets apart on the right.
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    line.weight?.let { Text("${formatWeight(it)} ${line.unit}", style = Not.type.bodyStrong, color = if (working) colors.ink else colors.inkMuted) }
+                    val reps = line.reps.distinct()
+                    Text(
+                        if (reps.size == 1) "${reps[0]} reps" else line.reps.joinToString(", ") + " reps",
+                        style = Not.type.body,
+                        color = if (working) colors.ink else colors.inkMuted,
+                    )
+                }
+                if (line.reps.size > 1 && line.reps.distinct().size == 1) {
+                    Text("×${line.reps.size}", style = Not.type.label, color = colors.inkMuted)
+                }
+            }
+        }
         line.note?.let {
-            Text(it, style = Not.type.body.merge(fontStyle = FontStyle.Italic), color = colors.inkMuted, maxLines = 2, modifier = Modifier.weight(1f, fill = false))
+            Text(it, style = Not.type.caption.merge(fontStyle = FontStyle.Italic), color = colors.inkMuted, maxLines = 1, modifier = Modifier.weight(0.6f, fill = false))
         }
     }
+}
+
+@Composable
+private fun Tag(text: String) {
+    Text(
+        text,
+        style = Not.type.caption,
+        color = Not.colors.inkMuted,
+        modifier = Modifier.clip(CircleShape).background(Not.colors.sunken).padding(horizontal = 8.dp, vertical = 2.dp),
+    )
+}
+
+/** "24 kg × 10 ×3", "18 kg × 10, 8", or the label for cardio and notes: for one-line summaries. */
+private fun SetLine.short(): String {
+    if (!parsed || reps.isEmpty()) return label
+    val weight = weight?.let { "${formatWeight(it)} $unit × " } ?: ""
+    val distinct = reps.distinct()
+    return if (distinct.size == 1) "$weight${distinct[0]}${if (reps.size > 1) " ×${reps.size}" else ""}" else weight + reps.joinToString(", ")
 }
 
 @Composable

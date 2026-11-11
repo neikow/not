@@ -272,6 +272,7 @@ fun Field(
     trailing: (@Composable RowScope.() -> Unit)? = null,
     imeAction: ImeAction = if (singleLine) ImeAction.Done else ImeAction.Default,
     onDone: () -> Unit = {},
+    placeholderColor: Color? = null,
 ) {
     val colors = Not.colors
     BasicTextField(
@@ -294,7 +295,7 @@ fun Field(
             ) {
                 leading?.invoke(this)
                 Box(Modifier.weight(1f)) {
-                    if (value.isEmpty()) Text(placeholder, style = style, color = colors.inkFaint, maxLines = if (singleLine) 1 else Int.MAX_VALUE)
+                    if (value.isEmpty()) Text(placeholder, style = style, color = placeholderColor ?: colors.inkFaint, maxLines = if (singleLine) 1 else Int.MAX_VALUE)
                     inner()
                 }
                 trailing?.invoke(this)
