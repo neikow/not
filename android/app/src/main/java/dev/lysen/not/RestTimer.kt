@@ -18,6 +18,10 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Countdown between sets. While it runs, a quiet notification counts down in the shade; at the end
  * an alarm (exact, so it's on time with the screen off) posts a buzzing "Rest is over".
+ *
+ * On Android 16+ the countdown asks to be a Live Update: a ticking chip in the status bar, at the
+ * top of the lock screen and in Samsung's Now Bar. Older versions, or a user who turned it off for
+ * the app, get the plain ongoing notification.
  */
 class RestTimer(private val context: Context) {
     private val prefs = context.getSharedPreferences("rest", Context.MODE_PRIVATE)
@@ -94,6 +98,9 @@ class RestTimer(private val context: Context) {
             NotificationCompat.Builder(context, CHANNEL_RUNNING)
                 .setSmallIcon(R.drawable.ic_timer)
                 .setContentTitle("Resting")
+                .setContentText("Next set when this runs out")
+                .setCategory(NotificationCompat.CATEGORY_STOPWATCH)
+                .setRequestPromotedOngoing(true)
                 .setUsesChronometer(true)
                 .setChronometerCountDown(true)
                 .setWhen(ends)
