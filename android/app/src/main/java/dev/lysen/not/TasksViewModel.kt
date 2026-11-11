@@ -34,6 +34,8 @@ data class UiState(
     val dueCount: Int = 0,
     /** Every task of the open task's list, for its subtasks (Today only shows due ones). */
     val openTaskList: List<TaskItem> = emptyList(),
+    /** Tasks completed over a day ago, from every list, latest first; Settings → Archive. */
+    val archive: List<TaskItem> = emptyList(),
     /** The task open in the detail sheet. */
     val openTaskId: String? = null,
     val sync: SyncState? = null,
@@ -126,6 +128,18 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         run { store.setCompleted(task.id, completing, today()) } ?: return
         if (completing) _undoables.trySend(Undoable("“${task.title}” done"))
     }
+
+    /** Puts an archived task back in its list, open. */
+    fun restore(task: TaskItem) {
+        run { store.setCompleted(task.id, false, today()) }
+    }
+
+    fun deleteArchived(task: TaskItem) {
+        run { store.deleteItem(task.id) }
+    }
+
+    /** Returns how many were deleted, for the Undo toast. */
+    fun clearArchive(): Int = run { store.clearArchive() }?.toInt() ?: 0
 
     fun setSort(listId: String, sort: TaskSort) {
         run { store.setListSort(listId, sort) }
@@ -232,6 +246,7 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun reloadTasks() {
         val due = run { store.dueTasks(today()) } ?: return
+        val archive = run { store.archive() }.orEmpty()
         val outline = if (_state.value.isToday) {
             Outline(due.map { OutlineRow(it, 0u, false) }, emptyList())
         } else {
@@ -242,6 +257,7 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
             val open = (outline.open + outline.completed).firstOrNull { it.task.id == s.openTaskId }?.task
             s.copy(
                 outline = outline,
+                archive = archive,
                 dueCount = due.size,
                 openTaskId = open?.id,
                 openTaskList = open?.let { run { store.tasks(it.listId) } }.orEmpty(),

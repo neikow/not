@@ -689,3 +689,33 @@ fn lists_sort_their_open_tasks() {
     s.set_list_sort(INBOX, TaskSort::Title).unwrap();
     assert_eq!(s.lists().unwrap()[0].sort, TaskSort::Title);
 }
+
+#[test]
+fn completed_tasks_move_to_the_archive_after_a_day() {
+    let s = Store::open_in_memory().unwrap();
+    let list = s.create_list("Home").unwrap();
+    let old = s.add_task(&list, "old").unwrap();
+    s.add_task(&old, "old.1").unwrap();
+    let recent = s.add_task(INBOX, "recent").unwrap();
+    s.add_task(&list, "open").unwrap();
+    s.set_completed(&old, true, today()).unwrap();
+    s.set_completed(&recent, true, today()).unwrap();
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    assert_eq!(s.outline_at(&list, now).unwrap().completed.len(), 2, "old and its subtask, still today");
+    assert!(s.archive(now).unwrap().is_empty());
+
+    let later = now + not_core::ARCHIVE_AFTER_MS + 1000;
+    assert!(s.outline_at(&list, later).unwrap().completed.is_empty());
+    assert_eq!(titles(&s.archive(later).unwrap()), ["recent", "old"]);
+
+    // Reopening brings it back to its list.
+    s.set_completed(&old, false, today()).unwrap();
+    assert_eq!(s.outline_at(&list, later).unwrap().open.len(), 3);
+    assert_eq!(titles(&s.archive(later).unwrap()), ["recent"]);
+
+    assert_eq!(s.clear_archive(later).unwrap(), 1);
+    assert!(s.archive(later).unwrap().is_empty());
+    assert!(s.undo().unwrap());
+    assert_eq!(titles(&s.archive(later).unwrap()), ["recent"]);
+}

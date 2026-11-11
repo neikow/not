@@ -6,6 +6,14 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.draw.rotate
 import dev.lysen.not.ui.RoundCheck
+import dev.lysen.not.ui.EmptyState
+import dev.lysen.not.ui.SwipeAction
+import dev.lysen.not.ui.SwipeRow
+import dev.lysen.not.ui.ToastHost
+import dev.lysen.not.ui.ToastState
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -63,6 +71,7 @@ import kotlinx.coroutines.launch
 /** What Settings holds, one page each. */
 private enum class SettingsPage(val title: String, val icon: Int) {
     Sync("Sync", R.drawable.ic_sync),
+    Archive("Archive", R.drawable.ic_history),
     Widgets("Widgets and shortcuts", R.drawable.ic_add_task),
     Workouts("Workouts", R.drawable.ic_fitness),
     About("About", R.drawable.ic_note),
@@ -74,7 +83,9 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
     val state by tasks.state.collectAsStateWithLifecycle()
     var page by rememberSaveable { mutableStateOf<SettingsPage?>(null) }
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val toasts = remember { ToastState() }
 
+    Box(Modifier.fillMaxSize()) {
     val shown = page
     if (shown == null) {
         LargeTitleScreen(
@@ -104,12 +115,15 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
                     SettingsPage.Sync -> item(key = "sync") {
                         Section(null) { if (state.syncInfo == null) PairForm(state, tasks) else PairedInfo(state, tasks) }
                     }
+                    SettingsPage.Archive -> archivePage(state, tasks, toasts)
                     SettingsPage.Widgets -> item(key = "widgets") { WidgetsPage() }
                     SettingsPage.Workouts -> item(key = "workouts") { WorkoutsPage(workouts) }
                     SettingsPage.About -> item(key = "about") { AboutPage() }
                 }
             }
         }
+    }
+    ToastHost(toasts, Modifier.align(Alignment.BottomCenter).padding(bottom = bottom + 16.dp))
     }
 
     state.error?.let {
@@ -124,6 +138,11 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
 /** The line under a category: where things stand there, at a glance. */
 private fun summary(page: SettingsPage, state: UiState): String = when (page) {
     SettingsPage.Sync -> state.syncInfo?.let { "${it.serverUrl.removePrefix("https://").removePrefix("http://")} · ${syncStatus(state.sync)}" } ?: "Not paired"
+    SettingsPage.Archive -> when (val n = state.archive.size) {
+        0 -> "Tasks done over a day ago"
+        1 -> "1 task done over a day ago"
+        else -> "$n tasks done over a day ago"
+    }
     SettingsPage.Widgets -> "Home screen widgets and quick add"
     SettingsPage.Workouts -> "Rest timer, import from text"
     SettingsPage.About -> "Version ${BuildConfig.VERSION_NAME}, credits"
@@ -231,6 +250,55 @@ private fun WorkoutsPage(viewModel: WorkoutsViewModel) {
                     style = Not.type.caption,
                     color = if (n == 0) colors.danger else colors.inkMuted,
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Tasks done over a day ago, out of their lists' way. Untick one to put it back; swipe it away to
+ * delete it. Each row says where it came from and when it was done.
+ */
+private fun LazyListScope.archivePage(state: UiState, viewModel: TasksViewModel, toasts: ToastState) {
+    if (state.archive.isEmpty()) {
+        item(key = "empty") {
+            EmptyState(R.drawable.ic_history, "Nothing archived", "Tasks you complete stay in their list for a day, then move here.")
+        }
+        return
+    }
+    item(key = "clear") {
+        val scope = rememberCoroutineScope()
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
+            Button("Delete all", {
+                val n = viewModel.clearArchive()
+                if (n > 0) scope.launch { if (toasts.show(if (n == 1) "1 task deleted" else "$n tasks deleted", action = "Undo")) viewModel.undo() }
+            }, kind = ButtonKind.Quiet, icon = R.drawable.ic_delete)
+        }
+    }
+    items(state.archive, key = { it.id }) { task ->
+        val colors = Not.colors
+        val scope = rememberCoroutineScope()
+        SwipeRow(
+            start = null,
+            end = SwipeAction(R.drawable.ic_delete, colors.danger, Color.White, dismisses = true) {
+                viewModel.deleteArchived(task)
+                scope.launch { if (toasts.show("Task deleted", action = "Undo")) viewModel.undo() }
+            },
+            modifier = Modifier.animateItem(),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().background(colors.background).heightIn(min = 56.dp).padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RoundCheck(true, {
+                    viewModel.restore(task)
+                    scope.launch { if (toasts.show("Back in ${state.listTitle(task.listId)}", action = "Undo")) viewModel.undo() }
+                }, contentDescription = "Put back in ${state.listTitle(task.listId)}")
+                Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                    Text(task.title, style = Not.type.body, color = colors.inkMuted)
+                    val done = task.completedAt?.let { DateUtils.getRelativeTimeSpanString(it, System.currentTimeMillis(), DateUtils.DAY_IN_MILLIS) }
+                    Text(listOfNotNull(state.listTitle(task.listId), done).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
+                }
             }
         }
     }

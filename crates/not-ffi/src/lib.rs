@@ -1018,6 +1018,16 @@ impl NotStore {
             .collect())
     }
 
+    /// Tasks completed over a day ago, from every list, latest first. Reopening one puts it back.
+    pub fn archive(&self) -> Result<Vec<TaskItem>, NotError> {
+        Ok(self.store.archive(now_millis())?.into_iter().map(TaskItem::from).collect())
+    }
+
+    /// Deletes everything in the archive (one undo step). Returns how many tasks.
+    pub fn clear_archive(&self) -> Result<u32, NotError> {
+        Ok(self.store.clear_archive(now_millis())?)
+    }
+
     pub fn outline(&self, list_id: String) -> Result<Outline, NotError> {
         let outline = self.store.outline(&list_id)?;
         let rows = |rows: Vec<not_core::OutlineRow>| {
@@ -1287,4 +1297,10 @@ impl From<SyncStatus> for SyncState {
 /// Clones the observer out so callbacks never run while holding the lock.
 fn current(observer: &SharedObserver) -> Option<Arc<dyn StoreObserver>> {
     observer.lock().unwrap().clone()
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }

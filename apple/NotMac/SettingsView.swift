@@ -10,6 +10,9 @@ struct SettingsView: View {
             Tab("General", systemImage: "gearshape") {
                 GeneralSettings()
             }
+            Tab("Archive", systemImage: "archivebox") {
+                ArchiveSettings(model: model)
+            }
             Tab("Workouts", systemImage: "dumbbell") {
                 WorkoutSettings(model: model)
             }
@@ -33,6 +36,50 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460)
+    }
+}
+
+/// Tasks done over a day ago, out of their lists' way. ⌘Z undoes a restore or delete.
+private struct ArchiveSettings: View {
+    let model: AppModel
+
+    var body: some View {
+        Form {
+            Section {
+                if model.archive.isEmpty {
+                    Text("Tasks you complete stay in their list for a day, then move here.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(model.archive, id: \.id) { task in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(task.title)
+                            Text(detail(task)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Put Back") { model.restore(task) }
+                            .help("Reopen it in \(model.listTitle(task.listId))")
+                        Button(role: .destructive) { model.delete(id: task.id) } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless)
+                            .help("Delete")
+                    }
+                }
+            } footer: {
+                if !model.archive.isEmpty {
+                    HStack {
+                        Spacer()
+                        Button("Delete All", role: .destructive) { model.clearArchive() }
+                    }
+                }
+            }
+        }
+        .frame(minHeight: 320)
+    }
+
+    private func detail(_ task: TaskItem) -> String {
+        guard let at = task.completedAt else { return model.listTitle(task.listId) }
+        let date = Date(timeIntervalSince1970: TimeInterval(at) / 1000)
+        return "\(model.listTitle(task.listId)) · \(date.formatted(.relative(presentation: .named)))"
     }
 }
 

@@ -29,6 +29,9 @@ const EXERCISE_LINKS: &str = "exercise_links";
 /// List id (or [`INBOX`]) → how its open tasks are sorted; absent means [`TaskSort::Manual`].
 const TASK_SORT: &str = "task_sort";
 
+/// Completed tasks stay in their list this long, then move to the archive.
+pub const ARCHIVE_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// Id of the built-in Inbox list. It isn't a node: tasks at the root of the tree are in the Inbox,
 /// so there is nothing to create and two fresh devices can't end up with an Inbox each.
 pub const INBOX: &str = "inbox";
@@ -119,8 +122,8 @@ pub struct OutlineRow {
     pub done: bool,
 }
 
-/// A list as shown: open tasks (with all their subtasks) in user order, then completed tasks,
-/// most recently completed first.
+/// A list as shown: open tasks (with all their subtasks) in user order, then tasks completed in the
+/// last [`ARCHIVE_AFTER_MS`], most recently completed first. Older ones are in [`Store::archive`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outline {
     pub open: Vec<OutlineRow>,
@@ -618,11 +621,17 @@ impl Store {
 
     /// The tasks of a list arranged for display. See [`Outline`].
     pub fn outline(&self, list_id: &str) -> Result<Outline> {
+        self.outline_at(list_id, now_millis())
+    }
+
+    /// [`Store::outline`] as of `now` (Unix millis).
+    pub fn outline_at(&self, list_id: &str, now: i64) -> Result<Outline> {
         let mut children = self.sorted_children(list_id, self.list_sort(list_id))?;
         let (mut completed, open): (Vec<_>, Vec<_>) = children
             .remove(&None)
             .unwrap_or_default()
             .into_iter()
+            .filter(|t| t.completed_at.is_none_or(|at| at > now - ARCHIVE_AFTER_MS))
             .partition(|t| t.completed_at.is_some());
         completed.sort_by_key(|t| std::cmp::Reverse(t.completed_at));
 
@@ -634,6 +643,35 @@ impl Store {
             push_subtree(&mut outline.completed, &mut children, task, 0, true);
         }
         Ok(outline)
+    }
+
+    /// Top-level tasks from every list completed more than [`ARCHIVE_AFTER_MS`] before `now`,
+    /// most recently completed first. Their subtasks go with them.
+    pub fn archive(&self, now: i64) -> Result<Vec<Task>> {
+        let inner = self.lock();
+        let mut stmt = inner.db.prepare_cached(&format!(
+            "SELECT {TASK_COLUMNS} FROM task t
+             WHERE t.parent_id IS NULL AND t.completed_at IS NOT NULL AND t.completed_at <= ?1
+             ORDER BY t.completed_at DESC, t.id"
+        ))?;
+        let rows = stmt.query_map([now - ARCHIVE_AFTER_MS], task_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Deletes everything in the archive as of `now`, in one undo step. Returns how many tasks.
+    pub fn clear_archive(&self, now: i64) -> Result<u32> {
+        let ids = self
+            .archive(now)?
+            .into_iter()
+            .map(|t| tree_id(&t.id))
+            .collect::<Result<Vec<_>>>()?;
+        let deleted_at = now_millis();
+        self.write(|tree| {
+            for &id in &ids {
+                tree.get_meta(id)?.insert(DELETED_AT, deleted_at)?;
+            }
+            Ok(ids.len() as u32)
+        })
     }
 
     /// A list's tasks grouped by parent task (`None` for top-level), each group in `sort` order.

@@ -12,6 +12,8 @@ final class AppModel {
     private(set) var outline = Outline(open: [], completed: [])
     /// Open tasks due today or earlier, for the Today badge.
     private(set) var dueCount = 0
+    /// Tasks completed over a day ago, from every list, latest first (Settings → Archive).
+    private(set) var archive: [TaskItem] = []
     /// Every task of the selected task's list, for its subtasks (Today only shows due ones).
     private var selectedTaskList: [TaskItem] = []
     private(set) var syncState: SyncState?
@@ -644,6 +646,15 @@ final class AppModel {
     // MARK: Undo
 
     func undo() { run { _ = try store.undo() } }
+
+    /// Puts an archived task back in its list, open.
+    func restore(_ task: TaskItem) {
+        run { try store.setCompleted(id: task.id, completed: false, today: today) }
+    }
+
+    func clearArchive() {
+        run { _ = try store.clearArchive() }
+    }
     func redo() { run { _ = try store.redo() } }
 
     /// `not://add?title=Milk[&list=Groceries]` — the list is matched by title, else the Inbox.
@@ -735,6 +746,7 @@ final class AppModel {
     private func reloadTasks() {
         let due = run { try store.dueTasks(today: today) } ?? []
         dueCount = due.count
+        archive = run { try store.archive() } ?? []
         if isToday {
             outline = Outline(open: due.map { OutlineRow(task: $0, depth: 0, done: false) }, completed: [])
         } else if let list = selectedListID, let outline = run({ try store.outline(listId: list) }) {

@@ -21,7 +21,7 @@ pub use not_protocol::PairingLink;
 pub use notes::{Folder, NoteSummary};
 pub use parse::{ParsedTask, Token, TokenKind, parse_task};
 pub use schedule::{Freq, Repeat, Schedule, due_label};
-pub use store::{ChangeOrigin, INBOX, List, ListenerId, Outline, OutlineRow, Store, Task, TaskSort, WORKSPACE};
+pub use store::{ARCHIVE_AFTER_MS, ChangeOrigin, INBOX, List, ListenerId, Outline, OutlineRow, Store, Task, TaskSort, WORKSPACE};
 pub use sync::{Credentials, Outgoing};
 pub use workouts::{ExerciseLog, SetLine, Workout, WorkoutExercise, WorkoutSummary, parse_sets};
 #[cfg(feature = "net")]
