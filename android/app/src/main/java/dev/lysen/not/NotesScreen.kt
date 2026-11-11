@@ -1,5 +1,6 @@
 package dev.lysen.not
 
+import dev.lysen.not.core.NoteSort
 import dev.lysen.not.ui.OnTabGesture
 import dev.lysen.not.ui.PullAction
 import dev.lysen.not.ui.TabGesture
@@ -140,7 +141,10 @@ private fun NoteList(state: NotesState, viewModel: NotesViewModel, showsFolders:
         title = state.folder?.title ?: "Notes",
         state = listState,
         actions = {
-            if (!searching) IconButton(R.drawable.ic_search, "Search", { viewModel.search("") })
+            if (!searching) {
+                NoteSortMenu(state.folder?.sort ?: state.allSort, byHand = state.folder != null) { viewModel.setSort(it) }
+                IconButton(R.drawable.ic_search, "Search", { viewModel.search("") })
+            }
         },
         header = {
             if (searching) {
@@ -260,7 +264,6 @@ private fun FoldersSheet(
                             menu,
                             onDismiss = { menu = false },
                             onRename = { onRename(folder) },
-                            onManualOrder = { viewModel.setManualOrder(folder, it) },
                             onDelete = {
                                 // Close so the Undo toast underneath shows.
                                 close()
@@ -353,7 +356,6 @@ private fun FolderChips(state: NotesState, viewModel: NotesViewModel, onNewFolde
                     menu,
                     onDismiss = { menu = false },
                     onRename = { onRename(folder) },
-                    onManualOrder = { viewModel.setManualOrder(folder, it) },
                     onDelete = { viewModel.deleteFolder(folder) },
                 )
             }
@@ -465,24 +467,45 @@ private fun NoteCard(
     }
 }
 
+private val NoteSort.label: String
+    get() = when (this) {
+        NoteSort.EDITED -> "Last edited"
+        NoteSort.CREATED -> "Date created"
+        NoteSort.TITLE -> "Title"
+        NoteSort.MANUAL -> "Manual"
+    }
+
+/** Faint while notes are newest-edit first; dragging a note in a folder switches it to Manual. */
+@Composable
+private fun NoteSortMenu(sort: NoteSort, byHand: Boolean, onSort: (NoteSort) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(
+            R.drawable.ic_sort,
+            "Sort: ${sort.label}",
+            { open = true },
+            tint = if (sort == NoteSort.EDITED) Not.colors.inkFaint else Not.colors.accentInk,
+        )
+        Menu(open, onDismiss = { open = false }) {
+            NoteSort.entries.filter { byHand || it != NoteSort.MANUAL }.forEach { option ->
+                MenuItem(option.label, checked = option == sort, onClick = {
+                    open = false
+                    onSort(option)
+                })
+            }
+        }
+    }
+}
+
 @Composable
 private fun FolderMenu(
     folder: Folder,
     expanded: Boolean,
     onDismiss: () -> Unit,
     onRename: () -> Unit,
-    onManualOrder: (Boolean) -> Unit,
     onDelete: () -> Unit,
 ) {
     Menu(expanded, onDismiss = onDismiss) {
-        MenuItem(
-            if (folder.manualOrder) "Sort by latest edit" else "Sort by hand",
-            icon = R.drawable.ic_sort,
-            onClick = {
-                onDismiss()
-                onManualOrder(!folder.manualOrder)
-            },
-        )
         MenuItem("Rename folder", icon = R.drawable.ic_edit, onClick = {
             onDismiss()
             onRename()

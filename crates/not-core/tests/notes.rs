@@ -1,7 +1,7 @@
 mod common;
 
 use common::Log;
-use not_core::{NoteSummary, Store};
+use not_core::{NoteSort, NoteSummary, Store};
 
 fn titles(notes: &[NoteSummary]) -> Vec<&str> {
     notes.iter().map(|n| n.title.as_str()).collect()
@@ -173,4 +173,36 @@ fn manual_order_syncs() {
     log.sync(&phone);
     assert_eq!(titles(&phone.notes(Some(&f)).unwrap()), ["b", "a"]);
     assert!(phone.folders().unwrap()[0].manual_order);
+}
+
+#[test]
+fn folders_and_all_notes_sort_by_edit_creation_or_title() {
+    let store = Store::open_in_memory().unwrap();
+    let work = store.create_folder(None, "Work").unwrap();
+    let pause = || std::thread::sleep(std::time::Duration::from_millis(3));
+    let banana = store.create_note(Some(&work), "banana").unwrap();
+    pause();
+    store.create_note(Some(&work), "Apple").unwrap();
+    pause();
+    store.create_note(Some(&work), "cherry").unwrap();
+    pause();
+    store.set_note_body(&banana, "banana\nedited last").unwrap();
+
+    assert_eq!(store.folders().unwrap()[0].sort, NoteSort::Edited);
+    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["banana", "cherry", "Apple"]);
+    store.set_note_sort(Some(&work), NoteSort::Created).unwrap();
+    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["cherry", "Apple", "banana"]);
+    store.set_note_sort(Some(&work), NoteSort::Title).unwrap();
+    assert_eq!(store.folders().unwrap()[0].sort, NoteSort::Title);
+    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["Apple", "banana", "cherry"]);
+
+    // By hand starts from what was shown.
+    store.set_note_sort(Some(&work), NoteSort::Manual).unwrap();
+    assert!(store.folders().unwrap()[0].manual_order);
+    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["Apple", "banana", "cherry"]);
+
+    store.set_note_sort(None, NoteSort::Title).unwrap();
+    assert_eq!(store.all_notes_sort(), NoteSort::Title);
+    assert_eq!(titles(&store.notes(None).unwrap()), ["Apple", "banana", "cherry"]);
+    assert!(store.set_note_sort(None, NoteSort::Manual).is_err());
 }

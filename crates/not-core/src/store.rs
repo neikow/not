@@ -28,6 +28,8 @@ const WORKOUTS_TREE: &str = "workouts";
 const EXERCISE_LINKS: &str = "exercise_links";
 /// List id (or [`INBOX`]) → how its open tasks are sorted; absent means [`TaskSort::Manual`].
 const TASK_SORT: &str = "task_sort";
+/// `"all"` → how All Notes sorts (see [`crate::NoteSort`]); folders keep theirs on the folder.
+const NOTE_SORT: &str = "note_sort";
 
 /// Completed tasks stay in their list this long, then move to the archive.
 pub const ARCHIVE_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
@@ -158,6 +160,7 @@ pub struct Store {
     /// The user's exercise name keys → catalogue ids; see [`crate::catalog`].
     pub(crate) exercise_links: LoroMap,
     task_sort: LoroMap,
+    pub(crate) note_sort: LoroMap,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
     /// This session's local edits; remote changes are never undone.
@@ -202,6 +205,7 @@ impl Store {
         workouts.enable_fractional_index(0);
         let exercise_links = doc.get_map(EXERCISE_LINKS);
         let task_sort = doc.get_map(TASK_SORT);
+        let note_sort = doc.get_map(NOTE_SORT);
 
         let tx = db.transaction()?;
         if storage::needs_compaction(&tx, WORKSPACE)? {
@@ -252,6 +256,7 @@ impl Store {
             workouts,
             exercise_links,
             task_sort,
+            note_sort,
             dirty,
             history,
             listeners: Mutex::default(),

@@ -334,6 +334,39 @@ pub struct Folder {
     pub note_count: u32,
     /// Notes keep the order they were dragged into, instead of latest edit first.
     pub manual_order: bool,
+    pub sort: NoteSort,
+}
+
+/// How a folder (or All Notes) orders its notes, after the pinned ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NoteSort {
+    Edited,
+    Created,
+    Title,
+    /// Folders only.
+    Manual,
+}
+
+impl From<not_core::NoteSort> for NoteSort {
+    fn from(s: not_core::NoteSort) -> Self {
+        match s {
+            not_core::NoteSort::Edited => Self::Edited,
+            not_core::NoteSort::Created => Self::Created,
+            not_core::NoteSort::Title => Self::Title,
+            not_core::NoteSort::Manual => Self::Manual,
+        }
+    }
+}
+
+impl From<NoteSort> for not_core::NoteSort {
+    fn from(s: NoteSort) -> Self {
+        match s {
+            NoteSort::Edited => Self::Edited,
+            NoteSort::Created => Self::Created,
+            NoteSort::Title => Self::Title,
+            NoteSort::Manual => Self::Manual,
+        }
+    }
 }
 
 /// One line of an exercise's sets, read from shorthand like `24kg x 10 x 3`.
@@ -813,6 +846,15 @@ impl NotStore {
     }
 
     /// Manual order starts from the order shown; `false` sorts by latest edit again.
+    /// How `folder_id` (or All Notes, for `None`) sorts; Manual starts from the order shown.
+    pub fn set_note_sort(&self, folder_id: Option<String>, sort: NoteSort) -> Result<(), NotError> {
+        Ok(self.store.set_note_sort(folder_id.as_deref(), sort.into())?)
+    }
+
+    pub fn all_notes_sort(&self) -> NoteSort {
+        self.store.all_notes_sort().into()
+    }
+
     pub fn set_folder_manual_order(&self, id: String, manual: bool) -> Result<(), NotError> {
         Ok(self.store.set_folder_manual_order(&id, manual)?)
     }
@@ -835,6 +877,7 @@ impl NotStore {
                 depth: f.depth,
                 note_count: f.note_count,
                 manual_order: f.manual_order,
+                sort: f.sort.into(),
             })
             .collect())
     }

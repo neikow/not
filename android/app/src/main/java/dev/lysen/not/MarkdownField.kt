@@ -306,9 +306,9 @@ private class MarkdownStyling(private val colors: NotColors) : OutputTransformat
 /** How a note's first line, its title, reads. */
 private val TitleStyle = TextStyle(fontFamily = Bricolage, fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp, lineHeight = 36.sp)
 
-/** "Wednesday 11 November": what an untitled note is called when Return is pressed on its title. */
+/** "01/09/2026": what an untitled note is called when Return is pressed on its title. */
 private fun todayTitle(): String =
-    java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("EEEE d MMMM", java.util.Locale.getDefault()))
+    java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"))
 
 /** With the caret on an empty first line: puts today's date there and starts the next line. */
 private fun TextFieldState.fillTitleWithDate(): Boolean {

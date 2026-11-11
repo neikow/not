@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::Result;
 
 /// Bump when the read-model tables change; a mismatch triggers a full rebuild from the docs.
-pub const READ_MODEL_VERSION: i64 = 9;
+pub const READ_MODEL_VERSION: i64 = 10;
 
 /// Local update rows per doc before they are folded into a snapshot on open.
 const COMPACT_AFTER: i64 = 200;
@@ -89,7 +89,8 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
             id        TEXT PRIMARY KEY,
             parent_id TEXT,
             title     TEXT NOT NULL,
-            manual    INTEGER NOT NULL DEFAULT 0
+            manual    INTEGER NOT NULL DEFAULT 0,
+            sort      TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE note (
             id         TEXT PRIMARY KEY,
@@ -99,6 +100,7 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
             body       TEXT NOT NULL,
             pinned     INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT 0,
             position   TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX note_by_folder ON note (folder_id, pinned, updated_at);

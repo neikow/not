@@ -1,5 +1,6 @@
 package dev.lysen.not
 
+import dev.lysen.not.core.NoteSort
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import android.app.Application
@@ -29,6 +30,8 @@ data class NotesState(
     val query: String? = null,
     /** The note open in the editor. */
     val openNoteId: String? = null,
+    /** How All Notes sorts (folders carry their own). */
+    val allSort: NoteSort = NoteSort.EDITED,
     val error: String? = null,
 ) {
     val folder: Folder? get() = folders.firstOrNull { it.id == folderId }
@@ -108,8 +111,9 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
         run { store.moveNoteBefore(note.id, beforeId) }
     }
 
-    fun setManualOrder(folder: Folder, manual: Boolean) {
-        run { store.setFolderManualOrder(folder.id, manual) }
+    /** Sorts the folder shown, or All Notes. */
+    fun setSort(sort: NoteSort) {
+        run { store.setNoteSort(_state.value.folderId, sort) }
     }
 
     fun delete(note: NoteSummary) {
@@ -159,6 +163,7 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
                 notes = notes,
                 all = all,
                 openNoteId = it.openNoteId.takeIf { id -> all.any { n -> n.id == id } },
+                allSort = store.allNotesSort(),
             )
         }
     }

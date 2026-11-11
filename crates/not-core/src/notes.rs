@@ -18,10 +18,53 @@ const BODY: &str = "body";
 const PINNED: &str = "pinned";
 const CREATED_AT: &str = "created_at";
 const UPDATED_AT: &str = "updated_at";
-/// On a folder: `"manual"` keeps its notes in the order they were dragged into; absent sorts them by
-/// latest edit.
+/// On a folder: how its notes sort, a [`NoteSort`] key; absent is latest edit first.
 const ORDER: &str = "order";
 const ORDER_MANUAL: &str = "manual";
+const ALL_NOTES: &str = "all";
+
+/// How a folder (or All Notes) orders its notes, after the pinned ones.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NoteSort {
+    /// Most recently edited first.
+    #[default]
+    Edited,
+    /// Newest first.
+    Created,
+    /// Alphabetical by title.
+    Title,
+    /// The order they were dragged into (folders only).
+    Manual,
+}
+
+impl NoteSort {
+    fn key(self) -> Option<&'static str> {
+        match self {
+            Self::Edited => None,
+            Self::Created => Some("created"),
+            Self::Title => Some("title"),
+            Self::Manual => Some(ORDER_MANUAL),
+        }
+    }
+
+    fn from_key(key: &str) -> Self {
+        match key {
+            "created" => Self::Created,
+            "title" => Self::Title,
+            ORDER_MANUAL => Self::Manual,
+            _ => Self::Edited,
+        }
+    }
+
+    fn order_by(self) -> &'static str {
+        match self {
+            Self::Edited => "updated_at DESC",
+            Self::Created => "created_at DESC",
+            Self::Title => "title COLLATE NOCASE, updated_at DESC",
+            Self::Manual => "position",
+        }
+    }
+}
 const PREVIEW_CHARS: usize = 140;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +78,7 @@ pub struct Folder {
     pub note_count: u32,
     /// Notes keep the order they were dragged into, instead of latest edit first.
     pub manual_order: bool,
+    pub sort: NoteSort,
 }
 
 /// A note without its body, for lists.
@@ -174,35 +218,85 @@ impl Store {
 
     /// Sorts a folder's notes by hand (`true`, starting from the order shown) or by latest edit.
     pub fn set_folder_manual_order(&self, id: &str, manual: bool) -> Result<()> {
+        self.set_note_sort(Some(id), if manual { NoteSort::Manual } else { NoteSort::Edited })
+    }
+
+    /// How `folder` (or All Notes, for `None`) sorts its notes. Switching a folder to
+    /// [`NoteSort::Manual`] starts from the order shown; All Notes can't be sorted by hand.
+    pub fn set_note_sort(&self, folder: Option<&str>, sort: NoteSort) -> Result<()> {
+        let Some(id) = folder else {
+            if sort == NoteSort::Manual {
+                return Err(Error::Invalid("All Notes can't be sorted by hand".into()));
+            }
+            return self.transact(|| {
+                match sort.key() {
+                    Some(key) => self.note_sort.insert(ALL_NOTES, key)?,
+                    None => self.note_sort.delete(ALL_NOTES)?,
+                }
+                Ok(())
+            });
+        };
         let folder = self.notes_node(id, KIND_FOLDER)?;
-        if self.is_manual(folder) == manual {
+        if self.folder_sort(folder) == sort {
             return Ok(());
         }
-        self.transact(|| {
-            if manual {
-                self.freeze_order(folder)
-            } else {
-                Ok(self.notes.get_meta(folder)?.delete(ORDER)?)
+        self.transact(|| match sort {
+            NoteSort::Manual => self.freeze_order(folder),
+            _ => {
+                let meta = self.notes.get_meta(folder)?;
+                match sort.key() {
+                    Some(key) => meta.insert(ORDER, key)?,
+                    None => meta.delete(ORDER)?,
+                }
+                Ok(())
             }
         })
     }
 
-    /// Lays the folder's notes out in the tree in the order they are shown now (latest edit first),
-    /// and marks it manual. Runs inside a transaction.
+    /// How All Notes sorts.
+    pub fn all_notes_sort(&self) -> NoteSort {
+        match self.note_sort.get(ALL_NOTES) {
+            Some(loro::ValueOrContainer::Value(v)) => v.as_string().map_or(NoteSort::Edited, |s| NoteSort::from_key(s)),
+            _ => NoteSort::Edited,
+        }
+    }
+
+    fn folder_sort(&self, folder: TreeID) -> NoteSort {
+        self.notes
+            .get_meta(folder)
+            .ok()
+            .and_then(|m| meta_str(&m, ORDER))
+            .map_or(NoteSort::Edited, |k| NoteSort::from_key(&k))
+    }
+
+    /// Lays the folder's notes out in the tree in the order they are shown now, and marks it
+    /// manual. Runs inside a transaction.
     fn freeze_order(&self, folder: TreeID) -> Result<()> {
-        // Same order as the read model's (pinned, then latest edit), from the doc: the database is
-        // locked while a transaction runs.
+        // Same order as the read model's (pinned, then the folder's sort), from the doc: the
+        // database is locked while a transaction runs.
+        let sort = self.folder_sort(folder);
         let mut shown = self.note_children(TreeParentId::Node(folder));
         let sort_key = |&n: &TreeID| {
             let meta = self.notes.get_meta(n).ok();
             let pinned = meta.as_ref().is_some_and(|m| {
                 matches!(m.get(PINNED), Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true))))
             });
+            let created = meta.as_ref().and_then(|m| meta_i64(m, CREATED_AT)).unwrap_or(0);
             let edited = meta
                 .as_ref()
                 .and_then(|m| meta_i64(m, UPDATED_AT).or(meta_i64(m, CREATED_AT)))
                 .unwrap_or(0);
-            (std::cmp::Reverse(pinned), std::cmp::Reverse(edited), n.to_string())
+            let title = meta
+                .as_ref()
+                .and_then(|m| meta_text(m, BODY))
+                .map(|b| title_and_preview(&b).0.to_lowercase())
+                .unwrap_or_default();
+            let (major, title) = match sort {
+                NoteSort::Created => (-created, String::new()),
+                NoteSort::Title => (0, title),
+                _ => (-edited, String::new()),
+            };
+            (std::cmp::Reverse(pinned), title, major, n.to_string())
         };
         shown.sort_by_cached_key(sort_key);
         let mut previous: Option<TreeID> = None;
@@ -249,7 +343,7 @@ impl Store {
     pub fn folders(&self) -> Result<Vec<Folder>> {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(
-            "SELECT id, parent_id, title, (SELECT count(*) FROM note WHERE folder_id = folder.id), manual
+            "SELECT id, parent_id, title, (SELECT count(*) FROM note WHERE folder_id = folder.id), manual, sort
              FROM folder ORDER BY title COLLATE NOCASE, id",
         )?;
         let all = stmt
@@ -261,6 +355,7 @@ impl Store {
                     depth: 0,
                     note_count: r.get(3)?,
                     manual_order: r.get(4)?,
+                    sort: NoteSort::from_key(&r.get::<_, String>(5)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -269,17 +364,20 @@ impl Store {
         Ok(out)
     }
 
-    /// Notes in `folder` (not its subfolders), or all notes when `None`. Pinned first, then by hand
-    /// in manual folders, else most recently edited.
+    /// Notes in `folder` (not its subfolders), or all notes when `None`. Pinned first, then by the
+    /// folder's (or All Notes') [`NoteSort`].
     pub fn notes(&self, folder: Option<&str>) -> Result<Vec<NoteSummary>> {
+        let sort = match folder {
+            Some(id) => self.note_id(id).map(|f| self.folder_sort(f)).unwrap_or_default(),
+            None => self.all_notes_sort(),
+        };
         let inner = self.lock();
-        let mut stmt = inner.db.prepare_cached(
+        let mut stmt = inner.db.prepare_cached(&format!(
             "SELECT id, folder_id, title, preview, pinned, updated_at FROM note
              WHERE ?1 IS NULL OR folder_id = ?1
-             ORDER BY pinned DESC,
-                CASE WHEN (SELECT manual FROM folder WHERE id = ?1) THEN position END,
-                updated_at DESC, id",
-        )?;
+             ORDER BY pinned DESC, {}, updated_at DESC, id",
+            sort.order_by()
+        ))?;
         let rows = stmt.query_map([folder], note_summary)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -438,14 +536,16 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
     match meta_str(&meta, KIND).as_deref() {
         Some(KIND_FOLDER) => {
             db.execute(
-                "INSERT INTO folder (id, parent_id, title, manual) VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO folder (id, parent_id, title, manual, sort) VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT (id) DO UPDATE SET
-                    parent_id = excluded.parent_id, title = excluded.title, manual = excluded.manual",
+                    parent_id = excluded.parent_id, title = excluded.title, manual = excluded.manual,
+                    sort = excluded.sort",
                 params![
                     key,
                     parent,
                     meta_str(&meta, TITLE).unwrap_or_default(),
-                    meta_str(&meta, ORDER).as_deref() == Some(ORDER_MANUAL)
+                    meta_str(&meta, ORDER).as_deref() == Some(ORDER_MANUAL),
+                    meta_str(&meta, ORDER).unwrap_or_default()
                 ],
             )?;
         }
@@ -457,12 +557,12 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
                 Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true)))
             );
             db.execute(
-                "INSERT INTO note (id, folder_id, title, preview, body, pinned, updated_at, position)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO note (id, folder_id, title, preview, body, pinned, updated_at, position, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT (id) DO UPDATE SET
                     folder_id = excluded.folder_id, title = excluded.title, preview = excluded.preview,
                     body = excluded.body, pinned = excluded.pinned, updated_at = excluded.updated_at,
-                    position = excluded.position",
+                    position = excluded.position, created_at = excluded.created_at",
                 params![
                     key,
                     parent,
@@ -473,7 +573,8 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
                     meta_i64(&meta, UPDATED_AT)
                         .or(meta_i64(&meta, CREATED_AT))
                         .unwrap_or(0),
-                    tree.fractional_index(id).unwrap_or_default()
+                    tree.fractional_index(id).unwrap_or_default(),
+                    meta_i64(&meta, CREATED_AT).or(meta_i64(&meta, UPDATED_AT)).unwrap_or(0)
                 ],
             )?;
         }

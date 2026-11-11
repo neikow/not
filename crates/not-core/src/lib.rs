@@ -19,7 +19,7 @@ pub use catalog::{CatalogExercise, MuscleSets};
 pub use error::{Error, Result};
 pub use habits::{EVERY_DAY, Habit, HabitDay, HabitSummary, Period};
 pub use not_protocol::{PairingLink, ShareInfo, share_url};
-pub use notes::{Folder, NoteSummary};
+pub use notes::{Folder, NoteSort, NoteSummary};
 pub use parse::{ParsedTask, Token, TokenKind, parse_task};
 pub use schedule::{Freq, Repeat, Schedule, due_label};
 pub use store::{
