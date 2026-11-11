@@ -336,6 +336,10 @@ final class AppModel {
         run { try store.setPriority(id: id, priority: priority) }
     }
 
+    func setSort(_ listID: String, _ sort: TaskSort) {
+        run { try store.setListSort(listId: listID, sort: sort) }
+    }
+
     func toggleSelected() {
         if let task = selectedTask { toggle(task) }
     }

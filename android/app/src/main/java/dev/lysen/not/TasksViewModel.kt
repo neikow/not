@@ -14,6 +14,7 @@ import dev.lysen.not.core.SyncInfo
 import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.TaskItem
 import dev.lysen.not.core.TaskList
+import dev.lysen.not.core.TaskSort
 import dev.lysen.not.core.inboxId
 import dev.lysen.not.core.parsePairingLink
 import kotlinx.coroutines.channels.Channel
@@ -119,8 +120,15 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         run { store.quickAdd(parent, text, today(), dismissed, if (s.isToday) today() else null) }
     }
 
+    /** Completing confirms with Undo, so a stray tap or swipe costs nothing. */
     fun toggle(task: TaskItem) {
-        run { store.setCompleted(task.id, task.completedAt == null, today()) }
+        val completing = task.completedAt == null
+        run { store.setCompleted(task.id, completing, today()) } ?: return
+        if (completing) _undoables.trySend(Undoable("“${task.title}” done"))
+    }
+
+    fun setSort(listId: String, sort: TaskSort) {
+        run { store.setListSort(listId, sort) }
     }
 
     /** Takes the date, time and repeat out of `text` ("fri 9am every week"); blank clears them. */

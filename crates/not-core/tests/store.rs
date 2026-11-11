@@ -1,4 +1,4 @@
-use not_core::{Credentials, INBOX, Store, Task};
+use not_core::{Credentials, INBOX, Store, Task, TaskSort};
 mod common;
 
 use common::Log;
@@ -29,8 +29,9 @@ fn read_model_follows_commands() {
     let s = Store::open_in_memory().unwrap();
     let home = s.create_list("Home").unwrap();
     let work = s.create_list("Work").unwrap();
-    let a = s.add_task(&home, "a").unwrap();
+    // New tasks go first.
     let b = s.add_task(&home, "b").unwrap();
+    let a = s.add_task(&home, "a").unwrap();
     let sub = s.add_task(&a, "a.1").unwrap();
 
     assert_eq!(list_titles(&s), ["Inbox", "Home", "Work"]);
@@ -78,9 +79,9 @@ fn inbox_is_built_in() {
     let s = Store::open_in_memory().unwrap();
     assert_eq!(list_titles(&s), ["Inbox"], "exists without being created");
 
-    let a = s.add_task(INBOX, "a").unwrap();
-    let home = s.create_list("Home").unwrap();
     let b = s.add_task(INBOX, "b").unwrap();
+    let home = s.create_list("Home").unwrap();
+    let a = s.add_task(INBOX, "a").unwrap();
     let sub = s.add_task(&a, "a.1").unwrap();
     let work = s.create_list("Work").unwrap();
 
@@ -158,7 +159,7 @@ fn state_survives_reopen() {
     s.add_task(&list, "second").unwrap();
     drop(s);
     let s = Store::open(&path).unwrap();
-    assert_eq!(titles(&s.tasks(&list).unwrap()), ["persisted", "second"]);
+    assert_eq!(titles(&s.tasks(&list).unwrap()), ["second", "persisted"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -184,9 +185,9 @@ fn offline_edits_converge() {
 
     let on_mac = mac.tasks(INBOX).unwrap();
     assert_eq!(on_mac, phone.tasks(INBOX).unwrap());
-    assert_eq!(titles(&on_mac), ["oat milk", "bread"]);
+    assert_eq!(titles(&on_mac), ["bread", "oat milk"]);
     assert!(
-        on_mac[0].completed_at.is_some(),
+        on_mac[1].completed_at.is_some(),
         "per-field merge keeps both edits"
     );
 }
@@ -456,9 +457,9 @@ fn outline_puts_completed_tasks_last() {
 #[test]
 fn move_before_anchors_on_a_sibling() {
     let s = Store::open_in_memory().unwrap();
-    let a = s.add_task(INBOX, "a").unwrap();
-    let b = s.add_task(INBOX, "b").unwrap();
     let c = s.add_task(INBOX, "c").unwrap();
+    let b = s.add_task(INBOX, "b").unwrap();
+    let a = s.add_task(INBOX, "a").unwrap();
     s.set_completed(&b, true, today()).unwrap();
 
     // Dragging c above a in the open section; b (completed) is shown elsewhere.
@@ -500,9 +501,9 @@ fn quick_add_applies_what_it_parses() {
         .unwrap();
     s.quick_add(INBOX, "tomorrow", today(), &[], None).unwrap();
     let inbox = s.tasks(INBOX).unwrap();
-    assert_eq!(titles(&inbox), ["Read tomorrow", "tomorrow"]);
-    assert_eq!(inbox[0].due, None);
-    assert_eq!(inbox[1].due.as_deref(), Some("2026-11-09"));
+    assert_eq!(titles(&inbox), ["tomorrow", "Read tomorrow"]);
+    assert_eq!(inbox[0].due.as_deref(), Some("2026-11-09"));
+    assert_eq!(inbox[1].due, None);
 
     // One undo step takes the whole quick add back.
     assert!(s.undo().unwrap());
@@ -623,9 +624,9 @@ fn concurrent_schedule_edits_merge() {
 #[test]
 fn indent_and_outdent_tasks() {
     let s = Store::open_in_memory().unwrap();
-    let a = s.add_task(INBOX, "a").unwrap();
-    let done = s.add_task(INBOX, "done").unwrap();
     let b = s.add_task(INBOX, "b").unwrap();
+    let done = s.add_task(INBOX, "done").unwrap();
+    let a = s.add_task(INBOX, "a").unwrap();
     s.set_completed(&done, true, today()).unwrap();
 
     assert!(!s.indent_task(&a).unwrap());
@@ -639,4 +640,52 @@ fn indent_and_outdent_tasks() {
     assert!(!s.outdent_task(&b).unwrap());
     let open: Vec<_> = s.outline(INBOX).unwrap().open.iter().map(|r| r.task.title.clone()).collect();
     assert_eq!(open, ["a", "b"]);
+}
+
+#[test]
+fn new_tasks_go_first_and_subtasks_last() {
+    let s = Store::open_in_memory().unwrap();
+    let list = s.create_list("Home").unwrap();
+    let a = s.add_task(&list, "a").unwrap();
+    s.quick_add(&list, "b", today(), &[], None).unwrap();
+    s.add_task(&a, "a.1").unwrap();
+    s.add_task(&a, "a.2").unwrap();
+    assert_eq!(titles(&s.tasks(&list).unwrap()), ["b", "a", "a.1", "a.2"]);
+}
+
+#[test]
+fn lists_sort_their_open_tasks() {
+    let s = Store::open_in_memory().unwrap();
+    let list = s.create_list("Home").unwrap();
+    for input in ["walk dog", "Call mum fri !1", "bins tomorrow", "Taxes tomorrow 9am !3"] {
+        s.quick_add(&list, input, today(), &[], None).unwrap();
+    }
+    let a = s.tasks(&list).unwrap().into_iter().find(|t| t.title == "walk dog").unwrap();
+    s.add_task(&a.id, "z leash").unwrap();
+    s.add_task(&a.id, "a treats").unwrap();
+    let open = |s: &Store| -> Vec<String> { s.outline(&list).unwrap().open.into_iter().map(|r| r.task.title).collect() };
+
+    assert_eq!(s.lists().unwrap()[1].sort, TaskSort::Manual);
+    assert_eq!(open(&s), ["Taxes", "bins", "Call mum", "walk dog", "z leash", "a treats"]);
+
+    s.set_list_sort(&list, TaskSort::Due).unwrap();
+    assert_eq!(s.lists().unwrap()[1].sort, TaskSort::Due);
+    assert_eq!(open(&s), ["Taxes", "bins", "Call mum", "walk dog", "z leash", "a treats"]);
+    s.set_list_sort(&list, TaskSort::Priority).unwrap();
+    assert_eq!(open(&s), ["Call mum", "Taxes", "bins", "walk dog", "z leash", "a treats"], "!1 is high");
+    s.set_list_sort(&list, TaskSort::Title).unwrap();
+    assert_eq!(open(&s), ["bins", "Call mum", "Taxes", "walk dog", "a treats", "z leash"]);
+
+    // Dragging takes over the order shown, as one undo step.
+    let bins = s.tasks(&list).unwrap().into_iter().find(|t| t.title == "bins").unwrap();
+    s.move_task_before(&bins.id, &list, None).unwrap();
+    assert_eq!(s.list_sort(&list), TaskSort::Manual);
+    assert_eq!(open(&s), ["Call mum", "Taxes", "walk dog", "a treats", "z leash", "bins"]);
+    assert!(s.undo().unwrap());
+    assert_eq!(s.list_sort(&list), TaskSort::Title);
+    assert_eq!(open(&s), ["bins", "Call mum", "Taxes", "walk dog", "a treats", "z leash"]);
+
+    // The Inbox sorts too.
+    s.set_list_sort(INBOX, TaskSort::Title).unwrap();
+    assert_eq!(s.lists().unwrap()[0].sort, TaskSort::Title);
 }

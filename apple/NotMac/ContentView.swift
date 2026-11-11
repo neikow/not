@@ -271,6 +271,22 @@ private struct TaskListView: View {
         // Keeps the add field at the top when the empty state alone wouldn't fill the column.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .navigationTitle(model.title)
+        .toolbar {
+            // Today has its own order: overdue first, then by time.
+            if !model.isToday, let list = model.selectedList {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Picker("Sort by", selection: Binding(get: { list.sort }, set: { model.setSort(list.id, $0) })) {
+                            ForEach([TaskSort.manual, .due, .priority, .title], id: \.self) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Label("Sort", systemImage: "arrow.up.arrow.down")
+                    }
+                    .help(list.sort == .manual ? "Sort tasks" : "Sorted by \(list.sort.label.lowercased()); dragging a task switches back to Manual")
+                }
+            }
+        }
         .onAppear { focusRequests += 1 }
         .onChange(of: model.addFieldFocusRequests) { focusRequests += 1 }
     }
@@ -731,6 +747,17 @@ struct SyncBadge: View {
         case .unauthorized:
             Image(systemName: "xmark.icloud").foregroundStyle(.red)
                 .help("The server no longer accepts this Mac — pair again in Settings (⌘,)")
+        }
+    }
+}
+
+extension TaskSort {
+    var label: String {
+        switch self {
+        case .manual: "Manual"
+        case .due: "Due date"
+        case .priority: "Priority"
+        case .title: "Title"
         }
     }
 }

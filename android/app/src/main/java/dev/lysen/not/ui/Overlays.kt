@@ -1,5 +1,6 @@
 package dev.lysen.not.ui
 
+import dev.lysen.not.R
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.MutableTransitionState
@@ -266,7 +267,7 @@ fun Menu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable ColumnSc
 }
 
 @Composable
-fun MenuItem(text: String, onClick: () -> Unit, icon: Int? = null, danger: Boolean = false, enabled: Boolean = true) {
+fun MenuItem(text: String, onClick: () -> Unit, icon: Int? = null, danger: Boolean = false, enabled: Boolean = true, checked: Boolean = false) {
     val color = when {
         !enabled -> Not.colors.inkFaint
         danger -> Not.colors.danger
@@ -282,7 +283,8 @@ fun MenuItem(text: String, onClick: () -> Unit, icon: Int? = null, danger: Boole
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (icon != null) Icon(icon, null, tint = color, size = 20.dp)
-        Text(text, style = Not.type.body, color = color, maxLines = 1)
+        Text(text, style = Not.type.body, color = color, maxLines = 1, modifier = Modifier.weight(1f))
+        if (checked) Icon(R.drawable.ic_check, "Selected", tint = Not.colors.accentInk, size = 20.dp)
     }
 }
 

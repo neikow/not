@@ -26,6 +26,8 @@ const HABIT_LOG: &str = "habit_log";
 const NOTES_TREE: &str = "notes";
 const WORKOUTS_TREE: &str = "workouts";
 const EXERCISE_LINKS: &str = "exercise_links";
+/// List id (or [`INBOX`]) → how its open tasks are sorted; absent means [`TaskSort::Manual`].
+const TASK_SORT: &str = "task_sort";
 
 /// Id of the built-in Inbox list. It isn't a node: tasks at the root of the tree are in the Inbox,
 /// so there is nothing to create and two fresh devices can't end up with an Inbox each.
@@ -38,6 +40,53 @@ pub struct List {
     pub title: String,
     /// Open top-level tasks.
     pub open_count: u32,
+    pub sort: TaskSort,
+}
+
+/// How a list orders its open tasks (each level of subtasks too). Ties keep the manual order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TaskSort {
+    /// The order they were dragged into; new tasks go first.
+    #[default]
+    Manual,
+    /// Soonest due first, undated last; then by time and priority.
+    Due,
+    /// Highest priority first, then soonest due.
+    Priority,
+    /// Alphabetical by title.
+    Title,
+}
+
+impl TaskSort {
+    fn key(self) -> Option<&'static str> {
+        match self {
+            Self::Manual => None,
+            Self::Due => Some("due"),
+            Self::Priority => Some("priority"),
+            Self::Title => Some("title"),
+        }
+    }
+
+    fn from_key(key: &str) -> Self {
+        match key {
+            "due" => Self::Due,
+            "priority" => Self::Priority,
+            "title" => Self::Title,
+            _ => Self::Manual,
+        }
+    }
+
+    fn compare(self, a: &Task, b: &Task) -> std::cmp::Ordering {
+        // Undated (or no time) sorts after dated.
+        let due = |t: &Task| (t.due.is_none(), t.due.clone(), t.due_time.is_none(), t.due_time);
+        let priority = |t: &Task| std::cmp::Reverse(t.priority);
+        match self {
+            Self::Manual => std::cmp::Ordering::Equal,
+            Self::Due => due(a).cmp(&due(b)).then(priority(a).cmp(&priority(b))),
+            Self::Priority => priority(a).cmp(&priority(b)).then(due(a).cmp(&due(b))),
+            Self::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +154,7 @@ pub struct Store {
     pub(crate) workouts: LoroTree,
     /// The user's exercise name keys → catalogue ids; see [`crate::catalog`].
     pub(crate) exercise_links: LoroMap,
+    task_sort: LoroMap,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
     /// This session's local edits; remote changes are never undone.
@@ -148,6 +198,7 @@ impl Store {
         let workouts = doc.get_tree(WORKOUTS_TREE);
         workouts.enable_fractional_index(0);
         let exercise_links = doc.get_map(EXERCISE_LINKS);
+        let task_sort = doc.get_map(TASK_SORT);
 
         let tx = db.transaction()?;
         if storage::needs_compaction(&tx, WORKSPACE)? {
@@ -197,6 +248,7 @@ impl Store {
             notes,
             workouts,
             exercise_links,
+            task_sort,
             dirty,
             history,
             listeners: Mutex::default(),
@@ -218,12 +270,13 @@ impl Store {
         })
     }
 
-    /// Adds a task at the end of `parent`: a list, [`INBOX`], or a task (for a subtask).
+    /// Adds a task to `parent`: first in a list or [`INBOX`], last under a task (a subtask, so
+    /// subtasks typed one after another keep their order).
     pub fn add_task(&self, parent: &str, title: &str) -> Result<String> {
         let title = clean_title(title)?;
         let parent = self.container(parent)?;
         self.write(|tree| {
-            let id = tree.create(parent)?;
+            let id = create_task_node(tree, parent)?;
             let meta = tree.get_meta(id)?;
             meta.insert(KIND, KIND_TASK)?;
             meta.insert(TITLE, title)?;
@@ -231,7 +284,8 @@ impl Store {
         })
     }
 
-    /// Adds a task with a schedule and priority in one step (one undo step).
+    /// Adds a task with a schedule and priority in one step (one undo step), placed as in
+    /// [`Store::add_task`].
     pub fn add_task_with(
         &self,
         parent: &str,
@@ -242,7 +296,7 @@ impl Store {
         let title = clean_title(title)?;
         let parent = self.container(parent)?;
         self.write(|tree| {
-            let id = tree.create(parent)?;
+            let id = create_task_node(tree, parent)?;
             let meta = tree.get_meta(id)?;
             meta.insert(KIND, KIND_TASK)?;
             meta.insert(TITLE, title)?;
@@ -369,7 +423,11 @@ impl Store {
     /// Moves a task under `parent` right before its child `before`, or to the end when `None`.
     /// Anchoring on a sibling keeps drag-and-drop exact when some siblings (completed ones) are
     /// shown elsewhere.
+    ///
+    /// In a sorted list, dragging means taking over the order: the list switches to
+    /// [`TaskSort::Manual`], starting from the order shown, in the same undo step.
     pub fn move_task_before(&self, id: &str, parent: &str, before: Option<&str>) -> Result<()> {
+        let task = self.task(id)?;
         let id = self.node(id, &[KIND_TASK])?;
         let parent = self.container(parent)?;
         let before = before.map(|b| self.node(b, &[KIND_TASK])).transpose()?;
@@ -378,7 +436,26 @@ impl Store {
         {
             return Err(Error::Invalid("`before` must be a child of `parent`".into()));
         }
+        // Only within its own list; a move to another list takes that list's order.
+        let freeze = match self.list_sort(&task.list_id) {
+            TaskSort::Manual => None,
+            sort if self.list_of(parent)? == task.list_id => Some(self.sorted_children(&task.list_id, sort)?),
+            _ => None,
+        };
         self.write(|tree| {
+            if let Some(children) = freeze {
+                self.task_sort.delete(&task.list_id)?;
+                for (parent, kids) in children {
+                    let parent = match parent {
+                        Some(p) => TreeParentId::Node(tree_id(&p)?),
+                        None => self.container(&task.list_id)?,
+                    };
+                    // Each to the front, last first, so they end up first in the order shown.
+                    for kid in kids.iter().rev().filter(|k| k.completed_at.is_none()) {
+                        tree.mov_to(tree_id(&kid.id)?, parent, 0)?;
+                    }
+                }
+            }
             match before {
                 Some(before) if before != id => tree.mov_before(id, before)?,
                 Some(_) => {}
@@ -432,6 +509,27 @@ impl Store {
         self.write(|tree| place(tree, id, TreeParentId::Root, KIND_LIST, index))
     }
 
+    /// How a list (or [`INBOX`]) sorts its open tasks.
+    pub fn set_list_sort(&self, list_id: &str, sort: TaskSort) -> Result<()> {
+        if list_id != INBOX {
+            self.node(list_id, &[KIND_LIST])?;
+        }
+        self.transact(|| {
+            match sort.key() {
+                Some(key) => self.task_sort.insert(list_id, key)?,
+                None => self.task_sort.delete(list_id)?,
+            }
+            Ok(())
+        })
+    }
+
+    pub fn list_sort(&self, list_id: &str) -> TaskSort {
+        match self.task_sort.get(list_id) {
+            Some(loro::ValueOrContainer::Value(v)) => v.as_string().map_or(TaskSort::Manual, |s| TaskSort::from_key(s)),
+            _ => TaskSort::Manual,
+        }
+    }
+
     /// Deletes a list or task together with everything under it. Undoable; see [`DELETED_AT`].
     pub fn delete(&self, id: &str) -> Result<()> {
         let id = self.node(id, &[KIND_LIST, KIND_TASK])?;
@@ -473,14 +571,17 @@ impl Store {
             id: INBOX.into(),
             title: INBOX_TITLE.into(),
             open_count: open(INBOX)?,
+            sort: self.list_sort(INBOX),
         }];
         let mut stmt = inner.db.prepare_cached(&format!(
             "SELECT id, title, ({}) FROM list ORDER BY position, id",
             OPEN_COUNT.replace("?1", "list.id")
         ))?;
         let rows = stmt.query_map([], |r| {
+            let id: String = r.get(0)?;
             Ok(List {
-                id: r.get(0)?,
+                sort: self.list_sort(&id),
+                id,
                 title: r.get(1)?,
                 open_count: r.get(2)?,
             })
@@ -517,11 +618,7 @@ impl Store {
 
     /// The tasks of a list arranged for display. See [`Outline`].
     pub fn outline(&self, list_id: &str) -> Result<Outline> {
-        let mut children: HashMap<Option<String>, Vec<Task>> = HashMap::new();
-        // `tasks` returns each parent's children in user order.
-        for task in self.tasks(list_id)? {
-            children.entry(task.parent_id.clone()).or_default().push(task);
-        }
+        let mut children = self.sorted_children(list_id, self.list_sort(list_id))?;
         let (mut completed, open): (Vec<_>, Vec<_>) = children
             .remove(&None)
             .unwrap_or_default()
@@ -537,6 +634,44 @@ impl Store {
             push_subtree(&mut outline.completed, &mut children, task, 0, true);
         }
         Ok(outline)
+    }
+
+    /// A list's tasks grouped by parent task (`None` for top-level), each group in `sort` order.
+    fn sorted_children(&self, list_id: &str, sort: TaskSort) -> Result<HashMap<Option<String>, Vec<Task>>> {
+        let mut children: HashMap<Option<String>, Vec<Task>> = HashMap::new();
+        // `tasks` returns each parent's children in user order, which the stable sort keeps for ties.
+        for task in self.tasks(list_id)? {
+            children.entry(task.parent_id.clone()).or_default().push(task);
+        }
+        if sort != TaskSort::Manual {
+            for kids in children.values_mut() {
+                kids.sort_by(|a, b| sort.compare(a, b));
+            }
+        }
+        Ok(children)
+    }
+
+    fn task(&self, id: &str) -> Result<Task> {
+        let inner = self.lock();
+        let mut stmt = inner
+            .db
+            .prepare_cached(&format!("SELECT {TASK_COLUMNS} FROM task t WHERE id = ?1"))?;
+        match stmt.query_row([id], task_row) {
+            Ok(task) => Ok(task),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Err(Error::NotFound(id.to_owned())),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The list a container (the root, a list or a task) belongs to.
+    fn list_of(&self, container: TreeParentId) -> Result<String> {
+        match container {
+            TreeParentId::Node(node) if projection::kind(&self.tasks, node).as_deref() == Some(KIND_LIST) => {
+                Ok(node.to_string())
+            }
+            TreeParentId::Node(node) => Ok(self.task(&node.to_string())?.list_id),
+            _ => Ok(INBOX.into()),
+        }
     }
 
     // ---- change notifications -------------------------------------------------------------
@@ -736,6 +871,16 @@ fn push_subtree(
     for kid in kids {
         push_subtree(rows, children, kid, depth + 1, done);
     }
+}
+
+/// New tasks go first in a list (or the Inbox) and last under a task.
+fn create_task_node(tree: &LoroTree, parent: TreeParentId) -> Result<TreeID> {
+    let under_task = matches!(parent, TreeParentId::Node(p) if projection::kind(tree, p).as_deref() == Some(KIND_TASK));
+    Ok(if under_task { tree.create(parent)? } else { tree.create_at(parent, 0)? })
+}
+
+fn tree_id(id: &str) -> Result<TreeID> {
+    TreeID::try_from(id).map_err(|_| Error::Invalid(format!("bad id {id:?}")))
 }
 
 /// Moves `id` under `parent` so that it ends up at `index` among siblings of the same kind. The root

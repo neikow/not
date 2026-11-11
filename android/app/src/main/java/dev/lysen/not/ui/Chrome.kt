@@ -92,7 +92,7 @@ private val CollapseDistance = 64.dp
 /**
  * A screen whose big title sits in the top bar beside its buttons and stays put, one size, while
  * the content scrolls under it and fades out as it passes. [header] goes under the title
- * (subtitles, chips) and scrolls with the content. With [onSwipe], sideways drags step through
+ * (subtitles, chips) and scrolls with the content. With [onSwipe], sideways drags on the top bar step through
  * whatever the title names, and [next] shows beside the title what forward leads to.
  */
 @Composable
@@ -134,20 +134,7 @@ fun LargeTitleScreen(
         modifier
             .fillMaxSize()
             .background(colors.background)
-            .then(if (pull != null) Modifier.nestedScroll(pulling.connection) else Modifier)
-            .then(
-                if (onSwipe == null) Modifier
-                else Modifier.swipeSideways(
-                    onDrag = { x -> scope.launch { drag.snapTo(x) } },
-                    onEnd = { swiped ->
-                        if (swiped != null) {
-                            forward = swiped
-                            latestSwipe?.invoke(swiped)
-                        }
-                        scope.launch { drag.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)) }
-                    },
-                ),
-            ),
+            .then(if (pull != null) Modifier.nestedScroll(pulling.connection) else Modifier),
     ) {
         LazyColumn(
             Modifier.fillMaxSize().fadeUnder(barBottom) { progress.value },
@@ -162,6 +149,20 @@ fun LargeTitleScreen(
         Row(
             Modifier
                 .fillMaxWidth()
+                // Only the top bar swipes, so rows keep their own swipe actions to themselves.
+                .then(
+                    if (onSwipe == null) Modifier
+                    else Modifier.swipeSideways(
+                        onDrag = { x -> scope.launch { drag.snapTo(x) } },
+                        onEnd = { swiped ->
+                            if (swiped != null) {
+                                forward = swiped
+                                latestSwipe?.invoke(swiped)
+                            }
+                            scope.launch { drag.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)) }
+                        },
+                    ),
+                )
                 .padding(top = top)
                 .height(TopBarHeight)
                 .padding(start = if (navigation != null) 8.dp else 24.dp, end = 8.dp),
@@ -353,9 +354,8 @@ private fun PullHint(pull: PullAction, state: PullDown, modifier: Modifier) {
 private val SwipeThreshold = 72.dp
 
 /**
- * Follows a sideways drag across the screen: [onDrag] gets how far it has gone, [onEnd] whether it
- * went far enough to count, forward when moving left (null when it didn't). Rows with swipe actions
- * of their own take the drag first, so this only sees it on the title, gaps and empty space.
+ * Follows a sideways drag: [onDrag] gets how far it has gone, [onEnd] whether it
+ * went far enough to count, forward when moving left (null when it didn't).
  */
 fun Modifier.swipeSideways(onDrag: (Float) -> Unit = {}, onEnd: (forward: Boolean?) -> Unit): Modifier = composed {
     val threshold = with(LocalDensity.current) { SwipeThreshold.toPx() }

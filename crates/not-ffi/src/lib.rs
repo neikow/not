@@ -187,6 +187,39 @@ pub struct TaskList {
     pub title: String,
     /// Open top-level tasks, for badges.
     pub open_count: u32,
+    pub sort: TaskSort,
+}
+
+/// How a list orders its open tasks; ties keep the manual order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TaskSort {
+    /// Drag order; new tasks go first.
+    Manual,
+    Due,
+    Priority,
+    Title,
+}
+
+impl From<not_core::TaskSort> for TaskSort {
+    fn from(s: not_core::TaskSort) -> Self {
+        match s {
+            not_core::TaskSort::Manual => Self::Manual,
+            not_core::TaskSort::Due => Self::Due,
+            not_core::TaskSort::Priority => Self::Priority,
+            not_core::TaskSort::Title => Self::Title,
+        }
+    }
+}
+
+impl From<TaskSort> for not_core::TaskSort {
+    fn from(s: TaskSort) -> Self {
+        match s {
+            TaskSort::Manual => Self::Manual,
+            TaskSort::Due => Self::Due,
+            TaskSort::Priority => Self::Priority,
+            TaskSort::Title => Self::Title,
+        }
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -530,7 +563,7 @@ impl NotStore {
         Ok(self.store.create_list(&title)?)
     }
 
-    /// `parent_id` is a list, or a task for a subtask.
+    /// `parent_id` is a list (the task goes first), or a task for a subtask (it goes last).
     pub fn add_task(&self, parent_id: String, title: String) -> Result<String, NotError> {
         Ok(self.store.add_task(&parent_id, &title)?)
     }
@@ -620,6 +653,12 @@ impl NotStore {
     }
 
     /// Moves a task under `parent_id` right before its child `before_id`, or to the end.
+    /// How a list (or the Inbox) sorts its open tasks. Dragging a task in a sorted list switches it
+    /// back to manual, starting from the order shown.
+    pub fn set_list_sort(&self, list_id: String, sort: TaskSort) -> Result<(), NotError> {
+        Ok(self.store.set_list_sort(&list_id, sort.into())?)
+    }
+
     pub fn move_task_before(
         &self,
         id: String,
@@ -947,6 +986,7 @@ impl NotStore {
                 id: l.id,
                 title: l.title,
                 open_count: l.open_count,
+                sort: l.sort.into(),
             })
             .collect())
     }

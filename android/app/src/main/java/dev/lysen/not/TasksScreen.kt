@@ -76,6 +76,7 @@ import dev.lysen.not.ui.SwipeAction
 import dev.lysen.not.ui.SwipeRow
 import dev.lysen.not.ui.Text
 import dev.lysen.not.ui.ToastHost
+import dev.lysen.not.core.TaskSort
 import dev.lysen.not.ui.ToastState
 import dev.lysen.not.ui.pressable
 import kotlinx.coroutines.delay
@@ -111,10 +112,16 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             state = listState,
             onTitleClick = { showsLists = true },
             titleAccessory = { Icon(R.drawable.ic_expand_more, "Switch list", tint = Not.colors.inkFaint, size = 28.dp) },
-            actions = { SyncStatus(state.sync, onClick = onOpenSettings) },
+            actions = {
+                SyncStatus(state.sync, onClick = onOpenSettings)
+                // Today has its own order: overdue first, then by time.
+                state.selectedList?.takeUnless { state.isToday }?.let { list ->
+                    SortMenu(list.sort) { viewModel.setSort(list.id, it) }
+                }
+            },
             header = { Subtitle(state) },
             pull = PullAction("Lists", R.drawable.ic_list) { showsLists = true },
-            // Sideways steps through Today and the lists, in the order the sheet shows them.
+            // Swiping the title bar steps through Today and the lists, in the order the sheet shows them.
             onSwipe = { forward ->
                 neighbour(state, forward)?.let { (id, _) ->
                     haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
@@ -258,7 +265,6 @@ private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>,
     )
 }
 
-/** "3 tasks"; keeps its line when there are none, so the list below doesn't jump. */
 /** The id and title of the list before or after the shown one, in the lists sheet's order. */
 private fun neighbour(state: UiState, forward: Boolean): Pair<String, String>? {
     val lists = listOf(TODAY_ID to "Today") + state.lists.map { it.id to it.title }
@@ -267,11 +273,13 @@ private fun neighbour(state: UiState, forward: Boolean): Pair<String, String>? {
     return lists.getOrNull(if (forward) at + 1 else at - 1)
 }
 
+/** "3 tasks · by due date"; keeps its line when there are none, so the list below doesn't jump. */
 @Composable
 private fun Subtitle(state: UiState) {
     val open = state.outline.open.count { it.depth == 0u }
+    val sort = state.selectedList?.sort?.takeUnless { state.isToday || it == TaskSort.MANUAL }
     Text(
-        if (open == 1) "1 task" else "$open tasks",
+        (if (open == 1) "1 task" else "$open tasks") + (sort?.let { " · by ${it.label.lowercase()}" } ?: ""),
         style = Not.type.body,
         color = Not.colors.inkMuted,
         modifier = Modifier.padding(top = 2.dp).alpha(if (open == 0) 0f else 1f),
@@ -470,6 +478,36 @@ private fun ListMenu(onRename: () -> Unit, onDelete: () -> Unit) {
                 open = false
                 onDelete()
             })
+        }
+    }
+}
+
+private val TaskSort.label: String
+    get() = when (this) {
+        TaskSort.MANUAL -> "Manual"
+        TaskSort.DUE -> "Due date"
+        TaskSort.PRIORITY -> "Priority"
+        TaskSort.TITLE -> "Title"
+    }
+
+/** Faint until the list is sorted; dragging a task in a sorted list switches it back to Manual. */
+@Composable
+private fun SortMenu(sort: TaskSort, onSort: (TaskSort) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(
+            R.drawable.ic_sort,
+            "Sort: ${sort.label}",
+            { open = true },
+            tint = if (sort == TaskSort.MANUAL) Not.colors.inkFaint else Not.colors.accentInk,
+        )
+        Menu(open, onDismiss = { open = false }) {
+            TaskSort.entries.forEach { option ->
+                MenuItem(option.label, checked = option == sort, onClick = {
+                    open = false
+                    onSort(option)
+                })
+            }
         }
     }
 }
