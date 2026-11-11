@@ -450,7 +450,10 @@ pub struct MuscleSets {
 /// Reads exercise sets shorthand, for live previews while typing.
 #[uniffi::export]
 pub fn parse_sets(text: String) -> Vec<SetLine> {
-    not_core::parse_sets(&text).into_iter().map(SetLine::from).collect()
+    not_core::parse_sets(&text)
+        .into_iter()
+        .map(SetLine::from)
+        .collect()
 }
 
 /// A note without its body.
@@ -492,6 +495,18 @@ pub struct PairingCode {
     pub code: String,
     /// Unix millis.
     pub expires_at: i64,
+}
+
+/// A link that shows one list in a browser, to anyone who has it.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ListShare {
+    pub id: i64,
+    pub list_id: String,
+    /// Visitors can tick tasks off and add new ones; else read only.
+    pub can_edit: bool,
+    pub url: String,
+    /// Unix millis.
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -699,7 +714,14 @@ impl NotStore {
         Ok(self.store.create_habit(&title, goal, days)?)
     }
 
-    pub fn update_habit(&self, id: String, title: String, goal: u32, days: u8, period: HabitPeriod) -> Result<(), NotError> {
+    pub fn update_habit(
+        &self,
+        id: String,
+        title: String,
+        goal: u32,
+        days: u8,
+        period: HabitPeriod,
+    ) -> Result<(), NotError> {
         Ok(self.store.update_habit(&id, &title, goal, days, period.into())?)
     }
 
@@ -1040,7 +1062,12 @@ impl NotStore {
 
     /// Tasks completed over a day ago, from every list, latest first. Reopening one puts it back.
     pub fn archive(&self) -> Result<Vec<TaskItem>, NotError> {
-        Ok(self.store.archive(now_millis())?.into_iter().map(TaskItem::from).collect())
+        Ok(self
+            .store
+            .archive(now_millis())?
+            .into_iter()
+            .map(TaskItem::from)
+            .collect())
     }
 
     /// Deletes everything in the archive (one undo step). Returns how many tasks.
@@ -1194,6 +1221,36 @@ impl NotStore {
     }
 
     /// Unpairs another device. Revoking this device is the same as [`Self::unpair`].
+    /// Share links of `list_id` (all lists for `None`), oldest first.
+    pub async fn shares(&self, list_id: Option<String>) -> Result<Vec<ListShare>, NotError> {
+        let credentials = self.paired()?;
+        let client = SyncClient::from_credentials(&credentials);
+        let shares = self.on_runtime(async move { client.shares().await }).await?;
+        Ok(shares
+            .into_iter()
+            .filter(|s| list_id.as_ref().is_none_or(|l| *l == s.list_id))
+            .map(|s| share(&credentials.server_url, s))
+            .collect())
+    }
+
+    /// A new link to `list_id`; with `can_edit`, visitors can tick off and add tasks.
+    pub async fn share_list(&self, list_id: String, can_edit: bool) -> Result<ListShare, NotError> {
+        let credentials = self.paired()?;
+        let client = SyncClient::from_credentials(&credentials);
+        let created = self
+            .on_runtime(async move { client.create_share(&list_id, can_edit).await })
+            .await?;
+        Ok(share(&credentials.server_url, created))
+    }
+
+    /// The link stops working at once.
+    pub async fn revoke_share(&self, id: i64) -> Result<(), NotError> {
+        let credentials = self.paired()?;
+        let client = SyncClient::from_credentials(&credentials);
+        self.on_runtime(async move { client.revoke_share(id).await })
+            .await
+    }
+
     pub async fn revoke_device(&self, id: i64) -> Result<(), NotError> {
         let credentials = self.paired()?;
         if id == credentials.device_id {
@@ -1340,4 +1397,14 @@ fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
+}
+
+fn share(server_url: &str, s: not_core::ShareInfo) -> ListShare {
+    ListShare {
+        url: not_core::share_url(server_url, &s.token),
+        id: s.id,
+        list_id: s.list_id,
+        can_edit: s.can_edit,
+        created_at: s.created_at,
+    }
 }

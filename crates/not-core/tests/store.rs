@@ -633,12 +633,22 @@ fn indent_and_outdent_tasks() {
     // Skips the completed task above, which isn't shown among open ones.
     assert!(s.indent_task(&b).unwrap());
     let outline = s.outline(INBOX).unwrap();
-    let open: Vec<_> = outline.open.iter().map(|r| (r.task.title.as_str(), r.depth)).collect();
+    let open: Vec<_> = outline
+        .open
+        .iter()
+        .map(|r| (r.task.title.as_str(), r.depth))
+        .collect();
     assert_eq!(open, [("a", 0), ("b", 1)]);
 
     assert!(s.outdent_task(&b).unwrap());
     assert!(!s.outdent_task(&b).unwrap());
-    let open: Vec<_> = s.outline(INBOX).unwrap().open.iter().map(|r| r.task.title.clone()).collect();
+    let open: Vec<_> = s
+        .outline(INBOX)
+        .unwrap()
+        .open
+        .iter()
+        .map(|r| r.task.title.clone())
+        .collect();
     assert_eq!(open, ["a", "b"]);
 }
 
@@ -657,33 +667,74 @@ fn new_tasks_go_first_and_subtasks_last() {
 fn lists_sort_their_open_tasks() {
     let s = Store::open_in_memory().unwrap();
     let list = s.create_list("Home").unwrap();
-    for input in ["walk dog", "Call mum fri !1", "bins tomorrow", "Taxes tomorrow 9am !3"] {
+    for input in [
+        "walk dog",
+        "Call mum fri !1",
+        "bins tomorrow",
+        "Taxes tomorrow 9am !3",
+    ] {
         s.quick_add(&list, input, today(), &[], None).unwrap();
     }
-    let a = s.tasks(&list).unwrap().into_iter().find(|t| t.title == "walk dog").unwrap();
+    let a = s
+        .tasks(&list)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.title == "walk dog")
+        .unwrap();
     s.add_task(&a.id, "z leash").unwrap();
     s.add_task(&a.id, "a treats").unwrap();
-    let open = |s: &Store| -> Vec<String> { s.outline(&list).unwrap().open.into_iter().map(|r| r.task.title).collect() };
+    let open = |s: &Store| -> Vec<String> {
+        s.outline(&list)
+            .unwrap()
+            .open
+            .into_iter()
+            .map(|r| r.task.title)
+            .collect()
+    };
 
     assert_eq!(s.lists().unwrap()[1].sort, TaskSort::Manual);
-    assert_eq!(open(&s), ["Taxes", "bins", "Call mum", "walk dog", "z leash", "a treats"]);
+    assert_eq!(
+        open(&s),
+        ["Taxes", "bins", "Call mum", "walk dog", "z leash", "a treats"]
+    );
 
     s.set_list_sort(&list, TaskSort::Due).unwrap();
     assert_eq!(s.lists().unwrap()[1].sort, TaskSort::Due);
-    assert_eq!(open(&s), ["Taxes", "bins", "Call mum", "walk dog", "z leash", "a treats"]);
+    assert_eq!(
+        open(&s),
+        ["Taxes", "bins", "Call mum", "walk dog", "z leash", "a treats"]
+    );
     s.set_list_sort(&list, TaskSort::Priority).unwrap();
-    assert_eq!(open(&s), ["Call mum", "Taxes", "bins", "walk dog", "z leash", "a treats"], "!1 is high");
+    assert_eq!(
+        open(&s),
+        ["Call mum", "Taxes", "bins", "walk dog", "z leash", "a treats"],
+        "!1 is high"
+    );
     s.set_list_sort(&list, TaskSort::Title).unwrap();
-    assert_eq!(open(&s), ["bins", "Call mum", "Taxes", "walk dog", "a treats", "z leash"]);
+    assert_eq!(
+        open(&s),
+        ["bins", "Call mum", "Taxes", "walk dog", "a treats", "z leash"]
+    );
 
     // Dragging takes over the order shown, as one undo step.
-    let bins = s.tasks(&list).unwrap().into_iter().find(|t| t.title == "bins").unwrap();
+    let bins = s
+        .tasks(&list)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.title == "bins")
+        .unwrap();
     s.move_task_before(&bins.id, &list, None).unwrap();
     assert_eq!(s.list_sort(&list), TaskSort::Manual);
-    assert_eq!(open(&s), ["Call mum", "Taxes", "walk dog", "a treats", "z leash", "bins"]);
+    assert_eq!(
+        open(&s),
+        ["Call mum", "Taxes", "walk dog", "a treats", "z leash", "bins"]
+    );
     assert!(s.undo().unwrap());
     assert_eq!(s.list_sort(&list), TaskSort::Title);
-    assert_eq!(open(&s), ["bins", "Call mum", "Taxes", "walk dog", "a treats", "z leash"]);
+    assert_eq!(
+        open(&s),
+        ["bins", "Call mum", "Taxes", "walk dog", "a treats", "z leash"]
+    );
 
     // The Inbox sorts too.
     s.set_list_sort(INBOX, TaskSort::Title).unwrap();
@@ -699,10 +750,19 @@ fn completed_tasks_move_to_the_archive_after_a_day() {
     let recent = s.add_task(INBOX, "recent").unwrap();
     s.add_task(&list, "open").unwrap();
     s.set_completed(&old, true, today()).unwrap();
+    // Completion times are millis: keep the two apart so "latest first" is decided by them.
+    std::thread::sleep(std::time::Duration::from_millis(3));
     s.set_completed(&recent, true, today()).unwrap();
 
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    assert_eq!(s.outline_at(&list, now).unwrap().completed.len(), 2, "old and its subtask, still today");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    assert_eq!(
+        s.outline_at(&list, now).unwrap().completed.len(),
+        2,
+        "old and its subtask, still today"
+    );
     assert!(s.archive(now).unwrap().is_empty());
 
     let later = now + not_core::ARCHIVE_AFTER_MS + 1000;
@@ -724,10 +784,20 @@ fn completed_tasks_move_to_the_archive_after_a_day() {
 fn upcoming_lists_future_tasks_soonest_first() {
     let s = Store::open_in_memory().unwrap();
     let list = s.create_list("Home").unwrap();
-    for input in ["later next month", "dentist fri 10am", "bins tomorrow", "overdue yesterday", "undated", "call fri 9am"] {
+    for input in [
+        "later next month",
+        "dentist fri 10am",
+        "bins tomorrow",
+        "overdue yesterday",
+        "undated",
+        "call fri 9am",
+    ] {
         s.quick_add(&list, input, today(), &[], None).unwrap();
     }
-    assert_eq!(titles(&s.upcoming_tasks(today()).unwrap()), ["bins", "call", "dentist", "later"]);
+    assert_eq!(
+        titles(&s.upcoming_tasks(today()).unwrap()),
+        ["bins", "call", "dentist", "later"]
+    );
 }
 
 #[test]
@@ -740,8 +810,15 @@ fn search_finds_tasks_by_title_and_notes() {
     s.add_task(INBOX, "Été plans").unwrap();
     s.set_completed(&milk, true, today()).unwrap();
 
-    assert_eq!(titles(&s.search_tasks("milk", 10).unwrap()), ["Crêpes for Sunday", "Oat milk"], "open first");
-    assert_eq!(titles(&s.search_tasks("milk eggs", 10).unwrap()), ["Crêpes for Sunday"]);
+    assert_eq!(
+        titles(&s.search_tasks("milk", 10).unwrap()),
+        ["Crêpes for Sunday", "Oat milk"],
+        "open first"
+    );
+    assert_eq!(
+        titles(&s.search_tasks("milk eggs", 10).unwrap()),
+        ["Crêpes for Sunday"]
+    );
     assert_eq!(titles(&s.search_tasks("été", 10).unwrap()), ["Été plans"]);
     assert!(s.search_tasks("  ", 10).unwrap().is_empty());
     assert_eq!(s.search_tasks("milk", 1).unwrap().len(), 1);
@@ -751,7 +828,8 @@ fn search_finds_tasks_by_title_and_notes() {
 fn export_and_backup_carry_everything() {
     let s = Store::open_in_memory().unwrap();
     let list = s.create_list("Home").unwrap();
-    s.quick_add(&list, "bins tomorrow 7am", today(), &[], None).unwrap();
+    s.quick_add(&list, "bins tomorrow 7am", today(), &[], None)
+        .unwrap();
     let json: serde_json::Value = serde_json::from_str(&s.export_json(today()).unwrap()).unwrap();
     assert_eq!(json["lists"][1]["title"], "Home");
     assert_eq!(json["lists"][1]["tasks"][0]["due_time"], "07:00");

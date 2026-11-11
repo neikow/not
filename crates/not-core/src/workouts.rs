@@ -219,7 +219,11 @@ impl Store {
             return Err(Error::NotFound(id.to_string()));
         };
         self.transact(|| {
-            let siblings: Vec<TreeID> = self.live_children(workout).into_iter().filter(|&s| s != id).collect();
+            let siblings: Vec<TreeID> = self
+                .live_children(workout)
+                .into_iter()
+                .filter(|&s| s != id)
+                .collect();
             match (siblings.get(index), siblings.last()) {
                 (Some(&next), _) => self.workouts.mov_before(id, next)?,
                 (None, Some(&last)) => self.workouts.mov_after(id, last)?,
@@ -232,11 +236,17 @@ impl Store {
     /// Latest first.
     pub fn workouts(&self) -> Result<Vec<WorkoutSummary>> {
         let inner = self.lock();
-        let mut stmt = inner.db.prepare_cached(
-            "SELECT id, date, title FROM workout ORDER BY date DESC, position DESC, id",
-        )?;
+        let mut stmt = inner
+            .db
+            .prepare_cached("SELECT id, date, title FROM workout ORDER BY date DESC, position DESC, id")?;
         let sessions = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut names = inner.db.prepare_cached(
             "SELECT name, set_count FROM workout_exercise WHERE workout_id = ?1 ORDER BY position, id",
@@ -453,7 +463,11 @@ fn history(db: &Connection, keys: &[String], before: Option<&str>, limit: u32) -
     args.push(&before);
     args.push(&limit);
     let rows = stmt.query_map(args.as_slice(), |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
     })?;
     rows.map(|row| {
         let (workout_id, date, sets) = row?;
@@ -475,7 +489,10 @@ fn history(db: &Connection, keys: &[String], before: Option<&str>, limit: u32) -
 }
 
 pub(crate) fn name_key(name: &str) -> String {
-    name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 #[derive(Default)]
@@ -507,7 +524,11 @@ impl Stats {
 
 /// Reads each non-empty line of an exercise's sets.
 pub fn parse_sets(text: &str) -> Vec<SetLine> {
-    text.lines().map(str::trim).filter(|l| !l.is_empty()).map(parse_line).collect()
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(parse_line)
+        .collect()
 }
 
 /// Quotes that start a note on a set line, straight or curly as keyboards type them.
@@ -578,7 +599,11 @@ fn parse_parts(raw: &str, text: &str) -> SetLine {
             distance: cardio.metres,
             duration: cardio.seconds,
             note: None,
-            label: if warmup { format!("Warm-up · {body}") } else { body },
+            label: if warmup {
+                format!("Warm-up · {body}")
+            } else {
+                body
+            },
         };
     }
     unparsed()
@@ -643,7 +668,10 @@ fn read_cardio(line: &str) -> Option<Cardio> {
     for w in lower.split([' ', '\t', ';']).filter(|w| !w.is_empty()) {
         let w = w.trim_end_matches(',');
         match words.last_mut() {
-            Some(prev) if prev.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',') && w.starts_with(char::is_alphabetic) => {
+            Some(prev)
+                if prev.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+                    && w.starts_with(char::is_alphabetic) =>
+            {
                 prev.push_str(w)
             }
             _ => words.push(w.to_owned()),
@@ -677,7 +705,9 @@ fn read_cardio(line: &str) -> Option<Cardio> {
 
 /// Splits `11.6km` into (11.6, "km").
 fn split_number(word: &str) -> Option<(f64, &str)> {
-    let end = word.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(word.len());
+    let end = word
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(word.len());
     let n: f64 = word[..end].parse().ok()?;
     (n > 0.0).then_some((n, &word[end..]))
 }
@@ -729,7 +759,9 @@ fn duration(word: &str) -> Option<u32> {
 
 /// `E 18kg x 10`, `W: …`, `warm-up …`, `échauffement …`.
 fn strip_warmup(line: &str) -> (bool, &str) {
-    let word_end = line.find(|c: char| !(c.is_alphabetic() || c == '-')).unwrap_or(line.len());
+    let word_end = line
+        .find(|c: char| !(c.is_alphabetic() || c == '-'))
+        .unwrap_or(line.len());
     let word = line[..word_end].to_lowercase();
     let after = &line[word_end..];
     let separated = after.starts_with([' ', ':', '\t']);
@@ -831,7 +863,9 @@ fn tokenize(s: &str) -> Option<Vec<Tok>> {
 fn unit_at(chars: &[char], i: usize) -> Option<(&'static str, usize)> {
     for (spelling, unit) in [("kgs", "kg"), ("kg", "kg"), ("lbs", "lb"), ("lb", "lb")] {
         let len = spelling.chars().count();
-        let Some(slice) = chars.get(i..i + len) else { continue };
+        let Some(slice) = chars.get(i..i + len) else {
+            continue;
+        };
         let word: String = slice.iter().collect::<String>().to_lowercase();
         if word == spelling && !chars.get(i + len).is_some_and(|c| c.is_alphabetic()) {
             return Some((unit, len));
@@ -846,7 +880,11 @@ fn read_sets(tokens: &[Tok]) -> Option<(Option<f64>, String, Vec<u32>)> {
         [Tok::Num(w), Tok::Unit(u), Tok::Times, rest @ ..] => (Some(*w), (*u).to_owned(), rest),
         [Tok::Bodyweight, Tok::Times, rest @ ..] => (None, String::new(), rest),
         // No unit: `50 x 10 x 3` is a weight, `10 x 3` is reps times sets.
-        [Tok::Num(w), Tok::Times, rest @ ..] if rest.iter().any(|t| matches!(t, Tok::Times | Tok::Open | Tok::Plus)) => {
+        [Tok::Num(w), Tok::Times, rest @ ..]
+            if rest
+                .iter()
+                .any(|t| matches!(t, Tok::Times | Tok::Open | Tok::Plus)) =>
+        {
             (Some(*w), "kg".to_owned(), rest)
         }
         _ => (None, String::new(), tokens),
@@ -930,7 +968,11 @@ fn label(warmup: bool, weight: Option<f64>, unit: &str, reps: &[u32]) -> String 
         (None, _) if uniform => format!("{} reps × {}", reps[0], reps.len()),
         (None, _) => format!("{} reps", list()),
     };
-    if warmup { format!("Warm-up · {body}") } else { body }
+    if warmup {
+        format!("Warm-up · {body}")
+    } else {
+        body
+    }
 }
 
 struct LoggedSession {
@@ -969,7 +1011,11 @@ fn parse_log(text: &str, today: Date) -> Vec<LoggedSession> {
 /// `30/10`, `30/10/25` or `30/10/2025` (day first).
 fn log_date(line: &str, today: Date) -> Option<Date> {
     let parts: Vec<&str> = line.split(['/', '.']).collect();
-    if !(2..=3).contains(&parts.len()) || parts.iter().any(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_digit())) {
+    if !(2..=3).contains(&parts.len())
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_digit()))
+    {
         return None;
     }
     let day: i64 = parts[0].parse().ok()?;
@@ -981,7 +1027,11 @@ fn log_date(line: &str, today: Date) -> Option<Date> {
         }
         None => {
             let this_year = Date::from_ymd(today.year(), month, day)?;
-            if this_year <= today { Some(this_year) } else { Date::from_ymd(today.year() - 1, month, day) }
+            if this_year <= today {
+                Some(this_year)
+            } else {
+                Date::from_ymd(today.year() - 1, month, day)
+            }
         }
     }
 }
@@ -1025,7 +1075,10 @@ pub fn rebuild(tree: &LoroTree, db: &Connection) -> Result<()> {
                 sets,
                 tree.fractional_index(exercise).unwrap_or_default(),
                 Stats::of(&parse_sets(&sets)).set_count,
-                matches!(meta.get(DONE), Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true)))),
+                matches!(
+                    meta.get(DONE),
+                    Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true)))
+                ),
             ])?;
         }
     }
@@ -1044,7 +1097,10 @@ mod tests {
     fn reads_the_usual_shorthand() {
         let l = line("66kg x 8 x 3");
         assert!(l.parsed && !l.warmup);
-        assert_eq!((l.weight, l.unit.as_str(), l.reps.clone()), (Some(66.0), "kg", vec![8, 8, 8]));
+        assert_eq!(
+            (l.weight, l.unit.as_str(), l.reps.clone()),
+            (Some(66.0), "kg", vec![8, 8, 8])
+        );
         assert_eq!(l.label, "66 kg × 8 × 3");
 
         let l = line("24.8kg x (10 x 2 + 8)");
@@ -1060,7 +1116,10 @@ mod tests {
         assert_eq!(line("24,8kg x 10").weight, Some(24.8));
         assert_eq!(line("50 x 10 x 3").weight, Some(50.0));
         let bw = line("20 x 3");
-        assert_eq!((bw.weight, bw.reps.clone(), bw.label.as_str()), (None, vec![20, 20, 20], "20 reps × 3"));
+        assert_eq!(
+            (bw.weight, bw.reps.clone(), bw.label.as_str()),
+            (None, vec![20, 20, 20], "20 reps × 3")
+        );
         assert_eq!(line("bw x 12").label, "12 reps");
         assert_eq!(line("(10 + 8) x 2").reps, vec![10, 8, 10, 8]);
     }
@@ -1090,9 +1149,15 @@ mod tests {
     fn quotes_start_a_note() {
         let l = line("28kg x 9 \" aide au premier");
         assert!(l.parsed);
-        assert_eq!((l.reps.clone(), l.note.as_deref()), (vec![9], Some("aide au premier")));
+        assert_eq!(
+            (l.reps.clone(), l.note.as_deref()),
+            (vec![9], Some("aide au premier"))
+        );
         assert_eq!(l.label, "28 kg × 9");
-        assert_eq!(line("500m 14min ' eau froide").note.as_deref(), Some("eau froide"));
+        assert_eq!(
+            line("500m 14min ' eau froide").note.as_deref(),
+            Some("eau froide")
+        );
         assert_eq!(line("24kg x 10 “dur”").note.as_deref(), Some("dur"));
         assert_eq!(line("24kg x 10 \"").note, None);
         // An apostrophe in a plain note keeps it whole.
@@ -1118,7 +1183,10 @@ mod tests {
     #[test]
     fn stats_skip_warmups() {
         let stats = Stats::of(&parse_sets("E 18kg x 10\n24kg x 10 x 3"));
-        assert_eq!((stats.top_weight, stats.volume, stats.set_count), (Some(24.0), 720.0, 3));
+        assert_eq!(
+            (stats.top_weight, stats.volume, stats.set_count),
+            (Some(24.0), 720.0, 3)
+        );
     }
 
     #[test]
@@ -1130,9 +1198,15 @@ mod tests {
         );
         assert_eq!(log.len(), 2);
         assert_eq!(log[0].date.to_string(), "2026-10-30");
-        assert_eq!(log[0].exercises, vec![("Tirage vertical (large)".into(), "66kg x 8 x 3".into())]);
+        assert_eq!(
+            log[0].exercises,
+            vec![("Tirage vertical (large)".into(), "66kg x 8 x 3".into())]
+        );
         let noted = parse_log("01/11\nDips\n50kg x 10 \" lent\n\" coude\n", today);
-        assert_eq!(noted[0].exercises, vec![("Dips".into(), "50kg x 10 \" lent\n\" coude".into())]);
+        assert_eq!(
+            noted[0].exercises,
+            vec![("Dips".into(), "50kg x 10 \" lent\n\" coude".into())]
+        );
         assert_eq!(
             log[1].exercises,
             vec![

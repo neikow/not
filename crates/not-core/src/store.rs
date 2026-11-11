@@ -472,7 +472,10 @@ impl Store {
     /// none (it is the first).
     pub fn indent_task(&self, id: &str) -> Result<bool> {
         let id = self.node(id, &[KIND_TASK])?;
-        let parent = self.tasks.parent(id).ok_or_else(|| Error::NotFound(id.to_string()))?;
+        let parent = self
+            .tasks
+            .parent(id)
+            .ok_or_else(|| Error::NotFound(id.to_string()))?;
         let siblings = self.tasks.children(parent).unwrap_or_default();
         let Some(at) = siblings.iter().position(|&s| s == id) else {
             return Ok(false);
@@ -528,7 +531,9 @@ impl Store {
 
     pub fn list_sort(&self, list_id: &str) -> TaskSort {
         match self.task_sort.get(list_id) {
-            Some(loro::ValueOrContainer::Value(v)) => v.as_string().map_or(TaskSort::Manual, |s| TaskSort::from_key(s)),
+            Some(loro::ValueOrContainer::Value(v)) => {
+                v.as_string().map_or(TaskSort::Manual, |s| TaskSort::from_key(s))
+            }
             _ => TaskSort::Manual,
         }
     }
@@ -740,6 +745,11 @@ impl Store {
             }
         }
         Ok(children)
+    }
+
+    /// One task by id, from any list.
+    pub fn task_by_id(&self, id: &str) -> Result<Task> {
+        self.task(id)
     }
 
     fn task(&self, id: &str) -> Result<Task> {
@@ -966,8 +976,13 @@ fn push_subtree(
 
 /// New tasks go first in a list (or the Inbox) and last under a task.
 fn create_task_node(tree: &LoroTree, parent: TreeParentId) -> Result<TreeID> {
-    let under_task = matches!(parent, TreeParentId::Node(p) if projection::kind(tree, p).as_deref() == Some(KIND_TASK));
-    Ok(if under_task { tree.create(parent)? } else { tree.create_at(parent, 0)? })
+    let under_task =
+        matches!(parent, TreeParentId::Node(p) if projection::kind(tree, p).as_deref() == Some(KIND_TASK));
+    Ok(if under_task {
+        tree.create(parent)?
+    } else {
+        tree.create_at(parent, 0)?
+    })
 }
 
 fn tree_id(id: &str) -> Result<TreeID> {

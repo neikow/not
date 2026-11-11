@@ -18,6 +18,10 @@ commands:
   devices       list paired devices
   revoke <id>   unpair a device
 
+web:
+  /             your lists and notes in a browser; sign in with a pairing code
+  /s/<token>    a shared list (links are made from the apps: list menu → Share)
+
 environment:
   NOT_DB        database path (default /data/not.db)
   NOT_ADDR      listen address (default 0.0.0.0:8080)

@@ -69,6 +69,7 @@ struct ContentView: View {
 private struct Sidebar: View {
     @Bindable var model: AppModel
     @State private var renamingID: String?
+    @State private var sharing: TaskList?
 
     var body: some View {
         List(selection: $model.selection) {
@@ -130,6 +131,7 @@ private struct Sidebar: View {
                         .tag(SidebarItem.list(list.id))
                         .contextMenu {
                             Button("Rename") { renamingID = list.id }
+                            Button("Share…") { sharing = list }
                             Divider()
                             Button("Delete List", role: .destructive) { model.delete(id: list.id) }
                         }
@@ -160,6 +162,74 @@ private struct Sidebar: View {
             }
             .buttonStyle(.borderless)
             .padding(12)
+        }
+        .sheet(item: $sharing) { list in ShareSheet(model: model, list: list) }
+    }
+}
+
+/// Links that show a list in a browser, read only or editable, for people without the app.
+private struct ShareSheet: View {
+    let model: AppModel
+    let list: TaskList
+    @Environment(\.dismiss) private var dismiss
+    @State private var shares: [ListShare]?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Share “\(list.title)”").font(.headline)
+            if model.syncInfo == nil {
+                Text("Links are served by your sync server: pair this Mac first (Settings → Sync).")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Anyone with a link sees this list in a browser, no app needed.")
+                    .foregroundStyle(.secondary)
+                if let shares {
+                    ForEach(shares, id: \.id) { share in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(share.canEdit ? "Can tick off and add" : "View only")
+                                Text(share.url).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                            Spacer()
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(share.url, forType: .string)
+                            }
+                            Button(role: .destructive) {
+                                Task {
+                                    await model.revokeShare(share)
+                                    self.shares = await model.shares(of: list.id)
+                                }
+                            } label: { Image(systemName: "trash") }
+                                .buttonStyle(.borderless)
+                                .help("Stop sharing")
+                        }
+                    }
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                HStack {
+                    Button("New Link: Can Edit") { create(canEdit: true) }
+                    Button("New Link: View Only") { create(canEdit: false) }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .task { if model.syncInfo != nil { shares = await model.shares(of: list.id) } }
+    }
+
+    private func create(canEdit: Bool) {
+        Task {
+            if let share = await model.shareList(list.id, canEdit: canEdit) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(share.url, forType: .string)
+                shares = (shares ?? []) + [share]
+            }
         }
     }
 }
@@ -772,3 +842,5 @@ extension TaskSort {
         }
     }
 }
+
+extension TaskList: @retroactive Identifiable {}

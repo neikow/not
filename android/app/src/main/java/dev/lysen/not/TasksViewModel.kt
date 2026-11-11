@@ -6,6 +6,7 @@ import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.lysen.not.core.Device
+import dev.lysen.not.core.ListShare
 import dev.lysen.not.core.NotException
 import dev.lysen.not.core.Outline
 import dev.lysen.not.core.OutlineRow
@@ -246,6 +247,28 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshDevices() = launchBusy { loadDevices() }
+
+    // ---- shared lists ----
+
+    /** Share links of the list the share dialog is open for; null while loading. */
+    private val _shares = MutableStateFlow<List<ListShare>?>(null)
+    val shares: StateFlow<List<ListShare>?> = _shares.asStateFlow()
+
+    fun loadShares(listId: String) {
+        _shares.value = null
+        launchBusy { _shares.value = store.shares(listId) }
+    }
+
+    fun shareList(listId: String, canEdit: Boolean, then: (ListShare) -> Unit = {}) = launchBusy {
+        val share = store.shareList(listId, canEdit)
+        _shares.update { it.orEmpty() + share }
+        then(share)
+    }
+
+    fun revokeShare(share: ListShare) = launchBusy {
+        store.revokeShare(share.id)
+        _shares.update { it?.filter { s -> s.id != share.id } }
+    }
 
     fun revoke(device: Device) {
         if (device.isCurrent) return unpair()

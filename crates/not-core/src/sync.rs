@@ -300,6 +300,46 @@ mod client {
             Ok(())
         }
 
+        /// Links that show a list in a browser; see [`not_protocol::ShareInfo`].
+        pub async fn shares(&self) -> Result<Vec<not_protocol::ShareInfo>> {
+            let response = self
+                .http
+                .get(format!("{}/shares", self.base))
+                .bearer_auth(&self.token)
+                .send()
+                .await?;
+            Ok(checked(response)?.json().await?)
+        }
+
+        pub async fn create_share(&self, list_id: &str, can_edit: bool) -> Result<not_protocol::ShareInfo> {
+            let response = self
+                .http
+                .post(format!("{}/shares", self.base))
+                .bearer_auth(&self.token)
+                .json(&not_protocol::CreateShare {
+                    list_id: list_id.to_owned(),
+                    can_edit,
+                })
+                .send()
+                .await?;
+            Ok(checked(response)?.json().await?)
+        }
+
+        /// The link stops working at once.
+        pub async fn revoke_share(&self, id: i64) -> Result<()> {
+            let response = self
+                .http
+                .delete(format!("{}/shares/{id}", self.base))
+                .bearer_auth(&self.token)
+                .send()
+                .await?;
+            if response.status() == StatusCode::NOT_FOUND {
+                return Err(Error::NotFound(format!("share {id}")));
+            }
+            checked(response)?;
+            Ok(())
+        }
+
         /// One round: push local changes, then pull until caught up.
         pub async fn sync(&self, store: &Store) -> Result<SyncReport> {
             let mut report = SyncReport::default();

@@ -270,6 +270,22 @@ final class AppModel {
         return await runAsync { try await store.devices() } ?? []
     }
 
+    func shares(of listID: String) async -> [ListShare] {
+        let store = store
+        return await runAsync { try await store.shares(listId: listID) } ?? []
+    }
+
+    /// A new link (copied to the clipboard by the caller).
+    func shareList(_ listID: String, canEdit: Bool) async -> ListShare? {
+        let store = store
+        return await runAsync { try await store.shareList(listId: listID, canEdit: canEdit) }
+    }
+
+    func revokeShare(_ share: ListShare) async {
+        let store = store
+        await runAsync { try await store.revokeShare(id: share.id) }
+    }
+
     func revoke(_ device: Device) async {
         guard !device.isCurrent else { return await unpair() }
         let store = store

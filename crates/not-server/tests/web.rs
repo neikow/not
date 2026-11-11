@@ -1,0 +1,196 @@
+//! The web companion and shared lists, driven through the router in-process.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use http_body_util::BodyExt;
+use not_core::{INBOX, Store, SyncClient};
+use not_server::AppState;
+use tower::ServiceExt;
+
+fn today() -> not_core::date::Date {
+    not_core::date::Date::parse("2026-11-08").unwrap()
+}
+
+async fn start() -> (AppState, String) {
+    let state = AppState::in_memory().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = not_server::router(state.clone());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (state, format!("http://{addr}"))
+}
+
+async fn send(state: &AppState, request: Request<Body>) -> (StatusCode, Option<String>, String) {
+    let response = not_server::router(state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .map(|v| v.to_str().unwrap().to_owned());
+    let cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .map(|v| v.to_str().unwrap().to_owned());
+    let body = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+    (status, location.or(cookie), body)
+}
+
+fn get(path: &str, cookie: Option<&str>) -> Request<Body> {
+    let mut r = Request::get(path);
+    if let Some(c) = cookie {
+        r = r.header(header::COOKIE, c);
+    }
+    r.body(Body::empty()).unwrap()
+}
+
+fn post(path: &str, form: &str, cookie: Option<&str>) -> Request<Body> {
+    let mut r = Request::post(path).header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if let Some(c) = cookie {
+        r = r.header(header::COOKIE, c);
+    }
+    r.body(Body::from(form.to_owned())).unwrap()
+}
+
+#[tokio::test]
+async fn browser_signs_in_with_a_code_and_edits_flow_back() {
+    let (state, base) = start().await;
+    let code = state.create_pairing_code().unwrap();
+    let phone_client =
+        SyncClient::from_credentials(&SyncClient::pair(&base, &code.code, "Phone").await.unwrap());
+    let phone = Store::open_in_memory().unwrap();
+    let groceries = phone.create_list("Groceries").unwrap();
+    phone.add_task(&groceries, "milk").unwrap();
+    phone_client.sync(&phone).await.unwrap();
+
+    // Signed out: to the login page.
+    let (status, location, _) = send(&state, get("/", None)).await;
+    assert_eq!(
+        (status, location.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/login"))
+    );
+
+    let (_, location, _) = send(&state, post("/login", "code=nope", None)).await;
+    assert_eq!(location.as_deref(), Some("/login?failed=1"));
+    let code = state.create_pairing_code().unwrap().code;
+    let response = not_server::router(state.clone())
+        .oneshot(post("/login", &format!("code={code}&name=Firefox"), None))
+        .await
+        .unwrap();
+    let cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(
+        state.devices().unwrap().iter().any(|d| d.name == "Firefox"),
+        "a browser is a device"
+    );
+
+    let (status, _, html) = send(&state, get(&format!("/l/{groceries}"), Some(&cookie))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("milk") && html.contains("Groceries"));
+
+    // Adding and ticking from the browser reach the phone.
+    send(
+        &state,
+        post(
+            &format!("/l/{groceries}/add"),
+            "text=bread+%3Cb%3E&from=",
+            Some(&cookie),
+        ),
+    )
+    .await;
+    phone_client.sync(&phone).await.unwrap();
+    let tasks = phone.tasks(&groceries).unwrap();
+    assert_eq!(tasks[0].title, "bread <b>");
+    let (_, _, html) = send(&state, get(&format!("/l/{groceries}"), Some(&cookie))).await;
+    assert!(html.contains("bread &lt;b&gt;"), "escaped");
+
+    send(
+        &state,
+        post(&format!("/t/{}/toggle", tasks[1].id), "back=/", Some(&cookie)),
+    )
+    .await;
+    phone_client.sync(&phone).await.unwrap();
+    assert!(phone.task_by_id(&tasks[1].id).unwrap().completed_at.is_some());
+    let _ = INBOX;
+}
+
+#[tokio::test]
+async fn shared_lists_are_read_only_or_editable_and_revocable() {
+    let (state, base) = start().await;
+    let code = state.create_pairing_code().unwrap();
+    let client = SyncClient::from_credentials(&SyncClient::pair(&base, &code.code, "Phone").await.unwrap());
+    let phone = Store::open_in_memory().unwrap();
+    let groceries = phone.create_list("Groceries").unwrap();
+    let secret = phone.create_list("Secret").unwrap();
+    phone.add_task(&groceries, "milk").unwrap();
+    let hidden = phone.add_task(&secret, "hidden").unwrap();
+    client.sync(&phone).await.unwrap();
+
+    let view = client.create_share(&groceries, false).await.unwrap();
+    let edit = client.create_share(&groceries, true).await.unwrap();
+    assert_eq!(client.shares().await.unwrap().len(), 2);
+
+    let (status, _, html) = send(&state, get(&format!("/s/{}", view.token), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("milk") && !html.contains(">hidden<"),
+        "only the shared list"
+    );
+    assert!(!html.contains("<form"), "read only: no forms");
+    let (status, _, _) = send(&state, post(&format!("/s/{}/add", view.token), "text=x", None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Edit link: add (a #tag can't move it to another list) and tick.
+    send(
+        &state,
+        post(
+            &format!("/s/{}/add", edit.token),
+            "text=eggs+%23secret+tomorrow",
+            None,
+        ),
+    )
+    .await;
+    client.sync(&phone).await.unwrap();
+    let tasks = phone.tasks(&groceries).unwrap();
+    assert_eq!(tasks[0].title, "eggs secret");
+    assert_eq!(tasks[0].due.as_deref(), Some(today_plus_one_utc().as_str()));
+    send(
+        &state,
+        post(&format!("/s/{}/t/{}/toggle", edit.token, tasks[1].id), "", None),
+    )
+    .await;
+    // Not a task of the shared list.
+    let (status, _, _) = send(
+        &state,
+        post(&format!("/s/{}/t/{hidden}/toggle", edit.token), "", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    client.sync(&phone).await.unwrap();
+    assert!(phone.task_by_id(&tasks[1].id).unwrap().completed_at.is_some());
+    assert!(phone.task_by_id(&hidden).unwrap().completed_at.is_none());
+
+    client.revoke_share(edit.id).await.unwrap();
+    let (status, _, _) = send(&state, get(&format!("/s/{}", edit.token), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let _ = today();
+}
+
+fn today_plus_one_utc() -> String {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        / 86_400;
+    not_core::date::Date::from_ymd(1970, 1, 1)
+        .unwrap()
+        .add_days(days + 1)
+        .to_string()
+}

@@ -7,13 +7,18 @@ use not_core::Store;
 fn sessions_list_latest_first_with_last_time_hints() {
     let s = Store::open_in_memory().unwrap();
     let pull = s.create_workout("2026-10-30", "Pull").unwrap();
-    s.add_exercise(&pull, "Tirage vertical (large)", "66kg x 8 x 3").unwrap();
+    s.add_exercise(&pull, "Tirage vertical (large)", "66kg x 8 x 3")
+        .unwrap();
     s.add_exercise(&pull, "Abdos", "").unwrap();
     let push = s.create_workout("2026-11-02", "").unwrap();
-    s.add_exercise(&push, "Bench Haltères", "E 18kg x 10\n24kg x 10 x 3").unwrap();
+    s.add_exercise(&push, "Bench Haltères", "E 18kg x 10\n24kg x 10 x 3")
+        .unwrap();
 
     let list = s.workouts().unwrap();
-    assert_eq!(list.iter().map(|w| w.date.as_str()).collect::<Vec<_>>(), ["2026-11-02", "2026-10-30"]);
+    assert_eq!(
+        list.iter().map(|w| w.date.as_str()).collect::<Vec<_>>(),
+        ["2026-11-02", "2026-10-30"]
+    );
     assert_eq!(list[0].set_count, 3);
     assert_eq!(list[1].exercise_names, ["Tirage vertical (large)", "Abdos"]);
 
@@ -24,15 +29,22 @@ fn sessions_list_latest_first_with_last_time_hints() {
     assert_eq!(w.exercises.len(), 2);
     assert_eq!(w.exercises[0].sets, "");
     let previous = w.exercises[0].previous.as_ref().unwrap();
-    assert_eq!((previous.date.as_str(), previous.top_weight, previous.set_count), ("2026-10-30", Some(66.0), 3));
+    assert_eq!(
+        (previous.date.as_str(), previous.top_weight, previous.set_count),
+        ("2026-10-30", Some(66.0), 3)
+    );
     assert_eq!(previous.lines[0].label, "66 kg × 8 × 3");
     // Nothing was logged for Abdos, so there's no hint.
     assert!(w.exercises[1].previous.is_none());
 
     // Matching ignores case and spacing.
-    s.update_exercise(&w.exercises[0].id, "tirage  vertical (LARGE)", "68kg x 8 x 3").unwrap();
+    s.update_exercise(&w.exercises[0].id, "tirage  vertical (LARGE)", "68kg x 8 x 3")
+        .unwrap();
     let history = s.exercise_history("Tirage vertical (large)", 10).unwrap();
-    assert_eq!(history.iter().map(|h| h.top_weight).collect::<Vec<_>>(), [Some(68.0), Some(66.0)]);
+    assert_eq!(
+        history.iter().map(|h| h.top_weight).collect::<Vec<_>>(),
+        [Some(68.0), Some(66.0)]
+    );
     assert_eq!(s.exercise_names().unwrap()[0], "tirage  vertical (LARGE)");
 }
 
@@ -47,7 +59,14 @@ fn edits_are_undoable_and_sync() {
     mac.move_exercise(&lunge, 0).unwrap();
     log.sync(&mac);
     log.sync(&phone);
-    let names = |s: &Store| s.workout(&w).unwrap().exercises.into_iter().map(|e| e.name).collect::<Vec<_>>();
+    let names = |s: &Store| {
+        s.workout(&w)
+            .unwrap()
+            .exercises
+            .into_iter()
+            .map(|e| e.name)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(names(&phone), ["Lunge", "Squat"]);
 
     phone.delete_exercise(&squat).unwrap();
@@ -79,9 +98,20 @@ fn imports_a_text_log() {
     let w = s.workout(&list[1].id).unwrap();
     assert_eq!(w.exercises[1].lines[0].reps, [10, 10, 8]);
 
-    s.import_workouts("05/11\nPiscine\n500m 14min\n\nCourse\n11.6km 1h30\n", "2026-11-09").unwrap();
+    s.import_workouts(
+        "05/11\nPiscine\n500m 14min\n\nCourse\n11.6km 1h30\n",
+        "2026-11-09",
+    )
+    .unwrap();
     let cardio = s.workout(&s.workouts().unwrap()[0].id).unwrap();
-    assert_eq!(cardio.exercises.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Piscine", "Course"]);
+    assert_eq!(
+        cardio
+            .exercises
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Piscine", "Course"]
+    );
     assert_eq!(cardio.exercises[1].lines[0].label, "11.6 km · 1 h 30 · 7:46 /km");
     let log = &s.exercise_history("Course", 1).unwrap()[0];
     assert_eq!((log.distance, log.duration, log.set_count), (11_600.0, 5400, 0));
@@ -94,22 +124,34 @@ fn linked_names_share_history_and_count_per_muscle() {
     assert!(bench.muscles.iter().any(|m| m == "Chest"), "{bench:?}");
 
     // Matching a catalogue name links by itself, ignoring case and accents.
-    assert_eq!(s.exercise_info("developpe couche avec halteres").map(|e| e.id), Some(bench.id.clone()));
+    assert_eq!(
+        s.exercise_info("developpe couche avec halteres").map(|e| e.id),
+        Some(bench.id.clone())
+    );
     assert!(s.exercise_info("Bench Haltères").is_none());
 
     let old = s.create_workout("2026-11-02", "").unwrap();
     s.add_exercise(&old, "Bench Haltères", "24kg x 10 x 3").unwrap();
     let new = s.create_workout("2026-11-09", "").unwrap();
-    s.add_exercise(&new, "Développé couché avec haltères", "").unwrap();
+    s.add_exercise(&new, "Développé couché avec haltères", "")
+        .unwrap();
     assert!(s.workout(&new).unwrap().exercises[0].previous.is_none());
 
     s.link_exercise("Bench Haltères", Some(&bench.id)).unwrap();
     let previous = s.workout(&new).unwrap().exercises[0].previous.clone().unwrap();
     assert_eq!(previous.date, "2026-11-02");
-    assert_eq!(s.exercise_history("Développé couché avec haltères", 10).unwrap().len(), 1);
+    assert_eq!(
+        s.exercise_history("Développé couché avec haltères", 10)
+            .unwrap()
+            .len(),
+        1
+    );
 
     let muscles = s.muscle_sets("2026-11-02", "2026-11-08").unwrap();
-    assert_eq!(muscles.iter().find(|m| m.muscle == "Chest").map(|m| m.sets), Some(3));
+    assert_eq!(
+        muscles.iter().find(|m| m.muscle == "Chest").map(|m| m.sets),
+        Some(3)
+    );
 
     // Unlinking by hand beats the name match.
     s.link_exercise("Bench Haltères", None).unwrap();

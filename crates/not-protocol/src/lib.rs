@@ -96,6 +96,30 @@ pub struct DeviceInfo {
     pub last_seen_at: Option<i64>,
 }
 
+/// A link that shows one task list in a browser, to anyone who has it: `<server>/s/<token>`.
+/// `GET /shares` lists them, `POST /shares` makes one, `DELETE /shares/{id}` revokes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareInfo {
+    pub id: i64,
+    pub list_id: String,
+    /// Visitors can tick tasks off and add new ones (never delete or rename); else read only.
+    pub can_edit: bool,
+    pub token: String,
+    /// Unix millis.
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateShare {
+    pub list_id: String,
+    pub can_edit: bool,
+}
+
+/// Where a share link points, from the server URL a device syncs with.
+pub fn share_url(server_url: &str, token: &str) -> String {
+    format!("{}/s/{token}", server_url.trim_end_matches('/'))
+}
+
 /// What a pairing QR code holds: `not://pair?server=<url>&code=<code>`. Scanning one fills in both
 /// fields a new device needs.
 #[derive(Debug, Clone, PartialEq, Eq)]

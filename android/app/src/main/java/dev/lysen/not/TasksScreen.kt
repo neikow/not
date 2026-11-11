@@ -76,6 +76,10 @@ import dev.lysen.not.ui.SwipeAction
 import dev.lysen.not.ui.SwipeRow
 import dev.lysen.not.ui.Text
 import dev.lysen.not.ui.ToastHost
+import dev.lysen.not.ui.ButtonKind
+import dev.lysen.not.ui.Spinner
+import androidx.compose.ui.platform.LocalContext
+import dev.lysen.not.core.ListShare
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.text.input.ImeAction
 import dev.lysen.not.core.TaskSort
@@ -93,6 +97,7 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
     var showsCompleted by rememberSaveable { mutableStateOf(false) }
     var newList by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<TaskList?>(null) }
+    var sharing by remember { mutableStateOf<TaskList?>(null) }
     // Held without dragging: quick actions for that task.
     var held by remember { mutableStateOf<TaskItem?>(null) }
     val title = state.title
@@ -230,6 +235,7 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             onReveal = viewModel::reveal,
             onNewList = { newList = true },
             onRename = { renaming = it },
+            onShare = { sharing = it },
             onDelete = viewModel::deleteList,
             onDismiss = { showsLists = false },
         )
@@ -247,6 +253,7 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             onDismiss = { newList = false },
         )
     }
+    sharing?.let { list -> ShareDialog(list, state, viewModel, onDismiss = { sharing = null }) }
     renaming?.let { list ->
         PromptDialog(
             title = "Rename list",
@@ -444,6 +451,7 @@ private fun ListsSheet(
     onReveal: (TaskItem) -> Unit,
     onNewList: () -> Unit,
     onRename: (TaskList) -> Unit,
+    onShare: (TaskList) -> Unit,
     onDelete: (TaskList) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -512,6 +520,7 @@ private fun ListsSheet(
                         {
                             ListMenu(
                                 onRename = { onRename(list) },
+                                onShare = { onShare(list) },
                                 onDelete = {
                                     // Close so the Undo toast underneath shows.
                                     close()
@@ -622,7 +631,7 @@ private fun ListRow(
 private val NoMenu: @Composable () -> Unit = { Spacer(Modifier.size(44.dp)) }
 
 @Composable
-private fun ListMenu(onRename: () -> Unit, onDelete: () -> Unit) {
+private fun ListMenu(onRename: () -> Unit, onShare: () -> Unit, onDelete: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(R.drawable.ic_more_vert, "List options", { open = true }, tint = Not.colors.inkFaint)
@@ -630,6 +639,10 @@ private fun ListMenu(onRename: () -> Unit, onDelete: () -> Unit) {
             MenuItem("Rename list", icon = R.drawable.ic_edit, onClick = {
                 open = false
                 onRename()
+            })
+            MenuItem("Share…", icon = R.drawable.ic_copy, onClick = {
+                open = false
+                onShare()
             })
             MenuItem("Delete list", icon = R.drawable.ic_delete, danger = true, onClick = {
                 open = false
@@ -665,6 +678,51 @@ private fun SortMenu(sort: TaskSort, onSort: (TaskSort) -> Unit) {
                     onSort(option)
                 })
             }
+        }
+    }
+}
+
+/**
+ * Links that show [list] in a browser, for people without the app (a partner with the groceries).
+ * Each link is read only or lets visitors tick off and add tasks; the sharer picks per link.
+ */
+@Composable
+private fun ShareDialog(list: TaskList, state: UiState, viewModel: TasksViewModel, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val shares by viewModel.shares.collectAsStateWithLifecycle()
+    LaunchedEffect(list.id) { if (state.syncInfo != null) viewModel.loadShares(list.id) }
+    fun send(share: ListShare) {
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(android.content.Intent.EXTRA_TEXT, share.url)
+        context.startActivity(android.content.Intent.createChooser(intent, "Share “${list.title}”"))
+    }
+    CardDialog(
+        title = "Share “${list.title}”",
+        onDismiss = onDismiss,
+        buttons = { Button("Done", onDismiss, kind = ButtonKind.Quiet) },
+    ) {
+        if (state.syncInfo == null) {
+            Text("Links are served by your sync server: pair this phone first (Settings → Sync).", color = Not.colors.inkMuted)
+            return@CardDialog
+        }
+        Text("Anyone with a link sees this list in a browser, no app needed.", style = Not.type.caption, color = Not.colors.inkMuted)
+        when (val links = shares) {
+            null -> Spinner(Modifier.padding(vertical = 12.dp))
+            else -> links.forEach { share ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(if (share.canEdit) "Can tick off and add" else "View only", style = Not.type.body)
+                        Text(share.url.substringAfter("://"), style = Not.type.caption, color = Not.colors.inkFaint, maxLines = 1)
+                    }
+                    IconButton(R.drawable.ic_copy, "Send link", { send(share) }, tint = Not.colors.inkMuted)
+                    IconButton(R.drawable.ic_delete, "Stop sharing", { viewModel.revokeShare(share) }, tint = Not.colors.danger)
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+            Button("Can edit", { viewModel.shareList(list.id, canEdit = true, ::send) }, kind = ButtonKind.Secondary, icon = R.drawable.ic_add, enabled = !state.busy)
+            Button("View only", { viewModel.shareList(list.id, canEdit = false, ::send) }, kind = ButtonKind.Secondary, icon = R.drawable.ic_add, enabled = !state.busy)
         }
     }
 }
