@@ -599,6 +599,9 @@ private fun ExerciseCard(
     var draft by remember(exercise.id) { mutableStateOf("") }
     var editing by remember { mutableStateOf<Int?>(null) }
     var pendingEdit by remember { mutableStateOf<Int?>(null) }
+    // The set whose menu is open (held), and one held while its group was being split.
+    var menuFor by remember { mutableStateOf<Int?>(null) }
+    var pendingMenu by remember { mutableStateOf<Int?>(null) }
     var menu by remember { mutableStateOf(false) }
     val setsFocus = remember { FocusRequester() }
 
@@ -708,12 +711,16 @@ private fun ExerciseCard(
             if (line.parsed && line.reps.size > 1) line.reps.indices.map { k -> i to k } else listOf(i to null)
         }
         // The row tapped while its group was being split: opened once the split lines are in.
-        LaunchedEffect(exercise.lines, pendingEdit) {
-            if (pendingEdit != null && rows.size == exercise.lines.size) {
-                editing = pendingEdit
+        LaunchedEffect(exercise.lines, pendingEdit, pendingMenu) {
+            if (rows.size == exercise.lines.size) {
+                pendingEdit?.let { editing = it }
+                pendingMenu?.let { menuFor = it }
                 pendingEdit = null
+                pendingMenu = null
             }
         }
+        val split = rows.size == exercise.lines.size
+        fun splitFirst() = viewModel.setSets(exercise, expandSets(exercise.lines.joinToString("\n") { it.raw }).lines())
         var number = 0
         rows.forEachIndexed { row, (i, k) ->
             val line = exercise.lines[i]
@@ -735,14 +742,45 @@ private fun ExerciseCard(
                     },
                 )
             } else {
-                SetRow(line, rep = k, number = number.takeIf { counts }, isLast = k == null || k == line.reps.lastIndex, onClick = {
-                    if (rows.size != exercise.lines.size) {
-                        viewModel.setSets(exercise, expandSets(exercise.lines.joinToString("\n") { it.raw }).lines())
-                        pendingEdit = row
-                    } else {
-                        editing = row
-                    }
-                })
+                Box {
+                    SetRow(
+                        line,
+                        rep = k,
+                        number = number.takeIf { counts },
+                        isLast = k == null || k == line.reps.lastIndex,
+                        onClick = {
+                            if (split) editing = row else {
+                                splitFirst()
+                                pendingEdit = row
+                            }
+                        },
+                        onLongClick = {
+                            if (split) menuFor = row else {
+                                splitFirst()
+                                pendingMenu = row
+                            }
+                        },
+                    )
+                    SetMenu(
+                        open = menuFor == row && split,
+                        line = line,
+                        canMoveUp = row > 0,
+                        canMoveDown = row < rows.lastIndex,
+                        onDismiss = { menuFor = null },
+                        onAction = { action ->
+                            menuFor = null
+                            val lines = exercise.lines.map { it.raw }.toMutableList()
+                            when (action) {
+                                SetAction.Edit -> editing = row
+                                SetAction.Duplicate -> viewModel.setSets(exercise, lines.apply { add(row + 1, lines[row]) })
+                                SetAction.MoveUp -> viewModel.setSets(exercise, lines.apply { add(row - 1, removeAt(row)) })
+                                SetAction.MoveDown -> viewModel.setSets(exercise, lines.apply { add(row + 1, removeAt(row)) })
+                                SetAction.ToggleWarmup -> viewModel.setSets(exercise, lines.apply { this[row] = toggleWarmup(line) })
+                                SetAction.Delete -> viewModel.deleteSet(exercise, row)
+                            }
+                        },
+                    )
+                }
             }
         }
 
@@ -802,13 +840,14 @@ private fun SessionProgress(exercises: List<WorkoutExercise>) {
 }
 
 @Composable
-private fun SetRow(line: SetLine, rep: Int?, number: Int?, isLast: Boolean, onClick: () -> Unit) {
+private fun SetRow(line: SetLine, rep: Int?, number: Int?, isLast: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
     val colors = Not.colors
     val working = line.parsed && !line.warmup
     Row(
         Modifier
             .fillMaxWidth()
-            .pressable(onClick, pressedScale = 0.98f, onClickLabel = "Edit")
+            // Holding a set opens its menu (and keeps the card from starting a drag).
+            .pressable(onClick, pressedScale = 0.98f, onClickLabel = "Edit", onLongClick = onLongClick, onLongClickLabel = "Set options")
             .heightIn(min = 36.dp)
             .padding(end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -835,6 +874,37 @@ private fun SetRow(line: SetLine, rep: Int?, number: Int?, isLast: Boolean, onCl
         }
     }
 }
+
+private enum class SetAction { Edit, Duplicate, MoveUp, MoveDown, ToggleWarmup, Delete }
+
+/** What holding a set offers: edit, copy, move, warm-up or not, remove. */
+@Composable
+private fun SetMenu(
+    open: Boolean,
+    line: SetLine,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onDismiss: () -> Unit,
+    onAction: (SetAction) -> Unit,
+) {
+    Menu(open, onDismiss = onDismiss) {
+        MenuItem("Edit", icon = R.drawable.ic_edit, onClick = { onAction(SetAction.Edit) })
+        MenuItem("Duplicate", icon = R.drawable.ic_copy, onClick = { onAction(SetAction.Duplicate) })
+        MenuItem("Move up", icon = R.drawable.ic_arrow_up, enabled = canMoveUp, onClick = { onAction(SetAction.MoveUp) })
+        MenuItem("Move down", icon = R.drawable.ic_expand_more, enabled = canMoveDown, onClick = { onAction(SetAction.MoveDown) })
+        if (line.parsed && line.reps.isNotEmpty()) {
+            MenuItem(if (line.warmup) "Make it a working set" else "Make it a warm-up", icon = R.drawable.ic_flame, onClick = { onAction(SetAction.ToggleWarmup) })
+        }
+        MenuItem("Delete", icon = R.drawable.ic_delete, danger = true, onClick = { onAction(SetAction.Delete) })
+    }
+}
+
+/** The warm-up words the core reads before a set (see `strip_warmup`), with their separator. */
+private val WarmupPrefix = Regex("^(e|w|wu|warm-?up|[ée]chauf(fement)?)[ :\\t]+", RegexOption.IGNORE_CASE)
+
+/** The same line as a warm-up ("E 18kg x 10") or, if it was one, as a working set. */
+private fun toggleWarmup(line: SetLine): String =
+    if (line.warmup) line.raw.trim().replaceFirst(WarmupPrefix, "").trim() else "E ${line.raw.trim()}"
 
 /** "24 kg × 10 ×3", "18 kg × 10, 8", or the label for cardio and notes: for one-line summaries. */
 private fun SetLine.short(): String {

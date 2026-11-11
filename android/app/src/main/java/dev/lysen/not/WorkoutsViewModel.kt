@@ -94,6 +94,14 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
         run { store.updateExercise(exercise.id, exercise.name, lines.joinToString("\n")) }
     }
 
+    /** Removes one set line (lines already one per set), with Undo. */
+    fun deleteSet(exercise: WorkoutExercise, index: Int) {
+        val lines = exercise.lines.map { it.raw }
+        if (index !in lines.indices) return
+        setSets(exercise, lines.filterIndexed { i, _ -> i != index })
+        _undoables.trySend(Undoable("Set removed"))
+    }
+
     /** Appends a line of sets; a logged working set starts the rest timer if that's on. */
     fun addSets(exercise: WorkoutExercise, text: String) {
         val line = text.trim()
