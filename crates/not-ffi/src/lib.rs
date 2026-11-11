@@ -447,6 +447,12 @@ pub struct MuscleSets {
     pub sets: u32,
 }
 
+/// Puts each repeated set on its own line: `24kg x 10 x 3` becomes three `24kg x 10` lines.
+#[uniffi::export]
+pub fn expand_sets(text: String) -> String {
+    not_core::expand_sets(&text)
+}
+
 /// Reads exercise sets shorthand, for live previews while typing.
 #[uniffi::export]
 pub fn parse_sets(text: String) -> Vec<SetLine> {

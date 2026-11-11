@@ -10,6 +10,7 @@ import dev.lysen.not.core.NotException
 import dev.lysen.not.core.Workout
 import dev.lysen.not.core.WorkoutExercise
 import dev.lysen.not.core.WorkoutSummary
+import dev.lysen.not.core.expandSets
 import dev.lysen.not.core.parseSets
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -97,7 +98,8 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
     fun addSets(exercise: WorkoutExercise, text: String) {
         val line = text.trim()
         if (line.isEmpty()) return
-        setSets(exercise, exercise.lines.map { it.raw } + line)
+        // One line per set, so each can be edited (and later ticked) on its own.
+        setSets(exercise, exercise.lines.map { it.raw } + expandSets(line).lines())
         val parsed = parseSets(line).firstOrNull()
         // Sets only: a swim or a run isn't followed by a rest.
         if (parsed != null && parsed.parsed && !parsed.warmup && parsed.reps.isNotEmpty() && timer.startsAfterSet.value) timer.start()

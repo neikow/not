@@ -75,6 +75,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -83,6 +85,7 @@ import dev.lysen.not.core.SetLine
 import dev.lysen.not.core.Workout
 import dev.lysen.not.core.WorkoutExercise
 import dev.lysen.not.core.WorkoutSummary
+import dev.lysen.not.core.expandSets
 import dev.lysen.not.core.parseSets
 import dev.lysen.not.ui.AddAction
 import dev.lysen.not.ui.Button
@@ -692,20 +695,34 @@ private fun ExerciseCard(
                     maxLines = 1,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(R.drawable.ic_copy, "Same as last time", { viewModel.setSets(exercise, previous.lines.map { it.raw }) }, tint = colors.accentInk)
+                IconButton(R.drawable.ic_copy, "Same as last time", {
+                    viewModel.setSets(exercise, expandSets(previous.lines.joinToString("\n") { it.raw }).lines())
+                }, tint = colors.accentInk)
             }
         }
 
-        exercise.lines.forEachIndexed { i, line ->
-            if (editing == i) {
+        // One row per set. Older grouped lines ("24kg x 10 x 3") show as their sets too; editing
+        // one splits them into lines first, so row k is line k from then on.
+        val rows = exercise.lines.flatMapIndexed { i, line ->
+            if (line.parsed && line.reps.size > 1) line.reps.indices.map { k -> i to k } else listOf(i to null)
+        }
+        var number = 0
+        rows.forEachIndexed { row, (i, k) ->
+            val line = exercise.lines[i]
+            val counts = line.parsed && !line.warmup && line.reps.isNotEmpty()
+            if (counts) number++
+            if (editing == row) {
                 LineEditor(line.raw, onDone = { text ->
                     editing = null
                     val lines = exercise.lines.map { it.raw }.toMutableList()
                     if (text.isBlank()) lines.removeAt(i) else lines[i] = text.trim()
-                    if (lines != exercise.lines.map { it.raw }) viewModel.setSets(exercise, lines)
+                    if (lines != exercise.lines.map { it.raw }) viewModel.setSets(exercise, expandSets(lines.joinToString("\n")).lines())
                 })
             } else {
-                SetRow(line, onClick = { editing = i })
+                SetRow(line, rep = k, number = number.takeIf { counts }, isLast = k == null || k == line.reps.lastIndex, onClick = {
+                    if (rows.size != exercise.lines.size) viewModel.setSets(exercise, expandSets(exercise.lines.joinToString("\n") { it.raw }).lines())
+                    editing = row
+                })
             }
         }
 
@@ -765,7 +782,7 @@ private fun SessionProgress(exercises: List<WorkoutExercise>) {
 }
 
 @Composable
-private fun SetRow(line: SetLine, onClick: () -> Unit) {
+private fun SetRow(line: SetLine, rep: Int?, number: Int?, isLast: Boolean, onClick: () -> Unit) {
     val colors = Not.colors
     val working = line.parsed && !line.warmup
     Row(
@@ -781,36 +798,22 @@ private fun SetRow(line: SetLine, onClick: () -> Unit) {
             !line.parsed -> Text(line.raw, style = Not.type.body.merge(fontStyle = FontStyle.Italic), color = colors.inkMuted, modifier = Modifier.weight(1f))
             line.reps.isEmpty() -> Text(line.label, style = Not.type.bodyStrong, color = colors.ink, modifier = Modifier.weight(1f))
             else -> {
-                if (line.warmup) Tag("Warm-up")
-                // "24 kg · 10 reps", the number of sets apart on the right.
+                // The set's number, or a tag for warm-ups, in a fixed column so rows line up.
+                Box(Modifier.width(20.dp).semantics { contentDescription = if (line.warmup) "Warm-up" else "Set ${number ?: ""}" }) {
+                    Text(if (line.warmup) "W" else number?.toString() ?: "", style = Not.type.label, color = if (line.warmup) colors.accentInk else colors.inkFaint)
+                }
                 Row(Modifier.weight(1f), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     line.weight?.let { Text("${formatWeight(it)} ${line.unit}", style = Not.type.bodyStrong, color = if (working) colors.ink else colors.inkMuted) }
-                    val reps = line.reps.distinct()
-                    Text(
-                        if (reps.size == 1) "${reps[0]} reps" else line.reps.joinToString(", ") + " reps",
-                        style = Not.type.body,
-                        color = if (working) colors.ink else colors.inkMuted,
-                    )
-                }
-                if (line.reps.size > 1 && line.reps.distinct().size == 1) {
-                    Text("×${line.reps.size}", style = Not.type.label, color = colors.inkMuted)
+                    val reps = rep?.let { line.reps[it] } ?: line.reps.first()
+                    Text("$reps reps", style = Not.type.body, color = if (working) colors.ink else colors.inkMuted)
                 }
             }
         }
-        line.note?.let {
+        // A note belongs to the group's last set.
+        line.note?.takeIf { isLast }?.let {
             Text(it, style = Not.type.caption.merge(fontStyle = FontStyle.Italic), color = colors.inkMuted, maxLines = 1, modifier = Modifier.weight(0.6f, fill = false))
         }
     }
-}
-
-@Composable
-private fun Tag(text: String) {
-    Text(
-        text,
-        style = Not.type.caption,
-        color = Not.colors.inkMuted,
-        modifier = Modifier.clip(CircleShape).background(Not.colors.sunken).padding(horizontal = 8.dp, vertical = 2.dp),
-    )
 }
 
 /** "24 kg × 10 ×3", "18 kg × 10, 8", or the label for cardio and notes: for one-line summaries. */

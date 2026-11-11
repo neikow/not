@@ -29,4 +29,4 @@ pub use store::{
 pub use sync::{Credentials, Outgoing};
 #[cfg(feature = "net")]
 pub use sync::{DeviceInfo, LiveSync, PairingCode, SyncClient, SyncReport, SyncStatus};
-pub use workouts::{ExerciseLog, SetLine, Workout, WorkoutExercise, WorkoutSummary, parse_sets};
+pub use workouts::{ExerciseLog, SetLine, Workout, WorkoutExercise, WorkoutSummary, expand_sets, parse_sets};

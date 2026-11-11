@@ -288,7 +288,7 @@ private struct ExerciseCard: View {
                         .truncationMode(.tail)
                     Spacer(minLength: 0)
                     if exercise.sets.isEmpty {
-                        Button("Same Again") { model.updateExercise(exercise.id, name: exercise.name, sets: previous.sets) }
+                        Button("Same Again") { model.updateExercise(exercise.id, name: exercise.name, sets: expandSets(text: previous.sets)) }
                             .buttonStyle(.borderless)
                             .foregroundStyle(.tint)
                             .help("Copy last time's sets")
@@ -358,7 +358,8 @@ private struct ExerciseCard: View {
         let text = draft.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
         let parsed = parseSets(text: text).first
-        model.updateExercise(exercise.id, name: exercise.name, sets: (lines + [text]).joined(separator: "\n"))
+        // One line per set: "24kg x 10 x 3" becomes three lines.
+        model.updateExercise(exercise.id, name: exercise.name, sets: (lines + [expandSets(text: text)]).joined(separator: "\n"))
         draft = ""
         // Sets only: a swim or a run isn't followed by a rest.
         if parsed?.parsed == true, parsed?.warmup == false, parsed?.reps.isEmpty == false, model.restTimer.startsAfterSet {
@@ -408,14 +409,24 @@ private struct SessionProgress: View {
 private struct SetLineRow: View {
     let line: SetLine
 
+    private var rows: [String] {
+        guard line.parsed, line.reps.count > 1 else { return [line.label] }
+        return parseSets(text: expandSets(text: line.raw)).map(\.label)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Circle()
                 .fill(line.parsed ? (line.warmup ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint)) : AnyShapeStyle(.clear))
                 .frame(width: 6, height: 6)
-            Text(line.label)
-                .foregroundStyle(line.parsed && !line.warmup ? .primary : .secondary)
-                .italic(!line.parsed)
+            // Older grouped lines ("24kg x 10 x 3") show each set on its own row.
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, label in
+                    Text(label)
+                }
+            }
+            .foregroundStyle(line.parsed && !line.warmup ? .primary : .secondary)
+            .italic(!line.parsed)
             if let note = line.note {
                 Text(note)
                     .font(.body)

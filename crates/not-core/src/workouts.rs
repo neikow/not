@@ -531,6 +531,33 @@ pub fn parse_sets(text: &str) -> Vec<SetLine> {
         .collect()
 }
 
+/// The same sets with each repeated set on a line of its own: `24kg x 10 x 3` becomes three
+/// `24kg x 10` lines, `E 18kg x (10 + 8)` two warm-up lines. Notes stay on the last copy; cardio,
+/// single sets and lines that aren't sets are kept as typed.
+pub fn expand_sets(text: &str) -> String {
+    let mut out = Vec::new();
+    for raw in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let line = parse_line(raw);
+        if !line.parsed || line.reps.len() < 2 {
+            out.push(raw.to_owned());
+            continue;
+        }
+        let weight = match line.weight {
+            Some(w) => format!("{}{}", number(w), line.unit),
+            None => "bw".to_owned(),
+        };
+        let last = line.reps.len() - 1;
+        for (i, reps) in line.reps.iter().enumerate() {
+            let mut set = format!("{}{weight} x {reps}", if line.warmup { "E " } else { "" });
+            if i == last && let Some(note) = &line.note {
+                set.push_str(&format!(" \" {note}"));
+            }
+            out.push(set);
+        }
+    }
+    out.join("\n")
+}
+
 /// Quotes that start a note on a set line, straight or curly as keyboards type them.
 const NOTE_QUOTES: [char; 7] = ['"', '\'', '“', '”', '‘', '’', '«'];
 
@@ -1122,6 +1149,20 @@ mod tests {
         );
         assert_eq!(line("bw x 12").label, "12 reps");
         assert_eq!(line("(10 + 8) x 2").reps, vec![10, 8, 10, 8]);
+    }
+
+    #[test]
+    fn expands_repeated_sets_one_per_line() {
+        assert_eq!(expand_sets("66kg x 8 x 3"), "66kg x 8\n66kg x 8\n66kg x 8");
+        assert_eq!(expand_sets("E 18kg x (10 + 8)"), "E 18kg x 10\nE 18kg x 8");
+        assert_eq!(expand_sets("24,8kg x 10 x 2 \" last one hard"), "24.8kg x 10\n24.8kg x 10 \" last one hard");
+        assert_eq!(expand_sets("20 x 3"), "bw x 20\nbw x 20\nbw x 20");
+        assert_eq!(expand_sets("26kg x 8\nfelt strong\n500m 14min"), "26kg x 8\nfelt strong\n500m 14min");
+        // Each copy reads back as one set of the same weight and reps.
+        for line in parse_sets(&expand_sets("24.8kg x (10 x 2 + 8)")) {
+            assert_eq!((line.weight, line.reps.len()), (Some(24.8), 1));
+        }
+        assert_eq!(parse_sets(&expand_sets("20 x 3"))[0].reps, vec![20]);
     }
 
     #[test]
