@@ -729,3 +729,20 @@ fn upcoming_lists_future_tasks_soonest_first() {
     }
     assert_eq!(titles(&s.upcoming_tasks(today()).unwrap()), ["bins", "call", "dentist", "later"]);
 }
+
+#[test]
+fn search_finds_tasks_by_title_and_notes() {
+    let s = Store::open_in_memory().unwrap();
+    let list = s.create_list("Groceries").unwrap();
+    let milk = s.add_task(&list, "Oat milk").unwrap();
+    let crepes = s.add_task(INBOX, "Crêpes for Sunday").unwrap();
+    s.set_notes(&crepes, "need MILK and eggs").unwrap();
+    s.add_task(INBOX, "Été plans").unwrap();
+    s.set_completed(&milk, true, today()).unwrap();
+
+    assert_eq!(titles(&s.search_tasks("milk", 10).unwrap()), ["Crêpes for Sunday", "Oat milk"], "open first");
+    assert_eq!(titles(&s.search_tasks("milk eggs", 10).unwrap()), ["Crêpes for Sunday"]);
+    assert_eq!(titles(&s.search_tasks("été", 10).unwrap()), ["Été plans"]);
+    assert!(s.search_tasks("  ", 10).unwrap().is_empty());
+    assert_eq!(s.search_tasks("milk", 1).unwrap().len(), 1);
+}

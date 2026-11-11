@@ -281,6 +281,7 @@ private struct TaskListView: View {
         // Keeps the add field at the top when the empty state alone wouldn't fill the column.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .navigationTitle(model.title)
+        .searchable(text: Binding(get: { model.taskSearch }, set: { model.taskSearch = $0 }), prompt: "Search tasks")
         .toolbar {
             // Today has its own order: overdue first, then by time.
             if !model.isDateView, let list = model.selectedList {

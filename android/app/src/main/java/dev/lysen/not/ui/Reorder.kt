@@ -26,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.android.awaitFrame
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -52,6 +53,8 @@ class ReorderState<T>(
     private var visualTop by mutableFloatStateOf(0f)
     private var travelled = 0f
     private var session: Session<T>? = null
+    /** The row whose long press just ended: the tap its release makes isn't a tap. */
+    private var heldKey: Any? = null
     private var scroller: Job? = null
 
     private class Session<T>(
@@ -90,6 +93,14 @@ class ReorderState<T>(
         visualTop = info.offset.toFloat()
         travelled = 0f
         session = Session(canSwap, depth, onDrop, onHold)
+        heldKey = key
+    }
+
+    /** True (once) when a tap on [key] is really the end of a long press. */
+    fun consumeHold(key: Any): Boolean {
+        if (heldKey != key) return false
+        heldKey = null
+        return true
     }
 
     internal fun drag(dy: Float) {
@@ -105,9 +116,15 @@ class ReorderState<T>(
         val moved = travelled > edge / 4
         val order = items
         val changed = order.map(keyOf) != source.map(keyOf)
+        val ended = draggingKey
         draggingKey = null
         session = null
         scroller?.cancel()
+        // The release's tap (if any) arrives right away; don't let it swallow a later real tap.
+        scope.launch {
+            delay(300)
+            if (heldKey == ended) heldKey = null
+        }
         if (moved && changed) {
             // Keep showing the dropped order until the store's arrives.
             s.onDrop(order)

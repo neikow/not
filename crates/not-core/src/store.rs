@@ -619,6 +619,33 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Tasks from every list whose title or notes contain each word of `query` (ignoring case):
+    /// open ones first, then completed ones latest first. At most `limit`.
+    pub fn search_tasks(&self, query: &str, limit: u32) -> Result<Vec<Task>> {
+        let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let inner = self.lock();
+        let mut stmt = inner.db.prepare_cached(&format!(
+            "SELECT {TASK_COLUMNS} FROM task t
+             ORDER BY t.completed_at IS NOT NULL, t.completed_at DESC, t.due IS NULL, t.due, t.position, t.id"
+        ))?;
+        // Filtered here rather than with LIKE, which only folds ASCII case ("Été" vs "été").
+        let mut found = Vec::new();
+        for task in stmt.query_map([], task_row)? {
+            let task = task?;
+            let haystack = format!("{}\n{}", task.title, task.notes).to_lowercase();
+            if words.iter().all(|w| haystack.contains(w.as_str())) {
+                found.push(task);
+                if found.len() as u32 >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// Open tasks due after `today`, from every list, soonest first, then by time and priority.
     /// Subtasks of completed tasks are left out.
     pub fn upcoming_tasks(&self, today: Date) -> Result<Vec<Task>> {

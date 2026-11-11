@@ -76,6 +76,8 @@ import dev.lysen.not.ui.SwipeAction
 import dev.lysen.not.ui.SwipeRow
 import dev.lysen.not.ui.Text
 import dev.lysen.not.ui.ToastHost
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.text.input.ImeAction
 import dev.lysen.not.core.TaskSort
 import dev.lysen.not.ui.ToastState
 import dev.lysen.not.ui.pressable
@@ -91,6 +93,8 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
     var showsCompleted by rememberSaveable { mutableStateOf(false) }
     var newList by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<TaskList?>(null) }
+    // Held without dragging: quick actions for that task.
+    var held by remember { mutableStateOf<TaskItem?>(null) }
     val title = state.title
     val haptics = LocalHapticFeedback.current
     // The title is a long reach: tapping or holding Tasks in the tab bar opens the lists too.
@@ -153,7 +157,7 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                 byDay(outline.open).forEach { (label, rows) ->
                     item(key = "day-$label") { DayHeader(label, Modifier.animateItem()) }
                     items(rows, key = { it.task.id }) { row ->
-                        TaskRow(row, viewModel, Modifier.animateItem(), listTitle = state.listTitle(row.task.listId))
+                        TaskRow(row, viewModel, Modifier.animateItem(), listTitle = state.listTitle(row.task.listId), onHold = { held = row.task })
                     }
                 }
             } else items(reorder.items, key = { it.task.id }) { row ->
@@ -163,9 +167,12 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                     (if (reorder.isDragging(row)) Modifier else Modifier.animateItem())
                         // Today gathers tasks from every list, so it has no order of its own.
                         .reorderable(reorder, row, row.task.id, enabled = !state.isDateView && !row.done) {
-                            startDrag(reorder, outline.open, row, viewModel)
+                            startDrag(reorder, outline.open, row, viewModel) { held = row.task }
                         },
                     listTitle = if (state.isToday) state.listTitle(row.task.listId) else null,
+                    // Today's rows don't drag, so holding them goes straight to the actions.
+                    onHold = if (state.isToday) ({ held = row.task }) else null,
+                    reorder = reorder,
                 )
             }
             if (outline.completed.isNotEmpty()) {
@@ -209,6 +216,9 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
         }
     }
 
+    held?.let { task ->
+        TaskActionsSheet(task, state, viewModel, onDismiss = { held = null })
+    }
     state.openTask?.let { task ->
         TaskDetailSheet(task, state, viewModel, onDismiss = { viewModel.openTask(null) })
     }
@@ -216,6 +226,8 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
         ListsSheet(
             state = state,
             onSelect = viewModel::select,
+            onSearch = viewModel::search,
+            onReveal = viewModel::reveal,
             onNewList = { newList = true },
             onRename = { renaming = it },
             onDelete = viewModel::deleteList,
@@ -260,7 +272,7 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
  * Drags [row] among its siblings, with its subtasks folded away until it's dropped. Dropping places
  * it before the next sibling, so completed siblings (shown elsewhere) don't throw it off.
  */
-private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>, row: OutlineRow, viewModel: TasksViewModel) {
+private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>, row: OutlineRow, viewModel: TasksViewModel, onHold: () -> Unit) {
     val at = open.indexOfFirst { it.task.id == row.task.id }
     if (at < 0) return
     var end = at + 1
@@ -275,6 +287,7 @@ private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>,
             val next = order.drop(i + 1).firstOrNull { it.task.parentId == row.task.parentId && it.depth == row.depth }
             viewModel.moveBefore(row.task, next?.task?.id)
         },
+        onHold = onHold,
     )
 }
 
@@ -325,7 +338,14 @@ private fun Subtitle(state: UiState) {
 
 /** Swipe right to complete (or reopen), left to delete; tap for details. [listTitle] shows in Today. */
 @Composable
-private fun TaskRow(row: OutlineRow, viewModel: TasksViewModel, modifier: Modifier, listTitle: String? = null) {
+private fun TaskRow(
+    row: OutlineRow,
+    viewModel: TasksViewModel,
+    modifier: Modifier,
+    listTitle: String? = null,
+    onHold: (() -> Unit)? = null,
+    reorder: ReorderState<OutlineRow>? = null,
+) {
     val haptics = LocalHapticFeedback.current
     val colors = Not.colors
     val done = row.task.completedAt != null
@@ -341,7 +361,13 @@ private fun TaskRow(row: OutlineRow, viewModel: TasksViewModel, modifier: Modifi
             Modifier
                 .fillMaxWidth()
                 .background(colors.background)
-                .pressable({ viewModel.openTask(row.task.id) }, pressedScale = 0.985f)
+                .pressable(
+                    { if (reorder?.consumeHold(row.task.id) != true) viewModel.openTask(row.task.id) },
+                    pressedScale = 0.985f,
+                    // Rows that drag handle the hold themselves (see [reorder]).
+                    onLongClick = onHold,
+                    onLongClickLabel = onHold?.let { "Actions" },
+                )
                 .heightIn(min = 56.dp)
                 .padding(start = (12 + row.depth.toInt() * 28).dp, end = 24.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -414,14 +440,41 @@ private fun CompletedHeader(count: Int, expanded: Boolean, onToggle: () -> Unit,
 private fun ListsSheet(
     state: UiState,
     onSelect: (String) -> Unit,
+    onSearch: (String) -> List<TaskItem>,
+    onReveal: (TaskItem) -> Unit,
     onNewList: () -> Unit,
     onRename: (TaskList) -> Unit,
     onDelete: (TaskList) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var query by rememberSaveable { mutableStateOf("") }
     Sheet(onDismiss) { close ->
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
             Text("Lists", style = Not.type.title, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 12.dp))
+            Field(
+                query,
+                { query = it },
+                "Search tasks",
+                filled = true,
+                shape = CircleShape,
+                leading = { Icon(R.drawable.ic_search, null, tint = Not.colors.inkFaint, size = 20.dp) },
+                trailing = if (query.isEmpty()) null else ({ IconButton(R.drawable.ic_close, "Clear", { query = "" }, tint = Not.colors.inkFaint) }),
+                imeAction = ImeAction.Search,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            )
+            if (query.isNotBlank()) {
+                val found = remember(query, state.lists, state.outline) { onSearch(query) }
+                if (found.isEmpty()) {
+                    Text("No tasks match “${query.trim()}”", style = Not.type.body, color = Not.colors.inkMuted, modifier = Modifier.padding(14.dp))
+                }
+                found.forEach { task ->
+                    SearchResult(task, state.listTitle(task.listId)) {
+                        onReveal(task)
+                        close()
+                    }
+                }
+                return@Column
+            }
             ListRow(
                 icon = R.drawable.ic_today,
                 title = "Today",
@@ -470,6 +523,62 @@ private fun ListsSheet(
                 )
             }
             ListRow(R.drawable.ic_add, "New list", accent = true, onClick = onNewList)
+        }
+    }
+}
+
+@Composable
+private fun SearchResult(task: TaskItem, listTitle: String, onClick: () -> Unit) {
+    val colors = Not.colors
+    val done = task.completedAt != null
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .pressable(onClick, pressedScale = 0.98f)
+            .heightIn(min = 52.dp)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(if (done) R.drawable.ic_check else R.drawable.ic_task_alt, null, tint = if (done) colors.inkFaint else colors.inkMuted, size = 20.dp)
+        Column(Modifier.weight(1f).padding(start = 14.dp)) {
+            Text(
+                task.title,
+                style = Not.type.body,
+                color = if (done) colors.inkFaint else colors.ink,
+                textDecoration = if (done) TextDecoration.LineThrough else null,
+                maxLines = 1,
+            )
+            val due = task.due?.let { scheduleLabel(it, task.dueTime, null) }
+            Text(listOfNotNull(listTitle, due).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
+        }
+    }
+}
+
+/** What holding a task offers: move it to another list, or delete it. */
+@Composable
+private fun TaskActionsSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, onDismiss: () -> Unit) {
+    Sheet(onDismiss) { close ->
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
+            Text(task.title, style = Not.type.title, maxLines = 2, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 4.dp))
+            Text("Move to", style = Not.type.label, color = Not.colors.inkMuted, modifier = Modifier.padding(start = 14.dp, top = 8.dp, bottom = 4.dp))
+            // Subtasks move with their parent; on their own they only change place within it.
+            state.lists.forEach { list ->
+                ListRow(
+                    icon = if (list.id == INBOX_ID) R.drawable.ic_inbox else R.drawable.ic_list,
+                    title = list.title,
+                    selected = list.id == task.listId,
+                    onClick = {
+                        if (task.parentId == null) viewModel.move(task, list.id)
+                        close()
+                    },
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            ListRow(R.drawable.ic_delete, "Delete", onClick = {
+                close()
+                viewModel.delete(task)
+            })
         }
     }
 }

@@ -1018,6 +1018,16 @@ impl NotStore {
             .collect())
     }
 
+    /// Tasks whose title or notes contain every word of `query`, open first. At most `limit`.
+    pub fn search_tasks(&self, query: String, limit: u32) -> Result<Vec<TaskItem>, NotError> {
+        Ok(self
+            .store
+            .search_tasks(&query, limit)?
+            .into_iter()
+            .map(TaskItem::from)
+            .collect())
+    }
+
     /// Open tasks due after `today` from every list, soonest first.
     pub fn upcoming_tasks(&self, today: String) -> Result<Vec<TaskItem>, NotError> {
         Ok(self

@@ -16,6 +16,11 @@ final class AppModel {
     private(set) var upcoming: [TaskItem] = []
     /// Tasks completed over a day ago, from every list, latest first (Settings → Archive).
     private(set) var archive: [TaskItem] = []
+    /// Typed in the task list's search field; while set, the list shows matches from every list.
+    var taskSearch = "" {
+        didSet { if oldValue != taskSearch { reloadTasks() } }
+    }
+    var isSearching: Bool { !taskSearch.trimmingCharacters(in: .whitespaces).isEmpty }
     /// Every task of the selected task's list, for its subtasks (Today only shows due ones).
     private var selectedTaskList: [TaskItem] = []
     private(set) var syncState: SyncState?
@@ -28,6 +33,8 @@ final class AppModel {
     var selection: SidebarItem? {
         didSet {
             guard oldValue != selection else { return }
+            // Picking a list leaves search.
+            if !taskSearch.isEmpty { taskSearch = "" }
             selectedTaskID = nil
             editingTaskID = nil
             selectedHabitID = nil
@@ -207,8 +214,8 @@ final class AppModel {
     var isToday: Bool { selection == .today }
     var isUpcoming: Bool { selection == .upcoming }
     /// Today or Upcoming: tasks from every list by date, so no order, sort or nesting of their own.
-    var isDateView: Bool { isToday || isUpcoming }
-    var title: String { isToday ? "Today" : isUpcoming ? "Upcoming" : selectedList?.title ?? "not" }
+    var isDateView: Bool { isToday || isUpcoming || isSearching }
+    var title: String { isSearching ? "Search" : isToday ? "Today" : isUpcoming ? "Upcoming" : selectedList?.title ?? "not" }
     func listTitle(_ id: String) -> String { lists.first { $0.id == id }?.title ?? "Inbox" }
     var inbox: TaskList? { lists.first { $0.id == inboxID } }
     var userLists: [TaskList] { lists.filter { $0.id != inboxID } }
@@ -363,7 +370,8 @@ final class AppModel {
 
     /// Moves a task (with its subtasks) to the end of another list.
     func move(_ taskID: String, toList listID: String) {
-        run { try store.moveTask(id: taskID, parentId: listID, index: .max) }
+        // To the top, like a new task.
+        run { try store.moveTask(id: taskID, parentId: listID, index: 0) }
     }
 
     /// Drag and drop within the open tasks: `destination` is an index into `outline.open` (before
@@ -754,7 +762,13 @@ final class AppModel {
         dueCount = due.count
         archive = run { try store.archive() } ?? []
         upcoming = run { try store.upcomingTasks(today: today) } ?? []
-        if isToday {
+        if isSearching {
+            let found = run { try store.searchTasks(query: taskSearch, limit: 100) } ?? []
+            outline = Outline(
+                open: found.filter { $0.completedAt == nil }.map { OutlineRow(task: $0, depth: 0, done: false) },
+                completed: found.filter { $0.completedAt != nil }.map { OutlineRow(task: $0, depth: 0, done: true) }
+            )
+        } else if isToday {
             outline = Outline(open: due.map { OutlineRow(task: $0, depth: 0, done: false) }, completed: [])
         } else if isUpcoming {
             outline = Outline(open: upcoming.map { OutlineRow(task: $0, depth: 0, done: false) }, completed: [])

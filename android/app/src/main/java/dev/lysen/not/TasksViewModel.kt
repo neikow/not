@@ -185,9 +185,20 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         run { store.setNotes(id, notes) }
     }
 
-    /** Moves a task (with its subtasks) to the end of another list. */
+    /** Moves a task (with its subtasks) to the top of another list, like a new one. */
     fun move(task: TaskItem, toList: String) {
-        run { store.moveTask(task.id, toList, UInt.MAX_VALUE) }
+        if (toList == task.listId) return
+        run { store.moveTask(task.id, toList, 0u) } ?: return
+        _undoables.trySend(Undoable("Moved to ${_state.value.listTitle(toList)}"))
+    }
+
+    /** Tasks matching [query] from every list, open first. */
+    fun search(query: String): List<TaskItem> = run { store.searchTasks(query, 50u) }.orEmpty()
+
+    /** Shows a task found by search: its list, with its details open. */
+    fun reveal(task: TaskItem) {
+        _state.update { it.copy(selectedListId = task.listId) }
+        openTask(task.id)
     }
 
     /** Drag and drop: [task] goes right before its sibling [beforeId], or last among them. */
