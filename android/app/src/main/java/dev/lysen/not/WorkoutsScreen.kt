@@ -104,6 +104,7 @@ import dev.lysen.not.ui.Not
 import dev.lysen.not.ui.RoundCheck
 import androidx.compose.foundation.lazy.rememberLazyListState
 import dev.lysen.not.ui.reorderable
+import dev.lysen.not.ui.reorderHandle
 import dev.lysen.not.ui.rememberReorderState
 import dev.lysen.not.ui.Sheet
 import dev.lysen.not.ui.Text
@@ -458,13 +459,16 @@ private fun WorkoutEditor(workout: Workout, state: WorkoutsState, viewModel: Wor
                         focusSets = focusSetsOf == exercise.id,
                         onFocused = { focusSetsOf = null },
                         onHistory = { history = exercise.name },
+                        // Drawn lifted while dragged; only the header starts a drag, so holding a set
+                        // opens that set's menu without moving the card.
                         modifier = (if (reorder.isDragging(exercise)) Modifier else Modifier.animateItem())
-                            .reorderable(reorder, exercise, exercise.id) {
-                                reorder.start(exercise, canSwap = { true }, onDrop = { order ->
-                                    viewModel.moveExercise(exercise, order.indexOfFirst { it.id == exercise.id })
-                                })
-                            }
+                            .reorderable(reorder, exercise, exercise.id, enabled = false) {}
                             .padding(horizontal = 16.dp),
+                        dragHandle = Modifier.reorderHandle(reorder, exercise.id) {
+                            reorder.start(exercise, canSwap = { true }, onDrop = { order ->
+                                viewModel.moveExercise(exercise, order.indexOfFirst { it.id == exercise.id })
+                            })
+                        },
                         wasHeld = { reorder.consumeHold(exercise.id) },
                     )
                 }
@@ -588,6 +592,8 @@ private fun ExerciseCard(
     modifier: Modifier,
     /** True when a tap is really the release of a hold (a drag that didn't move). */
     wasHeld: () -> Boolean = { false },
+    /** On the header row: holding it drags the card. */
+    dragHandle: Modifier = Modifier,
 ) {
     val colors = Not.colors
     var name by remember(exercise.id) { mutableStateOf(exercise.name) }
@@ -623,7 +629,7 @@ private fun ExerciseCard(
             .padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(dragHandle, verticalAlignment = Alignment.CenterVertically) {
             RoundCheck(
                 exercise.done,
                 { viewModel.setDone(exercise, !exercise.done) },
@@ -842,12 +848,16 @@ private fun SessionProgress(exercises: List<WorkoutExercise>) {
 @Composable
 private fun SetRow(line: SetLine, rep: Int?, number: Int?, isLast: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
     val colors = Not.colors
+    val haptics = LocalHapticFeedback.current
     val working = line.parsed && !line.warmup
     Row(
         Modifier
             .fillMaxWidth()
             // Holding a set opens its menu (and keeps the card from starting a drag).
-            .pressable(onClick, pressedScale = 0.98f, onClickLabel = "Edit", onLongClick = onLongClick, onLongClickLabel = "Set options")
+            .pressable(onClick, pressedScale = 0.97f, onClickLabel = "Edit", onLongClick = {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onLongClick()
+            }, onLongClickLabel = "Set options")
             .heightIn(min = 36.dp)
             .padding(end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,

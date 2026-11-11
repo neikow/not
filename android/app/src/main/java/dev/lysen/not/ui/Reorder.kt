@@ -211,6 +211,29 @@ fun <T> rememberReorderState(listState: LazyListState, source: List<T>, keyOf: (
 }
 
 /**
+ * The long-press-and-drag gesture alone, for a handle inside a row (e.g. a card's header) so the
+ * rest of the row keeps its own long presses. Pair it with [reorderable] on the row, `enabled = false`.
+ */
+@Composable
+fun <T> Modifier.reorderHandle(state: ReorderState<T>, key: Any, onStart: () -> Unit): Modifier {
+    val haptics = LocalHapticFeedback.current
+    return pointerInput(key) {
+        detectDragGesturesAfterLongPress(
+            onDragStart = {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                onStart()
+            },
+            onDrag = { change, amount ->
+                change.consume()
+                state.drag(amount.y)
+            },
+            onDragEnd = { state.end() },
+            onDragCancel = { state.end() },
+        )
+    }
+}
+
+/**
  * Makes a row draggable after a long press; [onStart] calls [ReorderState.start]. Draws the dragged
  * row lifted above the others. Use in place of `animateItem()` (which it applies to other rows).
  */
