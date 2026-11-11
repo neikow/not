@@ -1,10 +1,5 @@
 package dev.lysen.not
 
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
-import dev.lysen.not.ui.LocalIsCurrentTab
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
@@ -93,28 +88,14 @@ fun NotAppUi(
     val addAction = remember { AddActionHolder() }
     val gestures = remember { TabGestures() }
     val openSettings = remember { { showsSettings = true } }
-    // The screens sit side by side in a pager that only the tab bar moves: tapping a tab slides to
-    // it, and sliding a finger along the bar drags the screens with it.
-    val pager = rememberPagerState(initialPage = tab.ordinal) { Tab.entries.size }
-    var scrubbing by remember { mutableStateOf(false) }
-    LaunchedEffect(tab) {
-        if (!scrubbing && pager.currentPage != tab.ordinal) {
-            pager.animateScrollToPage(tab.ordinal, animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow))
-        }
-    }
-    val scope = rememberCoroutineScope()
     CompositionLocalProvider(LocalAddAction provides addAction, LocalTabGestures provides gestures, LocalOpenSettings provides openSettings) {
     Box(Modifier.fillMaxSize().background(Not.colors.background)) {
         CompositionLocalProvider(LocalBottomBarHeight provides barHeight) {
-            HorizontalPager(pager, userScrollEnabled = false, key = { it }, modifier = Modifier.fillMaxSize()) { page ->
-                CompositionLocalProvider(LocalIsCurrentTab provides (page == tab.ordinal)) {
-                    when (Tab.entries[page]) {
-                        Tab.Tasks -> TasksScreen(tasks, onOpenSettings = { showsSettings = true })
-                        Tab.Habits -> HabitsScreen(habits)
-                        Tab.Notes -> NotesScreen(notes)
-                        Tab.Workouts -> WorkoutsScreen(workouts)
-                    }
-                }
+            when (tab) {
+                Tab.Tasks -> TasksScreen(tasks, onOpenSettings = { showsSettings = true })
+                Tab.Habits -> HabitsScreen(habits)
+                Tab.Notes -> NotesScreen(notes)
+                Tab.Workouts -> WorkoutsScreen(workouts)
             }
         }
         AnimatedVisibility(
@@ -135,18 +116,6 @@ fun NotAppUi(
                     } else {
                         gestures.sendToNext(TabGesture.Hold)
                         tab = Tab.entries[it]
-                    }
-                },
-                onScrub = { position ->
-                    if (position != null) {
-                        scrubbing = true
-                        val page = position.toInt().coerceAtMost(Tab.entries.size - 1)
-                        pager.requestScrollToPage(page, position - page)
-                        tab = Tab.entries[kotlin.math.round(position).toInt()]
-                    } else {
-                        scrubbing = false
-                        // Settle on the tab the finger left the capsule on.
-                        scope.launch { pager.animateScrollToPage(tab.ordinal, animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow)) }
                     }
                 },
             )

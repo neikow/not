@@ -385,67 +385,24 @@ class TabItem(val label: String, val icon: Int, val badge: Int = 0, val holdLabe
  * slides behind the selected one. Nothing inside changes size, so nothing shifts.
  */
 @Composable
-fun FloatingTabBar(
-    tabs: List<TabItem>,
-    selected: Int,
-    onSelect: (Int) -> Unit,
-    onHold: (Int) -> Unit,
-    modifier: Modifier = Modifier,
-    onScrub: ((position: Float?) -> Unit)? = null,
-) {
+fun FloatingTabBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, onHold: (Int) -> Unit, modifier: Modifier = Modifier) {
     val colors = Not.colors
-    val haptics = LocalHapticFeedback.current
-    // While a finger slides along the bar: where it is, in tabs (0 = first). The capsule follows it
-    // exactly; on release it springs to the nearest tab.
-    var scrub by remember { mutableStateOf<Float?>(null) }
     val indicator by animateDpAsState(
         TabWidth * selected,
         spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
         label = "tab indicator",
     )
-    val tabPx = with(LocalDensity.current) { TabWidth.toPx() }
-    val padPx = with(LocalDensity.current) { 6.dp.toPx() }
-    val latestScrub by rememberUpdatedState(onScrub)
-    val shown = scrub?.let { kotlin.math.round(it).toInt() } ?: selected
     Box(
         modifier
             .shadow(18.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.18f), spotColor = Color.Black.copy(alpha = 0.18f))
             .clip(CircleShape)
             .background(colors.surface)
-            .then(
-                if (onScrub == null) Modifier
-                else Modifier.pointerInput(tabs.size, tabPx) {
-                    val last = (tabs.size - 1).toFloat()
-                    fun at(x: Float) = ((x - padPx) / tabPx - 0.5f).coerceIn(0f, last)
-                    detectHorizontalDragGestures(
-                        onDragStart = { offset ->
-                            scrub = at(offset.x)
-                            latestScrub?.invoke(scrub)
-                        },
-                        onDragEnd = {
-                            scrub = null
-                            latestScrub?.invoke(null)
-                        },
-                        onDragCancel = {
-                            scrub = null
-                            latestScrub?.invoke(null)
-                        },
-                    ) { change, _ ->
-                        change.consume()
-                        val before = scrub?.let { kotlin.math.round(it) }
-                        val now = at(change.position.x)
-                        scrub = now
-                        if (before != kotlin.math.round(now)) haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                        latestScrub?.invoke(now)
-                    }
-                },
-            )
             .padding(6.dp),
     ) {
-        Box(Modifier.offset(x = scrub?.let { TabWidth * it } ?: indicator).size(TabWidth, TabHeight).clip(CircleShape).background(colors.accent))
+        Box(Modifier.offset(x = indicator).size(TabWidth, TabHeight).clip(CircleShape).background(colors.accent))
         Row {
             tabs.forEachIndexed { index, tab ->
-                val isSelected = index == shown
+                val isSelected = index == selected
                 val tint by animateColorAsState(if (isSelected) colors.onAccent else colors.inkMuted, label = "tab tint")
                 Column(
                     Modifier
@@ -484,18 +441,11 @@ class AddActionHolder {
 val LocalAddAction = compositionLocalOf { AddActionHolder() }
 
 /**
- * False for a tab's screen that is only peeking in while the tab bar is scrubbed: it draws, but
- * leaves the + and the tab gestures to the screen actually selected.
- */
-val LocalIsCurrentTab = compositionLocalOf { true }
-
-/**
  * Shows the floating + while this is composed and [enabled]; tapping it runs [onClick], holding it
  * runs [onHold], the screen's second way to add (described by [holdLabel]).
  */
 @Composable
 fun AddAction(label: String, enabled: Boolean = true, holdLabel: String? = null, onHold: (() -> Unit)? = null, onClick: () -> Unit) {
-    if (!LocalIsCurrentTab.current) return
     val holder = LocalAddAction.current
     val latest by rememberUpdatedState(onClick)
     val latestHold by rememberUpdatedState(onHold)
@@ -553,7 +503,6 @@ val LocalTabGestures = compositionLocalOf { TabGestures() }
 /** Runs [onGesture] for taps and holds on the current screen's tab, while this is composed. */
 @Composable
 fun OnTabGesture(onGesture: (TabGesture) -> Unit) {
-    if (!LocalIsCurrentTab.current) return
     val gestures = LocalTabGestures.current
     val latest by rememberUpdatedState(onGesture)
     DisposableEffect(gestures) {
@@ -582,21 +531,14 @@ fun FloatingAddButton(label: String, onClick: () -> Unit, modifier: Modifier = M
 
 /** The tab bar and its + button, centred together above the system bar. */
 @Composable
-fun BottomBar(
-    tabs: List<TabItem>,
-    selected: Int,
-    onSelect: (Int) -> Unit,
-    onHold: (Int) -> Unit,
-    modifier: Modifier = Modifier,
-    onScrub: ((position: Float?) -> Unit)? = null,
-) {
+fun BottomBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, onHold: (Int) -> Unit, modifier: Modifier = Modifier) {
     val add = LocalAddAction.current
     Row(
         modifier.padding(bottom = 12.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FloatingTabBar(tabs, selected, onSelect, onHold, onScrub = onScrub)
+        FloatingTabBar(tabs, selected, onSelect, onHold)
         // Always there, so the bar never re-centres; screens without an action leave it inert.
         val hold = add.hold
         FloatingAddButton(add.label.ifEmpty { "Add" }, { add.action?.invoke() }, holdLabel = add.holdLabel, onHold = hold?.let { { it() } })
