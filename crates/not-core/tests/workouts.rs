@@ -116,3 +116,23 @@ fn linked_names_share_history_and_count_per_muscle() {
     assert!(s.exercise_info("Bench Haltères").is_none());
     assert!(s.link_exercise("x", Some("no-such-id")).is_err());
 }
+
+#[test]
+fn exercises_tick_off_and_repeats_start_fresh() {
+    let s = Store::open_in_memory().unwrap();
+    let w = s.create_workout("2026-11-10", "Legs").unwrap();
+    let squat = s.add_exercise(&w, "Squat", "80kg x 5 x 5").unwrap();
+    s.add_exercise(&w, "Calves", "").unwrap();
+
+    s.set_exercise_done(&squat, true).unwrap();
+    let done: Vec<bool> = s.workout(&w).unwrap().exercises.iter().map(|e| e.done).collect();
+    assert_eq!(done, [true, false]);
+    assert!(s.undo().unwrap());
+    assert!(!s.workout(&w).unwrap().exercises[0].done);
+
+    s.set_exercise_done(&squat, true).unwrap();
+    let again = s.repeat_workout(&w, "2026-11-12").unwrap();
+    assert!(s.workout(&again).unwrap().exercises.iter().all(|e| !e.done));
+    s.set_exercise_done(&squat, false).unwrap();
+    assert!(!s.workout(&w).unwrap().exercises[0].done);
+}

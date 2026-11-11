@@ -600,6 +600,10 @@ final class AppModel {
         run { try store.updateExercise(id: id, name: name, sets: sets) }
     }
 
+    func setExerciseDone(_ id: String, _ done: Bool) {
+        run { try store.setExerciseDone(id: id, done: done) }
+    }
+
     func deleteExercise(_ id: String) {
         run { try store.deleteExercise(id: id) }
     }

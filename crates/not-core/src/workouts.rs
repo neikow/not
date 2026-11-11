@@ -20,6 +20,8 @@ const CREATED_AT: &str = "created_at";
 /// On an exercise.
 const NAME: &str = "name";
 const SETS: &str = "sets";
+/// On an exercise: ticked off in this session (a bool).
+const DONE: &str = "done";
 
 /// Sets a single line may expand to; guards against `10 x 1000000`.
 const MAX_SETS: usize = 50;
@@ -75,6 +77,8 @@ pub struct WorkoutExercise {
     pub name: String,
     pub sets: String,
     pub lines: Vec<SetLine>,
+    /// Ticked off for this session.
+    pub done: bool,
     /// The latest earlier session with this exercise and some sets logged.
     pub previous: Option<ExerciseLog>,
 }
@@ -189,6 +193,20 @@ impl Store {
         })
     }
 
+    /// Ticks an exercise off for this session, or back on.
+    pub fn set_exercise_done(&self, id: &str, done: bool) -> Result<()> {
+        let id = self.exercise_node(id)?;
+        self.transact(|| {
+            let meta = self.workouts.get_meta(id)?;
+            if done {
+                meta.insert(DONE, true)?;
+            } else {
+                meta.delete(DONE)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn delete_exercise(&self, id: &str) -> Result<()> {
         let id = self.exercise_node(id)?;
         self.transact(|| Ok(self.workouts.get_meta(id)?.insert(DELETED_AT, now_millis())?))
@@ -250,7 +268,7 @@ impl Store {
             .optional()?
             .ok_or_else(|| Error::NotFound(id.to_owned()))?;
         let mut stmt = inner.db.prepare_cached(
-            "SELECT id, name, name_key, sets FROM workout_exercise WHERE workout_id = ?1 ORDER BY position, id",
+            "SELECT id, name, name_key, sets, done FROM workout_exercise WHERE workout_id = ?1 ORDER BY position, id",
         )?;
         let rows = stmt
             .query_map([id], |r| {
@@ -259,15 +277,17 @@ impl Store {
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
+                    r.get::<_, bool>(4)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let exercises = rows
             .into_iter()
-            .map(|(eid, name, key, sets)| {
+            .map(|(eid, name, key, sets, done)| {
                 Ok(WorkoutExercise {
                     id: eid,
                     name,
+                    done,
                     lines: parse_sets(&sets),
                     sets,
                     previous: history(&inner.db, &self.same_exercise(&inner.db, &key)?, Some(&date), 1)?
@@ -973,8 +993,8 @@ pub fn rebuild(tree: &LoroTree, db: &Connection) -> Result<()> {
     let mut insert_workout =
         db.prepare_cached("INSERT INTO workout (id, date, title, position) VALUES (?1, ?2, ?3, ?4)")?;
     let mut insert_exercise = db.prepare_cached(
-        "INSERT INTO workout_exercise (id, workout_id, name, name_key, sets, position, set_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO workout_exercise (id, workout_id, name, name_key, sets, position, set_count, done)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     for session in tree.roots() {
         if !crate::projection::is_alive(tree, session) {
@@ -1005,6 +1025,7 @@ pub fn rebuild(tree: &LoroTree, db: &Connection) -> Result<()> {
                 sets,
                 tree.fractional_index(exercise).unwrap_or_default(),
                 Stats::of(&parse_sets(&sets)).set_count,
+                matches!(meta.get(DONE), Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true)))),
             ])?;
         }
     }

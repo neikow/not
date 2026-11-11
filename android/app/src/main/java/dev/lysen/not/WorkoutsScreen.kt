@@ -58,6 +58,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -402,6 +406,7 @@ private fun WorkoutEditor(workout: Workout, state: WorkoutsState, viewModel: Wor
                     }
                 }
             }
+            if (workout.exercises.isNotEmpty()) SessionProgress(workout.exercises)
             LazyColumn(
                 Modifier.weight(1f).imePadding(),
                 contentPadding = PaddingValues(bottom = 120.dp),
@@ -572,22 +577,29 @@ private fun ExerciseCard(
         }
     }
 
+    // Ticked-off exercises step back so what's left stands out.
+    val fade by animateFloatAsState(if (exercise.done) 0.45f else 1f, label = "done")
     Column(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(22.dp))
             .background(colors.surface)
-            .padding(start = 18.dp, end = 6.dp, top = 8.dp, bottom = 12.dp),
+            .padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            RoundCheck(
+                exercise.done,
+                { viewModel.setDone(exercise, !exercise.done) },
+                contentDescription = if (exercise.done) "Mark not done" else "Mark done",
+            )
             Field(
                 name,
                 { name = it },
                 "Exercise",
                 style = Not.type.heading,
                 onDone = { viewModel.rename(exercise, name) },
-                modifier = Modifier.weight(1f).onFocusChanged {
+                modifier = Modifier.weight(1f).padding(start = 4.dp).alpha(fade).onFocusChanged {
                     if (nameFocused && !it.isFocused) {
                         if (name.isBlank()) name = exercise.name else viewModel.rename(exercise, name)
                     }
@@ -614,13 +626,14 @@ private fun ExerciseCard(
             }
         }
 
+        Column(Modifier.padding(start = 8.dp).alpha(fade), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val revision = viewModel.state.collectAsStateWithLifecycle().value.revision
         val info = remember(exercise.name, revision) { viewModel.exerciseInfo(exercise.name) }
         if (info != null) {
             Text((info.muscles + info.equipment).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint)
         }
 
-        exercise.previous?.let { previous ->
+        exercise.previous?.takeUnless { exercise.done }?.let { previous ->
             Row(Modifier.padding(end = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Column(Modifier.weight(1f)) {
                     Text("Last · ${dayLabel(previous.date, today)}", style = Not.type.caption, color = colors.inkMuted)
@@ -645,6 +658,8 @@ private fun ExerciseCard(
             }
         }
 
+        // Done: no more sets to log, unless it's reopened.
+        if (exercise.done) return@Column
         val preview = draft.takeIf { it.isNotBlank() }?.let { parseSets(it).firstOrNull() }
         Field(
             draft,
@@ -666,6 +681,33 @@ private fun ExerciseCard(
                 draft = ""
             },
             modifier = Modifier.fillMaxWidth().padding(end = 12.dp).focusRequester(setsFocus),
+        )
+        }
+    }
+}
+
+/** How far through the session: a thin bar under the top bar with "2 of 5" beside it. */
+@Composable
+private fun SessionProgress(exercises: List<WorkoutExercise>) {
+    val colors = Not.colors
+    val done = exercises.count { it.done }
+    val fraction by animateFloatAsState(
+        done.toFloat() / exercises.size,
+        spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
+        label = "progress",
+    )
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.weight(1f).height(6.dp).clip(CircleShape).background(colors.surface)) {
+            Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().clip(CircleShape).background(colors.accent))
+        }
+        Text(
+            if (done == exercises.size) "All done" else "$done of ${exercises.size}",
+            style = Not.type.caption,
+            color = if (done == exercises.size) colors.accentInk else colors.inkMuted,
         )
     }
 }

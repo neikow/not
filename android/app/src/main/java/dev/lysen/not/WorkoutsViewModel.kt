@@ -103,6 +103,10 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
         if (parsed != null && parsed.parsed && !parsed.warmup && parsed.reps.isNotEmpty() && timer.startsAfterSet.value) timer.start()
     }
 
+    fun setDone(exercise: WorkoutExercise, done: Boolean) {
+        run { store.setExerciseDone(exercise.id, done) }
+    }
+
     fun deleteExercise(exercise: WorkoutExercise) {
         run { store.deleteExercise(exercise.id) } ?: return
         _undoables.trySend(Undoable("“${exercise.name}” removed"))

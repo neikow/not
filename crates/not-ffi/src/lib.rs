@@ -385,6 +385,8 @@ pub struct WorkoutExercise {
     /// As typed, one line per group of sets.
     pub sets: String,
     pub lines: Vec<SetLine>,
+    /// Ticked off for this session.
+    pub done: bool,
     /// The latest earlier session with this exercise logged.
     pub previous: Option<ExerciseLog>,
 }
@@ -860,6 +862,11 @@ impl NotStore {
         Ok(self.store.update_exercise(&id, &name, &sets)?)
     }
 
+    /// Ticks an exercise off for this session (or back on).
+    pub fn set_exercise_done(&self, id: String, done: bool) -> Result<(), NotError> {
+        Ok(self.store.set_exercise_done(&id, done)?)
+    }
+
     pub fn delete_exercise(&self, id: String) -> Result<(), NotError> {
         Ok(self.store.delete_exercise(&id)?)
     }
@@ -898,6 +905,7 @@ impl NotStore {
                     name: e.name,
                     sets: e.sets,
                     lines: e.lines.into_iter().map(SetLine::from).collect(),
+                    done: e.done,
                     previous: e.previous.map(ExerciseLog::from),
                 })
                 .collect(),

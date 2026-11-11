@@ -125,6 +125,7 @@ private struct WorkoutEditor: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                if !workout.exercises.isEmpty { SessionProgress(exercises: workout.exercises) }
                 ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { index, exercise in
                     ExerciseCard(
                         model: model,
@@ -233,6 +234,13 @@ private struct ExerciseCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
+                Button { model.setExerciseDone(exercise.id, !exercise.done) } label: {
+                    Image(systemName: exercise.done ? "checkmark.circle.fill" : "circle")
+                        .imageScale(.large)
+                        .foregroundStyle(exercise.done ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                }
+                .buttonStyle(.borderless)
+                .help(exercise.done ? "Mark not done" : "Mark done")
                 TextField("Exercise", text: $name)
                     .textFieldStyle(.plain)
                     .font(.headline)
@@ -270,7 +278,7 @@ private struct ExerciseCard: View {
                     .padding(.top, -6)
             }
 
-            if let previous = exercise.previous {
+            if let previous = exercise.previous, !exercise.done {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("Last · \(dayLabel(previous.date, today: model.today))")
                         .foregroundStyle(.secondary)
@@ -315,9 +323,12 @@ private struct ExerciseCard: View {
                 }
             }
 
-            addSets
+            if !exercise.done { addSets }
         }
         .padding(14)
+        // Ticked-off exercises step back so what's left stands out.
+        .opacity(exercise.done ? 0.5 : 1)
+        .animation(.easeOut(duration: 0.2), value: exercise.done)
         .background(.background.secondary, in: .rect(cornerRadius: 12))
         .onAppear { name = exercise.name }
         .onChange(of: exercise.name) { _, synced in if !nameFocused { name = synced } }
@@ -373,6 +384,24 @@ private struct ExerciseCard: View {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty { name = exercise.name; return }
         if trimmed != exercise.name { model.updateExercise(exercise.id, name: trimmed, sets: exercise.sets) }
+    }
+}
+
+/// How far through the session: a thin bar with "2 of 5" beside it.
+private struct SessionProgress: View {
+    let exercises: [WorkoutExercise]
+
+    var body: some View {
+        let done = exercises.filter(\.done).count
+        HStack(spacing: 12) {
+            ProgressView(value: Double(done), total: Double(exercises.count))
+                .progressViewStyle(.linear)
+                .animation(.spring(duration: 0.4), value: done)
+            Text(done == exercises.count ? "All done" : "\(done) of \(exercises.count)")
+                .font(.caption)
+                .foregroundStyle(done == exercises.count ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .monospacedDigit()
+        }
     }
 }
 

@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::Result;
 
 /// Bump when the read-model tables change; a mismatch triggers a full rebuild from the docs.
-pub const READ_MODEL_VERSION: i64 = 8;
+pub const READ_MODEL_VERSION: i64 = 9;
 
 /// Local update rows per doc before they are folded into a snapshot on open.
 const COMPACT_AFTER: i64 = 200;
@@ -115,7 +115,8 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
             name_key   TEXT NOT NULL,
             sets       TEXT NOT NULL,
             position   TEXT NOT NULL,
-            set_count  INTEGER NOT NULL
+            set_count  INTEGER NOT NULL,
+            done       INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX workout_exercise_by_workout ON workout_exercise (workout_id, position);
         CREATE INDEX workout_exercise_by_name ON workout_exercise (name_key);
