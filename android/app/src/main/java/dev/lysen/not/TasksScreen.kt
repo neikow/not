@@ -114,14 +114,14 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             titleAccessory = { Icon(R.drawable.ic_expand_more, "Switch list", tint = Not.colors.inkFaint, size = 28.dp) },
             actions = {
                 SyncStatus(state.sync, onClick = onOpenSettings)
-                // Today has its own order: overdue first, then by time.
-                state.selectedList?.takeUnless { state.isToday }?.let { list ->
+                // Today and Upcoming have their own order: by date, then time.
+                state.selectedList?.takeUnless { state.isDateView }?.let { list ->
                     SortMenu(list.sort) { viewModel.setSort(list.id, it) }
                 }
             },
             header = { Subtitle(state) },
             pull = PullAction("Lists", R.drawable.ic_list) { showsLists = true },
-            // Swiping the title bar steps through Today and the lists, in the order the sheet shows them.
+            // Swiping the title bar steps through Today, Upcoming and the lists, in the order the sheet shows them.
             onSwipe = { forward ->
                 neighbour(state, forward)?.let { (id, _) ->
                     haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
@@ -136,6 +136,8 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                 item(key = "empty") {
                     Box(Modifier.animateItem(fadeInSpec = tween(260, delayMillis = 180), fadeOutSpec = tween(120))) {
                     when {
+                        state.isUpcoming ->
+                            EmptyState(R.drawable.ic_calendar, "Nothing coming up", "Tasks with a date after today show here, by day.")
                         state.isToday ->
                             EmptyState(R.drawable.ic_today, "Nothing due today", "Add “tomorrow”, “fri 9am” or “every mon” to a task to see it here when it's due.")
                         outline.completed.isNotEmpty() ->
@@ -147,13 +149,20 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
                     }
                 }
             }
-            items(reorder.items, key = { it.task.id }) { row ->
+            if (state.isUpcoming) {
+                byDay(outline.open).forEach { (label, rows) ->
+                    item(key = "day-$label") { DayHeader(label, Modifier.animateItem()) }
+                    items(rows, key = { it.task.id }) { row ->
+                        TaskRow(row, viewModel, Modifier.animateItem(), listTitle = state.listTitle(row.task.listId))
+                    }
+                }
+            } else items(reorder.items, key = { it.task.id }) { row ->
                 TaskRow(
                     row,
                     viewModel,
                     (if (reorder.isDragging(row)) Modifier else Modifier.animateItem())
                         // Today gathers tasks from every list, so it has no order of its own.
-                        .reorderable(reorder, row, row.task.id, enabled = !state.isToday && !row.done) {
+                        .reorderable(reorder, row, row.task.id, enabled = !state.isDateView && !row.done) {
                             startDrag(reorder, outline.open, row, viewModel)
                         },
                     listTitle = if (state.isToday) state.listTitle(row.task.listId) else null,
@@ -187,7 +196,11 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             ToastHost(toasts, Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp))
             if (composing) {
                 TaskComposer(
-                    if (state.isToday) "New task for today" else "New task in $title",
+                    when {
+                        state.isToday -> "New task for today"
+                        state.isUpcoming -> "New task for tomorrow"
+                        else -> "New task in $title"
+                    },
                     state.lists,
                     onAdd = { viewModel.quickAdd(it.text, it.dismissed) },
                     onClose = { composing = false },
@@ -267,17 +280,41 @@ private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>,
 
 /** The id and title of the list before or after the shown one, in the lists sheet's order. */
 private fun neighbour(state: UiState, forward: Boolean): Pair<String, String>? {
-    val lists = listOf(TODAY_ID to "Today") + state.lists.map { it.id to it.title }
-    val at = lists.indexOfFirst { it.first == if (state.isToday) TODAY_ID else state.selectedListId }
+    val lists = listOf(TODAY_ID to "Today", UPCOMING_ID to "Upcoming") + state.lists.map { it.id to it.title }
+    val at = lists.indexOfFirst { it.first == state.selectedListId }
     if (at < 0) return null
     return lists.getOrNull(if (forward) at + 1 else at - 1)
 }
 
 /** "3 tasks · by due date"; keeps its line when there are none, so the list below doesn't jump. */
+/** Upcoming's groups: Tomorrow, then each day of the coming week by name, then Later. */
+private fun byDay(rows: List<OutlineRow>): List<Pair<String, List<OutlineRow>>> {
+    val today = java.time.LocalDate.now()
+    return rows.groupBy { row ->
+        val due = runCatching { java.time.LocalDate.parse(row.task.due) }.getOrNull()
+        val days = due?.let { java.time.temporal.ChronoUnit.DAYS.between(today, it) } ?: Long.MAX_VALUE
+        when {
+            days == 1L -> "Tomorrow"
+            days < 7 -> due!!.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
+            else -> "Later"
+        }
+    }.toList()
+}
+
+@Composable
+private fun DayHeader(label: String, modifier: Modifier) {
+    Text(
+        label,
+        style = Not.type.label,
+        color = Not.colors.inkMuted,
+        modifier = modifier.padding(start = 24.dp, top = 16.dp, bottom = 4.dp),
+    )
+}
+
 @Composable
 private fun Subtitle(state: UiState) {
     val open = state.outline.open.count { it.depth == 0u }
-    val sort = state.selectedList?.sort?.takeUnless { state.isToday || it == TaskSort.MANUAL }
+    val sort = state.selectedList?.sort?.takeUnless { state.isDateView || it == TaskSort.MANUAL }
     Text(
         (if (open == 1) "1 task" else "$open tasks") + (sort?.let { " · by ${it.label.lowercase()}" } ?: ""),
         style = Not.type.body,
@@ -392,6 +429,17 @@ private fun ListsSheet(
                 selected = state.isToday,
                 onClick = {
                     onSelect(TODAY_ID)
+                    close()
+                },
+                menu = NoMenu,
+            )
+            ListRow(
+                icon = R.drawable.ic_calendar,
+                title = "Upcoming",
+                count = state.upcomingCount,
+                selected = state.isUpcoming,
+                onClick = {
+                    onSelect(UPCOMING_ID)
                     close()
                 },
                 menu = NoMenu,

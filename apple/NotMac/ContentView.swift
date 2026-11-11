@@ -75,6 +75,9 @@ private struct Sidebar: View {
             Label("Today", systemImage: "calendar")
                 .badge(model.dueCount)
                 .tag(SidebarItem.today)
+            Label("Upcoming", systemImage: "calendar.badge.clock")
+                .badge(model.upcoming.count)
+                .tag(SidebarItem.upcoming)
             if let inbox = model.inbox {
                 Label(inbox.title, systemImage: "tray")
                     .badge(Int(inbox.openCount))
@@ -249,7 +252,14 @@ private struct TaskListView: View {
             addField
             Divider()
             if isEmpty {
-                if model.isToday {
+                if model.isUpcoming {
+                    ContentUnavailableView(
+                        "Nothing coming up",
+                        systemImage: "calendar.badge.clock",
+                        description: Text("Tasks with a date after today show here, soonest first.")
+                    )
+                    .frame(maxHeight: .infinity)
+                } else if model.isToday {
                     ContentUnavailableView(
                         "Nothing due today",
                         systemImage: "calendar",
@@ -273,7 +283,7 @@ private struct TaskListView: View {
         .navigationTitle(model.title)
         .toolbar {
             // Today has its own order: overdue first, then by time.
-            if !model.isToday, let list = model.selectedList {
+            if !model.isDateView, let list = model.selectedList {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Picker("Sort by", selection: Binding(get: { list.sort }, set: { model.setSort(list.id, $0) })) {
@@ -300,7 +310,7 @@ private struct TaskListView: View {
                     .imageScale(.large)
                 TaskInputField(
                     text: $draft.text,
-                    placeholder: model.isToday ? "New task for today" : "New task",
+                    placeholder: model.isToday ? "New task for today" : model.isUpcoming ? "New task for tomorrow" : "New task",
                     tokens: parsed?.tokens ?? [],
                     focusRequests: focusRequests + model.addFieldFocusRequests
                 ) {
@@ -319,7 +329,7 @@ private struct TaskListView: View {
     private var taskList: some View {
         List(selection: $model.selectedTaskID) {
             ForEach(model.outline.open, id: \.task.id) { row in
-                TaskRowView(row: row, model: model, showsList: model.isToday)
+                TaskRowView(row: row, model: model, showsList: model.isDateView)
                 if row.task.id == subtaskAnchorID, let parent = model.addingSubtaskTo,
                    let depth = model.outline.open.first(where: { $0.task.id == parent })?.depth {
                     SubtaskComposer(model: model, parentID: parent)
@@ -363,7 +373,7 @@ private struct TaskListView: View {
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
                 Button("Edit Title") { model.editingTaskID = id }
-                if !model.isToday, model.outline.open.contains(where: { $0.task.id == id }) {
+                if !model.isDateView, model.outline.open.contains(where: { $0.task.id == id }) {
                     Button("Add Subtask") { model.beginSubtask(of: id) }
                     Button("Indent") {
                         model.selectedTaskID = id

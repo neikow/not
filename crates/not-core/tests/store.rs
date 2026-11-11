@@ -719,3 +719,13 @@ fn completed_tasks_move_to_the_archive_after_a_day() {
     assert!(s.undo().unwrap());
     assert_eq!(titles(&s.archive(later).unwrap()), ["recent"]);
 }
+
+#[test]
+fn upcoming_lists_future_tasks_soonest_first() {
+    let s = Store::open_in_memory().unwrap();
+    let list = s.create_list("Home").unwrap();
+    for input in ["later next month", "dentist fri 10am", "bins tomorrow", "overdue yesterday", "undated", "call fri 9am"] {
+        s.quick_add(&list, input, today(), &[], None).unwrap();
+    }
+    assert_eq!(titles(&s.upcoming_tasks(today()).unwrap()), ["bins", "call", "dentist", "later"]);
+}

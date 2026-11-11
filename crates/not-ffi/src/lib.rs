@@ -1018,6 +1018,16 @@ impl NotStore {
             .collect())
     }
 
+    /// Open tasks due after `today` from every list, soonest first.
+    pub fn upcoming_tasks(&self, today: String) -> Result<Vec<TaskItem>, NotError> {
+        Ok(self
+            .store
+            .upcoming_tasks(date(&today)?)?
+            .into_iter()
+            .map(TaskItem::from)
+            .collect())
+    }
+
     /// Tasks completed over a day ago, from every list, latest first. Reopening one puts it back.
     pub fn archive(&self) -> Result<Vec<TaskItem>, NotError> {
         Ok(self.store.archive(now_millis())?.into_iter().map(TaskItem::from).collect())

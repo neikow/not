@@ -62,13 +62,13 @@ private struct TaskCommands: Commands {
             Divider()
             Button("Add Subtask") { model.beginSubtask() }
                 .keyboardShortcut("n", modifiers: [.command, .option])
-                .disabled(model.selectedTask == nil || model.isToday)
+                .disabled(model.selectedTask == nil || model.isDateView)
             Button("Indent") { model.indentSelected() }
                 .keyboardShortcut("]")
-                .disabled(model.selectedTask == nil || model.isToday)
+                .disabled(model.selectedTask == nil || model.isDateView)
             Button("Outdent") { model.outdentSelected() }
                 .keyboardShortcut("[")
-                .disabled(model.selectedTask?.parentId == nil || model.isToday)
+                .disabled(model.selectedTask?.parentId == nil || model.isDateView)
         }
     }
 

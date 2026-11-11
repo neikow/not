@@ -619,6 +619,19 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Open tasks due after `today`, from every list, soonest first, then by time and priority.
+    /// Subtasks of completed tasks are left out.
+    pub fn upcoming_tasks(&self, today: Date) -> Result<Vec<Task>> {
+        let inner = self.lock();
+        let mut stmt = inner.db.prepare_cached(&format!(
+            "SELECT {TASK_COLUMNS} FROM task t LEFT JOIN task p ON p.id = t.parent_id
+             WHERE t.completed_at IS NULL AND t.due IS NOT NULL AND t.due > ?1 AND p.completed_at IS NULL
+             ORDER BY t.due, t.due_time IS NULL, t.due_time, t.priority DESC, t.position, t.id"
+        ))?;
+        let rows = stmt.query_map([today.to_string()], task_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// The tasks of a list arranged for display. See [`Outline`].
     pub fn outline(&self, list_id: &str) -> Result<Outline> {
         self.outline_at(list_id, now_millis())

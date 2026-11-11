@@ -12,6 +12,8 @@ final class AppModel {
     private(set) var outline = Outline(open: [], completed: [])
     /// Open tasks due today or earlier, for the Today badge.
     private(set) var dueCount = 0
+    /// Open tasks due after today, soonest first.
+    private(set) var upcoming: [TaskItem] = []
     /// Tasks completed over a day ago, from every list, latest first (Settings → Archive).
     private(set) var archive: [TaskItem] = []
     /// Every task of the selected task's list, for its subtasks (Today only shows due ones).
@@ -203,7 +205,10 @@ final class AppModel {
 
     var selectedList: TaskList? { lists.first { $0.id == selectedListID } }
     var isToday: Bool { selection == .today }
-    var title: String { isToday ? "Today" : selectedList?.title ?? "not" }
+    var isUpcoming: Bool { selection == .upcoming }
+    /// Today or Upcoming: tasks from every list by date, so no order, sort or nesting of their own.
+    var isDateView: Bool { isToday || isUpcoming }
+    var title: String { isToday ? "Today" : isUpcoming ? "Upcoming" : selectedList?.title ?? "not" }
     func listTitle(_ id: String) -> String { lists.first { $0.id == id }?.title ?? "Inbox" }
     var inbox: TaskList? { lists.first { $0.id == inboxID } }
     var userLists: [TaskList] { lists.filter { $0.id != inboxID } }
@@ -316,11 +321,12 @@ final class AppModel {
     func quickAdd(_ text: String, dismissed: [String] = [], to parentID: String? = nil) {
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         refreshToday()
-        let parent = parentID ?? (isToday ? inboxID : selectedListID ?? inboxID)
+        let parent = parentID ?? (isDateView ? inboxID : selectedListID ?? inboxID)
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: .now).map(AppModel.dayString)
         run {
             _ = try store.quickAdd(
                 parentId: parent, input: text, today: today, dismissed: dismissed,
-                defaultDue: parentID == nil && isToday ? today : nil
+                defaultDue: parentID != nil ? nil : isToday ? today : isUpcoming ? tomorrow : nil
             )
         }
     }
@@ -383,7 +389,7 @@ final class AppModel {
 
     /// Opens the inline field for a subtask under `taskID` (the selected task by default).
     func beginSubtask(of taskID: String? = nil) {
-        guard let id = taskID ?? selectedTaskID, !isToday,
+        guard let id = taskID ?? selectedTaskID, !isDateView,
               outline.open.contains(where: { $0.task.id == id })
         else { return }
         editingTaskID = nil
@@ -392,13 +398,13 @@ final class AppModel {
 
     /// Tab / ⌘]: the selected task becomes a subtask of the one above it.
     func indentSelected() {
-        guard let id = selectedTaskID, !isToday else { return }
+        guard let id = selectedTaskID, !isDateView else { return }
         run { _ = try store.indentTask(id: id) }
     }
 
     /// ⇧Tab / ⌘[: the selected subtask moves out a level.
     func outdentSelected() {
-        guard let id = selectedTaskID, !isToday else { return }
+        guard let id = selectedTaskID, !isDateView else { return }
         run { _ = try store.outdentTask(id: id) }
     }
 
@@ -677,7 +683,7 @@ final class AppModel {
         canRedo = store.canRedo()
         dueCount = (run { try store.dueTasks(today: today) } ?? []).count
         switch selection {
-        case .today:
+        case .today, .upcoming:
             reloadTasks()
         case .habits, .workouts:
             break
@@ -747,8 +753,11 @@ final class AppModel {
         let due = run { try store.dueTasks(today: today) } ?? []
         dueCount = due.count
         archive = run { try store.archive() } ?? []
+        upcoming = run { try store.upcomingTasks(today: today) } ?? []
         if isToday {
             outline = Outline(open: due.map { OutlineRow(task: $0, depth: 0, done: false) }, completed: [])
+        } else if isUpcoming {
+            outline = Outline(open: upcoming.map { OutlineRow(task: $0, depth: 0, done: false) }, completed: [])
         } else if let list = selectedListID, let outline = run({ try store.outline(listId: list) }) {
             self.outline = outline
         } else {
@@ -802,6 +811,8 @@ final class AppModel {
 enum SidebarItem: Hashable {
     /// Open tasks due today or earlier, from every list.
     case today
+    /// Open tasks due after today, from every list.
+    case upcoming
     case list(String)
     case habits
     case workouts

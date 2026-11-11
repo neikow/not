@@ -32,6 +32,7 @@ data class UiState(
     val outline: Outline = Outline(emptyList(), emptyList()),
     /** Open tasks due today or earlier, for the Today entry's badge. */
     val dueCount: Int = 0,
+    val upcomingCount: Int = 0,
     /** Every task of the open task's list, for its subtasks (Today only shows due ones). */
     val openTaskList: List<TaskItem> = emptyList(),
     /** Tasks completed over a day ago, from every list, latest first; Settings → Archive. */
@@ -49,7 +50,14 @@ data class UiState(
 ) {
     val selectedList: TaskList? get() = lists.firstOrNull { it.id == selectedListId }
     val isToday: Boolean get() = selectedListId == TODAY_ID
-    val title: String get() = if (isToday) "Today" else selectedList?.title ?: "Inbox"
+    val isUpcoming: Boolean get() = selectedListId == UPCOMING_ID
+    /** Today or Upcoming: tasks gathered from every list by date, so no order or sort of their own. */
+    val isDateView: Boolean get() = isToday || isUpcoming
+    val title: String get() = when {
+        isToday -> "Today"
+        isUpcoming -> "Upcoming"
+        else -> selectedList?.title ?: "Inbox"
+    }
     private val allRows get() = outline.open + outline.completed
     val openTask: TaskItem? get() = allRows.firstOrNull { it.task.id == openTaskId }?.task
 
@@ -64,6 +72,9 @@ val INBOX_ID: String = inboxId()
 
 /** The Today view: not a list in the core, but every open task due today or earlier. */
 const val TODAY_ID = "today"
+
+/** Every open task due after today, grouped by day. */
+const val UPCOMING_ID = "upcoming"
 
 class TasksViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as NotApp
@@ -118,8 +129,13 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
     fun quickAdd(text: String, dismissed: List<String> = emptyList()) {
         if (text.isBlank()) return
         val s = _state.value
-        val parent = if (s.isToday) INBOX_ID else s.selectedListId
-        run { store.quickAdd(parent, text, today(), dismissed, if (s.isToday) today() else null) }
+        val parent = if (s.isDateView) INBOX_ID else s.selectedListId
+        val due = when {
+            s.isToday -> today()
+            s.isUpcoming -> java.time.LocalDate.now().plusDays(1).toString()
+            else -> null
+        }
+        run { store.quickAdd(parent, text, today(), dismissed, due) }
     }
 
     /** Completing confirms with Undo, so a stray tap or swipe costs nothing. */
@@ -238,7 +254,7 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
     private fun reload() {
         val lists = run { store.lists() } ?: return
         _state.update { s ->
-            val selected = s.selectedListId.takeIf { id -> id == TODAY_ID || lists.any { it.id == id } } ?: INBOX_ID
+            val selected = s.selectedListId.takeIf { id -> id == TODAY_ID || id == UPCOMING_ID || lists.any { it.id == id } } ?: INBOX_ID
             s.copy(lists = lists, selectedListId = selected)
         }
         reloadTasks()
@@ -247,8 +263,11 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
     private fun reloadTasks() {
         val due = run { store.dueTasks(today()) } ?: return
         val archive = run { store.archive() }.orEmpty()
+        val upcoming = run { store.upcomingTasks(today()) }.orEmpty()
         val outline = if (_state.value.isToday) {
             Outline(due.map { OutlineRow(it, 0u, false) }, emptyList())
+        } else if (_state.value.isUpcoming) {
+            Outline(upcoming.map { OutlineRow(it, 0u, false) }, emptyList())
         } else {
             run { store.outline(_state.value.selectedListId) } ?: return
         }
@@ -259,6 +278,7 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
                 outline = outline,
                 archive = archive,
                 dueCount = due.size,
+                upcomingCount = upcoming.size,
                 openTaskId = open?.id,
                 openTaskList = open?.let { run { store.tasks(it.listId) } }.orEmpty(),
             )
