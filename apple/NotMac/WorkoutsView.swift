@@ -479,18 +479,38 @@ private struct ExerciseHistory: View {
     let logs: [ExerciseLog]
     let today: String
     @State private var linking = false
+    @State private var metric = Metric.top
+    @State private var picked: Date?
+
+    /// What the chart plots, one at a time (never two scales on one axis).
+    enum Metric: String, CaseIterable {
+        case top = "Top set", oneRM = "Est. 1RM", volume = "Volume"
+    }
 
     /// Cardio (no weights): distance in km instead of the top set.
     private var isCardio: Bool { logs.allSatisfy { $0.topWeight == nil } && logs.contains { $0.distance > 0 } }
 
+    private func value(_ log: ExerciseLog) -> Double? {
+        if isCardio { return log.distance > 0 ? log.distance / 1000 : nil }
+        switch metric {
+        case .top: return log.topWeight
+        // Epley over working sets: weight × (1 + reps / 30), best of the session.
+        case .oneRM:
+            return log.lines.filter { $0.parsed && !$0.warmup }
+                .flatMap { line in line.reps.compactMap { reps in line.weight.map { $0 * (1 + Double(reps) / 30) } } }
+                .max()
+        case .volume: return log.volume > 0 ? log.volume : nil
+        }
+    }
+
     private var points: [(date: Date, weight: Double)] {
         logs.reversed().compactMap { log in
-            guard let d = parseDay(log.date),
-                  let w = isCardio ? (log.distance > 0 ? log.distance / 1000 : nil) : log.topWeight
-            else { return nil }
+            guard let d = parseDay(log.date), let w = value(log) else { return nil }
             return (d, w)
         }
     }
+
+    private var unit: String { isCardio ? "km" : "kg" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -501,14 +521,38 @@ private struct ExerciseHistory: View {
             } else if logs.isEmpty {
                 Text("Nothing logged yet.").foregroundStyle(.secondary)
             } else {
+                if !isCardio {
+                    Picker("Chart", selection: $metric) {
+                        ForEach(Metric.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
                 if points.count > 1 {
-                    Chart(points, id: \.date) { p in
-                        LineMark(x: .value("Date", p.date), y: .value("Top set", p.weight))
-                            .interpolationMethod(.monotone)
-                        PointMark(x: .value("Date", p.date), y: .value("Top set", p.weight))
+                    let shown = picked.flatMap { day in points.min { abs($0.date.timeIntervalSince(day)) < abs($1.date.timeIntervalSince(day)) } } ?? points.last!
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(formatWeight((shown.weight * 10).rounded() / 10)) \(unit)").font(.title3.weight(.semibold))
+                        Text(picked == nil ? "latest" : shown.date.formatted(.dateTime.day().month()))
+                            .foregroundStyle(.secondary)
+                    }
+                    Chart {
+                        ForEach(points, id: \.date) { p in
+                            LineMark(x: .value("Date", p.date), y: .value(metric.rawValue, p.weight))
+                                .lineStyle(StrokeStyle(lineWidth: 2))
+                            PointMark(x: .value("Date", p.date), y: .value(metric.rawValue, p.weight))
+                                .symbolSize(p.date == shown.date && picked != nil ? 80 : 36)
+                        }
+                        if picked != nil {
+                            RuleMark(x: .value("Date", shown.date))
+                                .foregroundStyle(.secondary)
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        }
                     }
                     .chartYScale(domain: .automatic(includesZero: false))
-                    .frame(height: 120)
+                    .chartXSelection(value: $picked)
+                    .frame(height: 140)
+                } else if !logs.isEmpty {
+                    Text("Log this exercise twice to see a trend.").font(.callout).foregroundStyle(.secondary)
                 }
                 if isCardio, let longest = logs.map(\.distance).max() {
                     Text("Longest \(formatWeight(longest / 1000)) km · \(logs.count) sessions")

@@ -808,10 +808,8 @@ private fun HistorySheet(name: String, viewModel: WorkoutsViewModel, today: Loca
                 Text("Nothing logged yet.", style = Not.type.body, color = colors.inkMuted)
                 return@Column
             }
-            // Cardio (no weights) charts distance instead of the top set.
             val cardio = logs.all { it.topWeight == null } && logs.any { it.distance > 0 }
-            val points = logs.reversed().mapNotNull { if (cardio) it.distance.takeIf { d -> d > 0 }?.div(1000) else it.topWeight }
-            if (points.size > 1) Sparkline(points, Modifier.fillMaxWidth().height(96.dp))
+            ProgressChart(logs, Modifier.fillMaxWidth())
             if (cardio) {
                 Text("Longest ${formatWeight(logs.maxOf { it.distance } / 1000)} km · ${logs.size} sessions", style = Not.type.caption, color = colors.inkMuted)
             } else {
@@ -866,28 +864,6 @@ private fun LinkPicker(name: String, info: CatalogExercise?, viewModel: Workouts
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (info != null) Button("Unlink", { viewModel.link(name, null); onDone() }, kind = ButtonKind.Danger)
         Button("Cancel", onDone, kind = ButtonKind.Secondary)
-    }
-}
-
-/** Top-set weight over time, oldest left. */
-@Composable
-private fun Sparkline(values: List<Double>, modifier: Modifier) {
-    val line = Not.colors.accentInk
-    val dot = Not.colors.accent
-    Canvas(modifier) {
-        val min = values.min()
-        val span = (values.max() - min).takeIf { it > 0 } ?: 1.0
-        val step = size.width / (values.size - 1)
-        val points = values.mapIndexed { i, v ->
-            Offset(i * step, (size.height - 8f) - ((v - min) / span * (size.height - 16f)).toFloat())
-        }
-        for (i in 1 until points.size) {
-            drawLine(line, points[i - 1], points[i], strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
-        }
-        points.forEach {
-            drawCircle(dot, 4.dp.toPx(), it)
-            drawCircle(line, 4.dp.toPx(), it, style = Stroke(1.5.dp.toPx()))
-        }
     }
 }
 
