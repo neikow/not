@@ -288,7 +288,11 @@ private struct ExerciseCard: View {
                         .truncationMode(.tail)
                     Spacer(minLength: 0)
                     if exercise.sets.isEmpty {
-                        Button("Same Again") { model.updateExercise(exercise.id, name: exercise.name, sets: expandSets(text: previous.sets)) }
+                        Button("Same Again") {
+                            // A plan to tick through: none of last time's sets done yet.
+                            let plan = previous.lines.map { $0.raw.trimmingCharacters(in: .whitespaces).drop { $0 == "✓" || $0 == "✔" }.trimmingCharacters(in: .whitespaces) }
+                            model.updateExercise(exercise.id, name: exercise.name, sets: expandSets(text: plan.joined(separator: "\n")))
+                        }
                             .buttonStyle(.borderless)
                             .foregroundStyle(.tint)
                             .help("Copy last time's sets")
@@ -307,7 +311,7 @@ private struct ExerciseCard: View {
                         .onExitCommand { editingLine = nil }
                         .onChange(of: lineFocused) { _, focused in if !focused { commitLine(i) } }
                 } else {
-                    SetLineRow(line: line)
+                    SetLineRow(line: line) { toggle(i) }
                         .contentShape(.rect)
                         .onTapGesture(count: 2) {
                             lineDraft = line.raw
@@ -359,12 +363,32 @@ private struct ExerciseCard: View {
         guard !text.isEmpty else { return }
         let parsed = parseSets(text: text).first
         // One line per set: "24kg x 10 x 3" becomes three lines.
-        model.updateExercise(exercise.id, name: exercise.name, sets: (lines + [expandSets(text: text)]).joined(separator: "\n"))
+        // Typed in = just done.
+        let sets = expandSets(text: text).split(separator: "\n").map { s in parseSets(text: String(s)).first?.parsed == true ? "✓ " + s : String(s) }
+        model.updateExercise(exercise.id, name: exercise.name, sets: (lines + sets).joined(separator: "\n"))
         draft = ""
         // Sets only: a swim or a run isn't followed by a rest.
         if parsed?.parsed == true, parsed?.warmup == false, parsed?.reps.isEmpty == false, model.restTimer.startsAfterSet {
             model.restTimer.start()
         }
+    }
+
+    /// Ticks a set off or back on; ticking a working set starts the rest timer if that's on, and
+    /// ticking the last open set ticks the exercise off.
+    private func toggle(_ i: Int) {
+        let line = exercise.lines[i]
+        var all = lines
+        let bare = line.raw.trimmingCharacters(in: .whitespaces).drop { $0 == "✓" || $0 == "✔" }.trimmingCharacters(in: .whitespaces)
+        all[i] = line.done ? bare : "✓ " + bare
+        // Older grouped lines tick all their sets at once; new ones are one set per line.
+        model.updateExercise(exercise.id, name: exercise.name, sets: all.joined(separator: "\n"))
+        if line.done {
+            if exercise.done { model.setExerciseDone(exercise.id, false) }
+            return
+        }
+        if !line.warmup, !line.reps.isEmpty, model.restTimer.startsAfterSet { model.restTimer.start() }
+        let others = exercise.lines.enumerated().filter { $0.offset != i && $0.element.parsed }
+        if !exercise.done, others.allSatisfy({ $0.element.done }) { model.setExerciseDone(exercise.id, true) }
     }
 
     private func commitLine(_ i: Int) {
@@ -408,6 +432,7 @@ private struct SessionProgress: View {
 
 private struct SetLineRow: View {
     let line: SetLine
+    var onToggle: () -> Void = {}
 
     private var rows: [String] {
         guard line.parsed, line.reps.count > 1 else { return [line.label] }
@@ -416,9 +441,16 @@ private struct SetLineRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(line.parsed ? (line.warmup ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint)) : AnyShapeStyle(.clear))
-                .frame(width: 6, height: 6)
+            if line.parsed {
+                Button(action: onToggle) {
+                    Image(systemName: line.done ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(line.done ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                }
+                .buttonStyle(.borderless)
+                .help(line.done ? "Mark set not done" : "Mark set done")
+            } else {
+                Color.clear.frame(width: 16, height: 1)
+            }
             // Older grouped lines ("24kg x 10 x 3") show each set on its own row.
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, label in

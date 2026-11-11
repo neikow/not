@@ -49,7 +49,13 @@ pub struct SetLine {
     pub note: Option<String>,
     /// Tidy form for display, e.g. `24 kg × 10 × 3`; the raw text when not parsed.
     pub label: String,
+    /// Ticked off in this session: the line starts with `✓` (see [`DONE_MARK`]).
+    pub done: bool,
 }
+
+/// Marks a set line as done: `✓ 24kg x 10`. Kept in the text so it syncs, survives edits and
+/// reorders, and reads fine anywhere the text is shown.
+pub const DONE_MARK: &str = "✓ ";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkoutSummary {
@@ -548,7 +554,11 @@ pub fn expand_sets(text: &str) -> String {
         };
         let last = line.reps.len() - 1;
         for (i, reps) in line.reps.iter().enumerate() {
-            let mut set = format!("{}{weight} x {reps}", if line.warmup { "E " } else { "" });
+            let mut set = format!(
+                "{}{}{weight} x {reps}",
+                if line.done { DONE_MARK } else { "" },
+                if line.warmup { "E " } else { "" }
+            );
             if i == last && let Some(note) = &line.note {
                 set.push_str(&format!(" \" {note}"));
             }
@@ -562,6 +572,19 @@ pub fn expand_sets(text: &str) -> String {
 const NOTE_QUOTES: [char; 7] = ['"', '\'', '“', '”', '‘', '’', '«'];
 
 fn parse_line(raw: &str) -> SetLine {
+    let Some(body) = raw.strip_prefix(['✓', '✔']).map(str::trim_start) else {
+        return parse_unmarked(raw);
+    };
+    let mut line = parse_unmarked(body);
+    if !line.parsed {
+        line.label = body.to_owned();
+    }
+    line.raw = raw.to_owned();
+    line.done = true;
+    line
+}
+
+fn parse_unmarked(raw: &str) -> SetLine {
     // `28kg x 9 " spotted on the first`: sets, then a note. Only when the part before the quote
     // reads as sets, so a plain note with an apostrophe stays whole.
     if let Some(at) = raw.find(NOTE_QUOTES) {
@@ -598,6 +621,7 @@ fn parse_parts(raw: &str, text: &str) -> SetLine {
         duration: None,
         note: None,
         label: raw.to_owned(),
+        done: false,
     };
     let (warmup, rest) = strip_warmup(text);
     if let Some((weight, unit, reps)) = tokenize(rest).and_then(|t| read_sets(&t)) {
@@ -612,6 +636,7 @@ fn parse_parts(raw: &str, text: &str) -> SetLine {
             distance: None,
             duration: None,
             note: None,
+            done: false,
         };
     }
     if let Some(cardio) = read_cardio(rest) {
@@ -631,6 +656,7 @@ fn parse_parts(raw: &str, text: &str) -> SetLine {
             } else {
                 body
             },
+            done: false,
         };
     }
     unparsed()
@@ -1163,6 +1189,18 @@ mod tests {
             assert_eq!((line.weight, line.reps.len()), (Some(24.8), 1));
         }
         assert_eq!(parse_sets(&expand_sets("20 x 3"))[0].reps, vec![20]);
+    }
+
+    #[test]
+    fn done_sets_carry_a_mark() {
+        let l = line("✓ 24kg x 10");
+        assert!(l.done && l.parsed);
+        assert_eq!((l.weight, l.label.as_str()), (Some(24.0), "24 kg × 10"));
+        assert!(line("✔ E 18kg x 10").warmup);
+        assert!(!line("24kg x 10").done);
+        assert_eq!(expand_sets("✓ 24kg x 10 x 2"), "✓ 24kg x 10\n✓ 24kg x 10");
+        let note = line("✓ felt strong");
+        assert!(note.done && !note.parsed && note.label == "felt strong");
     }
 
     #[test]

@@ -356,6 +356,8 @@ pub struct SetLine {
     pub note: Option<String>,
     /// Tidy form, e.g. `24 kg × 10 × 3`, `500 m · 14 min · 2:48 /100 m`.
     pub label: String,
+    /// Ticked off in this session (the line starts with ✓).
+    pub done: bool,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -1353,6 +1355,7 @@ impl From<not_core::SetLine> for SetLine {
             duration: l.duration,
             note: l.note,
             label: l.label,
+            done: l.done,
         }
     }
 }

@@ -1,5 +1,7 @@
 package dev.lysen.not
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.border
 import dev.lysen.not.ui.OnTabGesture
 import dev.lysen.not.ui.TabGesture
 import android.Manifest
@@ -706,7 +708,8 @@ private fun ExerciseCard(
                     modifier = Modifier.weight(1f),
                 )
                 IconButton(R.drawable.ic_copy, "Same as last time", {
-                    viewModel.setSets(exercise, expandSets(previous.lines.joinToString("\n") { it.raw }).lines())
+                    // A plan to tick through: last time's sets, none done yet.
+                    viewModel.setSets(exercise, expandSets(previous.lines.joinToString("\n") { markDone(it.raw, false) }).lines())
                 }, tint = colors.accentInk)
             }
         }
@@ -754,6 +757,9 @@ private fun ExerciseCard(
                         rep = k,
                         number = number.takeIf { counts },
                         isLast = k == null || k == line.reps.lastIndex,
+                        onToggle = {
+                            if (split) viewModel.toggleSet(exercise, row) else splitFirst()
+                        },
                         onClick = {
                             if (split) editing = row else {
                                 splitFirst()
@@ -846,7 +852,7 @@ private fun SessionProgress(exercises: List<WorkoutExercise>) {
 }
 
 @Composable
-private fun SetRow(line: SetLine, rep: Int?, number: Int?, isLast: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun SetRow(line: SetLine, rep: Int?, number: Int?, isLast: Boolean, onToggle: () -> Unit, onClick: () -> Unit, onLongClick: () -> Unit) {
     val colors = Not.colors
     val haptics = LocalHapticFeedback.current
     val working = line.parsed && !line.warmup
@@ -867,10 +873,8 @@ private fun SetRow(line: SetLine, rep: Int?, number: Int?, isLast: Boolean, onCl
             !line.parsed -> Text(line.raw, style = Not.type.body.merge(fontStyle = FontStyle.Italic), color = colors.inkMuted, modifier = Modifier.weight(1f))
             line.reps.isEmpty() -> Text(line.label, style = Not.type.bodyStrong, color = colors.ink, modifier = Modifier.weight(1f))
             else -> {
-                // The set's number, or a tag for warm-ups, in a fixed column so rows line up.
-                Box(Modifier.width(20.dp).semantics { contentDescription = if (line.warmup) "Warm-up" else "Set ${number ?: ""}" }) {
-                    Text(if (line.warmup) "W" else number?.toString() ?: "", style = Not.type.label, color = if (line.warmup) colors.accentInk else colors.inkFaint)
-                }
+                // The set's number (W for warm-ups) in a ring; tap it to tick the set off.
+                SetCheck(line.done, if (line.warmup) "W" else number?.toString() ?: "", onToggle)
                 Row(Modifier.weight(1f), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     line.weight?.let { Text("${formatWeight(it)} ${line.unit}", style = Not.type.bodyStrong, color = if (working) colors.ink else colors.inkMuted) }
                     val reps = rep?.let { line.reps[it] } ?: line.reps.first()
@@ -881,6 +885,37 @@ private fun SetRow(line: SetLine, rep: Int?, number: Int?, isLast: Boolean, onCl
         // A note belongs to the group's last set.
         line.note?.takeIf { isLast }?.let {
             Text(it, style = Not.type.caption.merge(fontStyle = FontStyle.Italic), color = colors.inkMuted, maxLines = 1, modifier = Modifier.weight(0.6f, fill = false))
+        }
+    }
+}
+
+/** A small ring holding the set's number; ticked, it fills mint with a check. */
+@Composable
+private fun SetCheck(done: Boolean, label: String, onToggle: () -> Unit) {
+    val colors = Not.colors
+    val haptics = LocalHapticFeedback.current
+    val fill by animateColorAsState(if (done) colors.accent else Color.Transparent, label = "set fill")
+    Box(
+        Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .pressable({
+                haptics.performHapticFeedback(if (done) HapticFeedbackType.SegmentTick else HapticFeedbackType.Confirm)
+                onToggle()
+            }, pressedScale = 0.88f, onClickLabel = if (done) "Mark set not done" else "Mark set done")
+            .semantics { contentDescription = if (done) "Set $label, done" else "Set $label" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(26.dp)
+                .clip(CircleShape)
+                .background(fill)
+                .border(1.5.dp, if (done) colors.accent else colors.inkFaint, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (done) Icon(R.drawable.ic_check, null, tint = colors.onAccent, size = 16.dp)
+            else Text(label, style = Not.type.tiny, color = colors.inkMuted)
         }
     }
 }
@@ -913,8 +948,10 @@ private fun SetMenu(
 private val WarmupPrefix = Regex("^(e|w|wu|warm-?up|[ée]chauf(fement)?)[ :\\t]+", RegexOption.IGNORE_CASE)
 
 /** The same line as a warm-up ("E 18kg x 10") or, if it was one, as a working set. */
-private fun toggleWarmup(line: SetLine): String =
-    if (line.warmup) line.raw.trim().replaceFirst(WarmupPrefix, "").trim() else "E ${line.raw.trim()}"
+private fun toggleWarmup(line: SetLine): String {
+    val bare = markDone(line.raw, false)
+    return markDone(if (line.warmup) bare.replaceFirst(WarmupPrefix, "").trim() else "E $bare", line.done)
+}
 
 /** "24 kg × 10 ×3", "18 kg × 10, 8", or the label for cardio and notes: for one-line summaries. */
 private fun SetLine.short(): String {

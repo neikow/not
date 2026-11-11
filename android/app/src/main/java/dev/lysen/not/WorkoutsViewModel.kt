@@ -94,6 +94,25 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
         run { store.updateExercise(exercise.id, exercise.name, lines.joinToString("\n")) }
     }
 
+    /**
+     * Ticks a set off (or back on). Ticking a working set starts the rest timer if that's on, and
+     * ticking the last open set ticks the exercise off too.
+     */
+    fun toggleSet(exercise: WorkoutExercise, index: Int) {
+        val line = exercise.lines.getOrNull(index) ?: return
+        val done = !line.done
+        val lines = exercise.lines.map { it.raw }.toMutableList()
+        lines[index] = markDone(line.raw, done)
+        setSets(exercise, lines)
+        if (!done) {
+            if (exercise.done) setDone(exercise, false)
+            return
+        }
+        if (!line.warmup && line.reps.isNotEmpty() && timer.startsAfterSet.value) timer.start()
+        val sets = exercise.lines.filterIndexed { i, l -> l.parsed && i != index }
+        if (!exercise.done && sets.all { it.done }) run { store.setExerciseDone(exercise.id, true) }
+    }
+
     /** Removes one set line (lines already one per set), with Undo. */
     fun deleteSet(exercise: WorkoutExercise, index: Int) {
         val lines = exercise.lines.map { it.raw }
@@ -102,12 +121,15 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
         _undoables.trySend(Undoable("Set removed"))
     }
 
-    /** Appends a line of sets; a logged working set starts the rest timer if that's on. */
+    /**
+     * Appends a line of sets, one line per set and ticked off (typed in = just done); a logged
+     * working set starts the rest timer if that's on.
+     */
     fun addSets(exercise: WorkoutExercise, text: String) {
         val line = text.trim()
         if (line.isEmpty()) return
-        // One line per set, so each can be edited (and later ticked) on its own.
-        setSets(exercise, exercise.lines.map { it.raw } + expandSets(line).lines())
+        val sets = expandSets(line).lines().map { if (parseSets(it).firstOrNull()?.parsed == true) markDone(it, true) else it }
+        setSets(exercise, exercise.lines.map { it.raw } + sets)
         val parsed = parseSets(line).firstOrNull()
         // Sets only: a swim or a run isn't followed by a rest.
         if (parsed != null && parsed.parsed && !parsed.warmup && parsed.reps.isNotEmpty() && timer.startsAfterSet.value) timer.start()
@@ -202,4 +224,13 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
             _state.update { it.copy(error = e.userMessage) }
             null
         }
+}
+
+/** Starts a set line that's done; the core's `DONE_MARK`, which reads ✓ and ✔. */
+private const val DONE_MARK = "✓ "
+
+/** [raw] with the done mark added or taken off. */
+fun markDone(raw: String, done: Boolean): String {
+    val bare = raw.trim().removePrefix("✓").removePrefix("✔").trim()
+    return if (done) DONE_MARK + bare else bare
 }
