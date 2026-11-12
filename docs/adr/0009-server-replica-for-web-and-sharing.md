@@ -18,8 +18,11 @@ only ever see the one list shared with them.
   whether visitors can edit. The sharer picks read-only or edit per link; editing means ticking off
   and adding tasks (no delete or rename, and `#list` in a guest's text can't move a task out). Apps
   create and revoke links through `/v1/shares`.
-- Pages are plain server-rendered HTML forms; the only script reports the browser's UTC offset so
-  "tomorrow" means the visitor's tomorrow.
+- Pages are plain server-rendered HTML forms. Scripts only report the browser's UTC offset so
+  "tomorrow" means the visitor's tomorrow, and keep shared lists live: the page opens
+  `/s/<token>/live`, a WebSocket that re-renders the list on every poke and sends its title and
+  rows when they change (closing with 4404 once the link is revoked or the list deleted). Ticks and
+  adds then post in the background. Without scripts the forms still work.
 
 ## Consequences
 - The server holds a readable copy of the data. End-to-end encryption (0003's open door) would now

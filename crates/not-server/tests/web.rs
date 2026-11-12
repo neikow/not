@@ -194,3 +194,68 @@ fn today_plus_one_utc() -> String {
         .add_days(days + 1)
         .to_string()
 }
+
+#[tokio::test]
+async fn shared_lists_update_live_and_close_when_revoked() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (state, base) = start().await;
+    let code = state.create_pairing_code().unwrap();
+    let client = SyncClient::from_credentials(&SyncClient::pair(&base, &code.code, "Phone").await.unwrap());
+    let phone = Store::open_in_memory().unwrap();
+    let groceries = phone.create_list("Groceries").unwrap();
+    phone.add_task(&groceries, "milk").unwrap();
+    client.sync(&phone).await.unwrap();
+    let share = client.create_share(&groceries, true).await.unwrap();
+
+    let (status, _, html) = send(&state, get(&format!("/s/{}", share.token), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"<div id="tasks">"#) && html.contains("/live"));
+
+    let url = format!("{}/s/{}/live", base.replace("http", "ws"), share.token);
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let next = async |socket: &mut tokio_tungstenite::WebSocketStream<_>| -> Message {
+        tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await
+            .expect("a message in time")
+            .unwrap()
+            .unwrap()
+    };
+    let view = |m: Message| -> serde_json::Value { serde_json::from_str(m.to_text().unwrap()).unwrap() };
+
+    // The current state on connect.
+    let first = view(next(&mut socket).await);
+    assert_eq!(first["title"], "Groceries");
+    assert!(first["html"].as_str().unwrap().contains("milk"));
+
+    // A change from the phone arrives without asking.
+    phone.add_task(&groceries, "eggs <b>").unwrap();
+    phone.rename(&groceries, "Shopping").unwrap();
+    client.sync(&phone).await.unwrap();
+    let update = view(next(&mut socket).await);
+    assert_eq!(update["title"], "Shopping");
+    assert!(update["html"].as_str().unwrap().contains("eggs &lt;b&gt;"));
+
+    // So does another guest's edit.
+    send(
+        &state,
+        post(&format!("/s/{}/add", share.token), "text=bread", None),
+    )
+    .await;
+    let update = view(next(&mut socket).await);
+    assert!(update["html"].as_str().unwrap().contains("bread"));
+
+    // Revoking cuts the open page off at the next change.
+    client.revoke_share(share.id).await.unwrap();
+    phone.add_task(&groceries, "after").unwrap();
+    client.sync(&phone).await.unwrap();
+    match next(&mut socket).await {
+        Message::Close(Some(frame)) => assert_eq!(u16::from(frame.code), 4404),
+        other => panic!("expected a close, got {other:?}"),
+    }
+    assert!(
+        tokio_tungstenite::connect_async(&url).await.is_err(),
+        "a revoked link can't reconnect"
+    );
+}

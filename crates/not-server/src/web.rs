@@ -6,19 +6,24 @@
 //!   then shows among the devices and can be revoked like one).
 //! - `/s/<token>`: one list, for anyone with the link; the owner chose read-only or edit.
 //!
-//! Plain HTML forms, no scripts beyond reporting the browser's UTC offset, so dates typed in
-//! ("tomorrow") mean the visitor's tomorrow.
+//! Plain HTML forms; scripts only report the browser's UTC offset, so dates typed in
+//! ("tomorrow") mean the visitor's tomorrow, and keep shared lists live over a WebSocket
+//! (`/s/<token>/live`), so a guest sees ticks and adds from the apps and other guests as they
+//! happen.
 
 use std::fmt::Write as _;
 
 use axum::Router;
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Form, Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use not_core::date::Date;
 use not_core::{INBOX, OutlineRow, Task};
+use not_protocol::ShareInfo;
 use serde::Deserialize;
+use tokio::sync::broadcast;
 
 use crate::AppState;
 
@@ -38,6 +43,7 @@ pub fn routes() -> Router<AppState> {
         .route("/notes", get(notes_page))
         .route("/n/{note}", get(note_page))
         .route("/s/{token}", get(shared_page))
+        .route("/s/{token}/live", get(shared_live))
         .route("/s/{token}/add", post(shared_add))
         .route("/s/{token}/t/{task}/toggle", post(shared_toggle))
         .route("/style.css", get(stylesheet))
@@ -368,47 +374,72 @@ async fn shared_page(
     let Some(share) = state.share_by_token(&token) else {
         return not_found();
     };
-    let Some(store) = state.replica(true) else {
-        return unavailable();
+    let view = match shared_view(&state, &share, &token, today(&headers)) {
+        Ok(view) => view,
+        Err(SharedError::Gone) => return not_found(),
+        Err(SharedError::Unavailable) => return unavailable(),
+        Err(SharedError::Core(e)) => return core_error(e),
     };
-    let (title, outline) = match (store.lists(), store.outline(&share.list_id)) {
-        (Ok(lists), Ok(outline)) => match lists.into_iter().find(|l| l.id == share.list_id) {
-            Some(list) => (list.title, outline),
-            None => return not_found(), // the list was deleted
-        },
-        (Err(e), _) | (_, Err(e)) => return core_error(e),
-    };
-    let today = today(&headers);
     let here = format!("/s/{}", esc(&token));
-    let mut body = format!(r#"<main><h1>{}</h1>"#, esc(&title));
+    let mut body = format!(r#"<main><h1>{}</h1>"#, esc(&view.title));
     if share.can_edit {
         let _ = write!(
             body,
             r#"<form method="post" action="{here}/add" class="add"><input name="text" placeholder="Add to {}" required><button aria-label="Add">+</button></form>"#,
-            esc(&title)
+            esc(&view.title)
         );
     } else {
         body.push_str(r#"<p class="muted">Shared with you to read.</p>"#);
     }
+    let _ = write!(
+        body,
+        r#"<div id="tasks">{}</div></main><script>{LIVE_SCRIPT}</script>"#,
+        view.tasks
+    );
+    page(&view.title, None, &body).into_response()
+}
+
+/// A shared list's title and task rows: the part of its page that changes, and what `/live`
+/// sends.
+struct SharedView {
+    title: String,
+    tasks: String,
+}
+
+enum SharedError {
+    /// The link was revoked or its list deleted.
+    Gone,
+    Unavailable,
+    Core(not_core::Error),
+}
+
+fn shared_view(
+    state: &AppState,
+    share: &ShareInfo,
+    token: &str,
+    today: Date,
+) -> Result<SharedView, SharedError> {
+    let store = state.replica(true).ok_or(SharedError::Unavailable)?;
+    let lists = store.lists().map_err(SharedError::Core)?;
+    let title = lists
+        .into_iter()
+        .find(|l| l.id == share.list_id)
+        .ok_or(SharedError::Gone)?
+        .title;
+    let outline = store.outline(&share.list_id).map_err(SharedError::Core)?;
+    let here = format!("/s/{}", esc(token));
     let toggle = |t: &Task| format!("{here}/t/{}/toggle", esc(&t.id));
-    body.push_str(&task_rows(
-        today,
-        &outline.open,
-        toggle,
-        &here,
-        None,
-        share.can_edit,
-    ));
+    let mut tasks = task_rows(today, &outline.open, toggle, &here, None, share.can_edit);
     if outline.open.is_empty() {
-        body.push_str(r#"<p class="empty">All done.</p>"#);
+        tasks.push_str(r#"<p class="empty">All done.</p>"#);
     }
     if !outline.completed.is_empty() {
         let _ = write!(
-            body,
+            tasks,
             r#"<details><summary>Done {}</summary>"#,
             outline.completed.iter().filter(|r| r.depth == 0).count()
         );
-        body.push_str(&task_rows(
+        tasks.push_str(&task_rows(
             today,
             &outline.completed,
             toggle,
@@ -416,11 +447,91 @@ async fn shared_page(
             None,
             share.can_edit,
         ));
-        body.push_str("</details>");
+        tasks.push_str("</details>");
     }
-    body.push_str("</main>");
-    page(&title, None, &body).into_response()
+    Ok(SharedView { title, tasks })
 }
+
+/// Live updates for a shared list's page: on connect and after every change to the log, the
+/// list's title and rows as `{"title", "html"}` (only when they changed). Closes with
+/// [`GONE_CLOSE_CODE`] once the link is revoked or the list deleted.
+async fn shared_live(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    UrlPath(token): UrlPath<String>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    if state.share_by_token(&token).is_none() {
+        return not_found();
+    }
+    let offset = utc_offset_min(&headers);
+    upgrade.on_upgrade(move |socket| live_updates(socket, state, token, offset))
+}
+
+/// A private-use close code (4000–4999) the page answers by reloading into "Not here".
+const GONE_CLOSE_CODE: u16 = 4404;
+
+async fn live_updates(mut socket: WebSocket, state: AppState, token: String, offset_min: i64) {
+    let mut pokes = state.pokes.subscribe();
+    let mut last_sent = String::new();
+    loop {
+        // Looked up each time: revoking a link cuts off pages already open.
+        let view = state
+            .share_by_token(&token)
+            .ok_or(SharedError::Gone)
+            .and_then(|share| shared_view(&state, &share, &token, today_at(offset_min)));
+        match view {
+            Ok(view) => {
+                let message = serde_json::json!({ "title": view.title, "html": view.tasks }).to_string();
+                if message != last_sent {
+                    if socket.send(Message::Text(message.clone().into())).await.is_err() {
+                        return;
+                    }
+                    last_sent = message;
+                }
+            }
+            Err(SharedError::Gone) => {
+                let frame = CloseFrame {
+                    code: GONE_CLOSE_CODE,
+                    reason: "gone".into(),
+                };
+                let _ = socket.send(Message::Close(Some(frame))).await;
+                return;
+            }
+            // Passing trouble with the replica: keep the socket, try again at the next change.
+            Err(SharedError::Unavailable) => {}
+            Err(SharedError::Core(e)) => tracing::warn!(error = %e, "live shared list failed"),
+        }
+        // Until the log changes; other frames (pings, stray text) are ignored.
+        loop {
+            tokio::select! {
+                poke = pokes.recv() => match poke {
+                    // Missed pokes only mean several changes at once: render the latest.
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                },
+                incoming = socket.recv() => match incoming {
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => return,
+                    Some(Ok(_)) => {}
+                },
+            }
+        }
+    }
+}
+
+/// Swaps in the rows the server sends over `/live` (the add box is left alone, so typing isn't
+/// lost), and posts ticks and adds in the background instead of reloading. Without it the forms
+/// still work as plain posts.
+const LIVE_SCRIPT: &str = r#"(()=>{const tasks=document.getElementById("tasks"),h1=document.querySelector("main h1");let ws,timer,delay=1e3;
+function connect(){ws=new WebSocket(location.href.replace(/[?#].*$/,"").replace(/^http/,"ws")+"/live");
+ws.onopen=()=>{delay=1e3};
+ws.onmessage=e=>{const m=JSON.parse(e.data),open=tasks.querySelector("details")?.open;tasks.innerHTML=m.html;if(open)tasks.querySelector("details")?.setAttribute("open","");h1.textContent=m.title;document.title=m.title+" · not"};
+ws.onclose=e=>{if(e.code===4404)return location.reload();timer=setTimeout(connect,delay);delay=Math.min(delay*2,3e4)}}
+connect();
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&ws.readyState>1){clearTimeout(timer);delay=1e3;connect()}});
+document.addEventListener("submit",e=>{const f=e.target;e.preventDefault();const live=ws.readyState===1;
+fetch(f.action,{method:"POST",body:new URLSearchParams(new FormData(f)),redirect:"manual"}).then(r=>{if(r.type!=="opaqueredirect"&&!r.ok||!live)location.reload()},()=>location.reload());
+if(f.classList.contains("add"))f.reset();else f.querySelector(".check")?.classList.toggle("on")})})()"#;
 
 async fn shared_add(
     State(state): State<AppState>,
@@ -674,9 +785,17 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 
 /// The visitor's today, from the UTC offset their browser reported (UTC until it has).
 fn today(headers: &HeaderMap) -> Date {
-    let offset_min: i64 = cookie(headers, OFFSET_COOKIE)
+    today_at(utc_offset_min(headers))
+}
+
+/// Minutes behind UTC, as `Date.getTimezoneOffset()` reports them.
+fn utc_offset_min(headers: &HeaderMap) -> i64 {
+    cookie(headers, OFFSET_COOKIE)
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+fn today_at(offset_min: i64) -> Date {
     let now_ms = crate::now_millis() - offset_min * 60_000;
     Date::from_ymd(1970, 1, 1)
         .expect("epoch")
