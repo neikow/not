@@ -1,6 +1,7 @@
 package dev.lysen.not
 
 import dev.lysen.not.core.imageMarkup
+import dev.lysen.not.core.noteChecklist
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -588,10 +589,7 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
     val focus = remember { FocusRequester() }
     val selection = editor.selection
     // The checklist items under the caret or selection, which "Make tasks" would take.
-    val changes by (LocalContext.current.applicationContext as NotApp).changes.collectAsStateWithLifecycle()
-    // Lines linked to tasks, as the store has them (read again on every change).
-    val linkedLines = remember(note.id, saved, changes) { viewModel.linkedLines(note.id) }
-    val checklist = remember(text, selection, linkedLines) { viewModel.checklist(note.id, text, selection.min, selection.max) }
+    val checklist = remember(text, selection) { noteChecklist(text, selection.min.toUInt(), selection.max.toUInt()) }
     val colors = Not.colors
 
     LaunchedEffect(note.id, text) {
@@ -601,9 +599,8 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
             viewModel.setBody(note.id, text)
         }
     }
-    // Edited on another device, or a linked task ticked, renamed or given a subtask: take it unless
-    // there are unsaved local changes.
-    LaunchedEffect(note.updatedAt, changes) {
+    // Edited on another device: take it unless there are unsaved local changes.
+    LaunchedEffect(note.updatedAt) {
         val body = viewModel.body(note.id)
         if (text == saved && body != text) {
             editor.edit { replaceChanged(body) }
@@ -643,7 +640,6 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp, vertical = 8.dp)
                 .focusRequester(focus),
-            linkedLines = linkedLines,
         )
         FormatBar(
             editor,
@@ -656,7 +652,7 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
     if (makingTasks && checklist != null) {
         MakeTasksSheet(checklist, viewModel.taskLists(), onDismiss = { makingTasks = false }) { listId, title ->
             makingTasks = false
-            // The text stays as it is: its lines are linked, and the body was saved with them.
+            // The text stays as it is; the body was saved with the tasks.
             if (viewModel.checklistToTasks(note.id, text, selection.min, selection.max, listId, if (listId == null) title else "", title) != null) {
                 saved = text
             }

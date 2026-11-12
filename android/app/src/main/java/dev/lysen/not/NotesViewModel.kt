@@ -7,7 +7,6 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.lysen.not.core.ChecklistMoved
-import dev.lysen.not.core.NoteChecklist
 import dev.lysen.not.core.Folder
 import dev.lysen.not.core.TaskList
 import dev.lysen.not.core.NoteSummary
@@ -88,15 +87,8 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
     /** The body to open the editor with (notes from earlier versions brought up to date). */
     fun openBody(id: String): String = run { store.openNote(id) } ?: ""
 
-    /** Line indexes of the note's checklist lines linked to tasks. */
-    fun linkedLines(id: String): Set<Int> = run { store.noteLinks(id) }.orEmpty().map { it.line.toInt() }.toSet()
-
-    /** What "Make tasks" would take from the selection: checklist items not linked yet. */
-    fun checklist(id: String, body: String, start: Int, end: Int): NoteChecklist? =
-        run { store.noteChecklist(id, body, start.toUInt(), end.toUInt()) }
-
     fun setBody(id: String, body: String) {
-        run { store.setNoteBody(id, body, today()) }
+        run { store.setNoteBody(id, body) }
     }
 
     /**
@@ -105,7 +97,7 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun close(id: String, pending: String?) {
         try {
-            if (pending != null) store.setNoteBody(id, pending, today())
+            if (pending != null) store.setNoteBody(id, pending)
             if (store.noteBody(id).isBlank()) store.deleteNote(id)
         } catch (_: NotException) {
         }
@@ -162,10 +154,11 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Makes tasks of the checklist items the selection touches in [body] (the editor's text, saved
-     * with it), in [listId] or a new list titled [newList] when null. The lines stay, linked.
+     * with it), in [listId] or a new list titled [newList] when null. The note keeps its lines as
+     * they are; the tasks are a copy.
      */
     fun checklistToTasks(noteId: String, body: String, start: Int, end: Int, listId: String?, newList: String, listTitle: String): ChecklistMoved? {
-        val moved = run { store.checklistToTasks(noteId, body, start.toUInt(), end.toUInt(), listId, newList, today()) } ?: return null
+        val moved = run { store.checklistToTasks(noteId, body, start.toUInt(), end.toUInt(), listId, newList) } ?: return null
         val what = if (moved.count == 1u) "1 task" else "${moved.count} tasks"
         _undoables.trySend(Undoable("$what added to “$listTitle”"))
         return moved
@@ -177,9 +170,7 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
         run {
             val body = "Groceries\n- [ ] Milk\n  - [x] Oat\n- [ ] Eggs\nfor the weekend"
             val note = store.createNote(null, body)
-            val made = store.checklistToTasks(note, body, 0u, body.length.toUInt(), null, "", today())
-            val eggs = store.outline(made.listId).open.first { it.task.title == "Eggs" }.task.id
-            store.addTask(eggs, "Free range")
+            store.checklistToTasks(note, body, 0u, body.length.toUInt(), null, "")
             // The earlier format: a whole list shown as one block line.
             val errands = store.createList("Errands")
             store.addTask(errands, "Post office")

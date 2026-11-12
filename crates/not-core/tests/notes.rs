@@ -3,10 +3,6 @@ mod common;
 use common::Log;
 use not_core::{NoteSort, NoteSummary, Store};
 
-fn day() -> not_core::date::Date {
-    not_core::date::Date::parse("2026-11-12").unwrap()
-}
-
 fn titles(notes: &[NoteSummary]) -> Vec<&str> {
     notes.iter().map(|n| n.title.as_str()).collect()
 }
@@ -55,7 +51,7 @@ fn folders_nest_and_delete_with_their_notes() {
     store.delete_note_or_folder(&home).unwrap();
     assert_eq!(store.folders().unwrap().len(), 1);
     assert!(store.notes(None).unwrap().is_empty());
-    assert!(store.set_note_body(&soup, "x", day()).is_err());
+    assert!(store.set_note_body(&soup, "x").is_err());
 
     store.undo().unwrap();
     assert_eq!(titles(&store.notes(None).unwrap()), ["Soup"]);
@@ -71,8 +67,8 @@ fn concurrent_body_edits_merge() {
     log.sync(&mac);
     log.sync(&phone);
 
-    mac.set_note_body(&id, "Groceries\nmilk\neggs", day()).unwrap();
-    phone.set_note_body(&id, "Shopping\nmilk", day()).unwrap();
+    mac.set_note_body(&id, "Groceries\nmilk\neggs").unwrap();
+    phone.set_note_body(&id, "Shopping\nmilk").unwrap();
     log.sync(&mac);
     log.sync(&phone);
     log.sync(&mac);
@@ -113,7 +109,7 @@ fn dragging_switches_a_folder_to_manual_order() {
     assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["c", "a", "b"]);
 
     // Editing no longer reshuffles; new notes go on top.
-    store.set_note_body(&ids[1], "b edited", day()).unwrap();
+    store.set_note_body(&ids[1], "b edited").unwrap();
     store.create_note(Some(&work), "d").unwrap();
     assert_eq!(
         titles(&store.notes(Some(&work)).unwrap()),
@@ -200,7 +196,7 @@ fn folders_and_all_notes_sort_by_edit_creation_or_title() {
     store.create_note(Some(&work), "cherry").unwrap();
     pause();
     store
-        .set_note_body(&banana, "banana\nedited last", day())
+        .set_note_body(&banana, "banana\nedited last")
         .unwrap();
 
     assert_eq!(store.folders().unwrap()[0].sort, NoteSort::Edited);

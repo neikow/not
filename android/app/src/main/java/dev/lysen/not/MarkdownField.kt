@@ -77,18 +77,13 @@ import dev.lysen.not.ui.NotColors
  * A plain-text markdown editor that styles the markdown in place, using the core's spans so notes
  * look the same as on the Mac. The first line reads as the title; checklist boxes and bullets are
  * drawn over their (hidden) markup, and tapping a box ticks it. Return continues lists. Image lines
- * are drawn over their hidden markup too, and edited only as whole lines. Boxes on [linkedLines]
- * (line indexes of checklist lines linked to tasks) are drawn in the accent.
+ * are drawn over their hidden markup too, and edited only as whole lines.
  */
 @Composable
-fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier, linkedLines: Set<Int> = emptySet()) {
+fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
     val colors = Not.colors
     val text = state.text.toString()
     val marks = remember(text) { listMarks(markdownSpans(text)) }
-    // Line index of each box, to tell linked ones.
-    val boxLines = remember(text, marks) {
-        marks.filterIsInstance<ListMark.Box>().associateWith { box -> text.substring(0, box.at).count { it == '\n' } }
-    }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val currentMarks by rememberUpdatedState(marks)
 
@@ -191,7 +186,7 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier, linkedLi
                 for (image in images) drawImageLine(text, image, bitmaps[image.id], colors)
                 for (mark in marks) {
                     when (mark) {
-                        is ListMark.Box -> drawBox(text.boxRect(mark), mark.checked, colors, linked = boxLines[mark] in linkedLines)
+                        is ListMark.Box -> drawBox(text.boxRect(mark), mark.checked, colors)
                         is ListMark.Dot -> {
                             // Where a box's centre would be: half its 3-character markup in.
                             val r = text.getBoundingBox(mark.at)
@@ -264,8 +259,7 @@ private fun TextLayoutResult.boxRect(box: ListMark.Box): Rect {
     return Rect(markup.center - Offset(side / 2, side / 2), Size(side, side))
 }
 
-/** A box; [linked] (its line is linked to a task) draws an open one in the accent. */
-private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: NotColors, linked: Boolean = false) {
+private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: NotColors) {
     val corner = CornerRadius(rect.width * 0.25f)
     if (checked) {
         drawRoundRect(colors.accent, rect.topLeft, rect.size, corner)
@@ -279,7 +273,7 @@ private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: NotColors, l
     } else {
         val stroke = 2.dp.toPx()
         drawRoundRect(
-            if (linked) colors.accentInk else colors.inkFaint,
+            colors.inkFaint,
             rect.topLeft + Offset(stroke / 2, stroke / 2),
             Size(rect.width - stroke, rect.height - stroke),
             corner,

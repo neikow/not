@@ -88,17 +88,14 @@ class NoteEditingTest {
         assertEquals("unchanged", indent("- [ ] |b", deeper = false))
     }
 
-    @Test fun tickedItemsSink() {
-        assertEquals("- [ ] b\n- [ ] c\n- [x] a|", tick("- [ ] a|\n- [ ] b\n- [ ] c", line = 0))
-        assertEquals("- [ ] b\n- [x] c\n- [x] a\n  - [ ] a1", tick("- [ ] a\n  - [ ] a1\n- [ ] b\n- [x] c", line = 0).replace("|", ""))
+    @Test fun tickingFlipsTheBoxInPlace() {
+        assertEquals("- [x] a|\n- [ ] b\n- [ ] c", tick("- [ ] a|\n- [ ] b\n- [ ] c", line = 0))
+        assertEquals("- [ ] a\n  - [ ] a1\n- [ ] b\n- [x] c", tick("- [x] a\n  - [ ] a1\n- [ ] b\n- [x] c", line = 0).replace("|", ""))
+        assertEquals("- [ ] a\n- [x] b\n- [ ] c|", tick("- [ ] a\n- [x] b\n- [x] c|", line = 2))
+        assertEquals("  - [x] nested", tick("  - [ ] nested", line = 0).replace("|", ""))
     }
 
-    @Test fun untickedItemsRise() {
-        assertEquals("- [ ] a\n- [ ] c|\n- [x] b", tick("- [ ] a\n- [x] b\n- [x] c|", line = 2))
-        assertEquals("- [ ] b\n- [x] a", tick("- [x] a\n- [x] b", line = 1).replace("|", ""))
-    }
-
-    @Test fun tickingStaysInsideItsChecklist() {
-        assertEquals("title\n- [ ] b\n- [x] a\n\n- [ ] z", tick("title\n- [ ] a\n- [ ] b\n\n- [ ] z", line = 1).replace("|", ""))
+    @Test fun tickingNeedsABox() {
+        assertEquals("unchanged", tick("- plain [ ]", line = 0))
     }
 }

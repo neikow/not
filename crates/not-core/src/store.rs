@@ -191,7 +191,11 @@ impl Store {
         storage::init(&db)?;
 
         let doc = LoroDoc::new();
-        crate::note_links::configure(&doc);
+        // Notes saved by a version that linked checklist lines to tasks carry `task` text marks;
+        // they mean nothing now, but Loro needs to know how text typed next to one behaves.
+        let mut styles = loro::StyleConfigMap::new();
+        styles.insert("task".into(), loro::StyleConfig { expand: loro::ExpandType::None });
+        doc.config_text_style(styles);
         for blob in storage::load_doc(&db, WORKSPACE)? {
             doc.import(&blob)?;
         }
@@ -792,9 +796,6 @@ impl Store {
     }
 
     /// Runs `mutate` as one Loro commit (one undo step), then persists and projects it.
-    ///
-    /// Notes with checklist lines linked to tasks catch up with the change in the same commit (see
-    /// [`crate::note_links`]).
     pub(crate) fn transact<T>(&self, mutate: impl FnOnce() -> Result<T>) -> Result<T> {
         self.transact_with_origin("", mutate)
     }
@@ -808,11 +809,6 @@ impl Store {
         let (out, changed) = {
             let mut inner = self.lock();
             let out = mutate();
-            if out.is_ok()
-                && let Err(e) = self.sync_note_links()
-            {
-                debug_assert!(false, "linked notes didn't catch up: {e}");
-            }
             // Commit and flush even on error so the read model never lags behind applied ops.
             if origin.is_empty() {
                 self.doc.commit();

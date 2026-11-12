@@ -172,11 +172,10 @@ final class AppModel {
             ] {
                 if let id = run({ try store.createNote(folderId: nil, body: body) }) { _ = id }
             }
-            // A checklist made into tasks, with a subtask added in the list afterwards (it comes into
-            // the note as a linked line).
+            // A checklist made into tasks.
             if let note = run({ try store.createNote(folderId: nil, body: "Errands\nBefore leaving:\n- [ ] Post office\n- [x] Pharmacy\nThat's all") }) {
                 let body = noteBody(note)
-                if let moved = run({ try store.checklistToTasks(noteId: note, body: body, start: 0, end: UInt32((body as NSString).length), listId: nil, newList: "", today: today) }),
+                if let moved = run({ try store.checklistToTasks(noteId: note, body: body, start: 0, end: UInt32((body as NSString).length), listId: nil, newList: "") }),
                    let first = run({ try store.outline(listId: moved.listId) })?.open.first {
                     _ = run { try store.addTask(parentId: first.task.id, title: "Stamps") }
                 }
@@ -620,9 +619,8 @@ final class AppModel {
         run { try store.noteBody(id: id) } ?? ""
     }
 
-    /// Saves a note's body; edits of lines linked to tasks tick, reopen or rename them.
     func setNoteBody(_ id: String, _ body: String) {
-        run { try store.setNoteBody(id: id, body: body, today: today) }
+        run { try store.setNoteBody(id: id, body: body) }
     }
 
     /// The body to open the editor with (notes from earlier versions brought up to date).
@@ -630,15 +628,7 @@ final class AppModel {
         run { try store.openNote(id: id) } ?? ""
     }
 
-    /// Line indexes of the note's checklist lines linked to tasks.
-    func noteLinkedLines(_ id: String) -> Set<Int> {
-        Set((run { try store.noteLinks(id: id) } ?? []).map { Int($0.line) })
-    }
 
-    /// What "Make tasks" would take from `start..<end` (UTF-16) in `body`: items not linked yet.
-    func noteChecklist(_ id: String, _ body: String, start: Int, end: Int) -> NoteChecklist? {
-        run { try store.noteChecklist(noteId: id, body: body, start: UInt32(start), end: UInt32(end)) } ?? nil
-    }
 
     /// Keeps image data (downscaled first) for notes; its id, for `imageMarkup`.
     func addImage(_ data: Data) -> String? {
@@ -659,10 +649,11 @@ final class AppModel {
     }
 
     /// Makes tasks of the checklist items `start..<end` (UTF-16) touches in `body` (saved with
-    /// them), in a list or a new one titled `newList` when `listID` is nil. The lines stay, linked.
+    /// them), in a list or a new one titled `newList` when `listID` is nil. The lines stay as they
+    /// are; the tasks are a copy.
     func checklistToTasks(_ noteID: String, _ body: String, start: Int, end: Int, listID: String?, newList: String) -> Bool {
         run {
-            try store.checklistToTasks(noteId: noteID, body: body, start: UInt32(start), end: UInt32(end), listId: listID, newList: newList, today: today)
+            try store.checklistToTasks(noteId: noteID, body: body, start: UInt32(start), end: UInt32(end), listId: listID, newList: newList)
         } != nil
     }
 

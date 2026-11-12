@@ -1,6 +1,6 @@
 # 0012 — Checklist lines linked to tasks with text marks
 
-Status: accepted (2026-11-12); supersedes 0011
+Status: superseded by 0013 (2026-11-12); superseded 0011
 
 ## Context
 A checklist made into tasks should stay ordinary checklist lines in the note (tick, type, indent

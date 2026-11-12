@@ -123,68 +123,9 @@ internal fun indentLines(text: String, selStart: Int, selEnd: Int, deeper: Boole
     return Change(first, last, out.toString(), map(selStart), map(selEnd))
 }
 
-/**
- * Ticks or unticks the box whose `[` is at [boxAt]. A ticked item (with its nested lines) sinks to
- * the end of its checklist; an unticked one rises to just after the last open item.
- */
+/** Ticks or unticks the box whose `[` is at [boxAt]; the item stays where it is. */
 internal fun toggleBox(text: String, boxAt: Int, selStart: Int, selEnd: Int): Change? {
-    val lines = text.split('\n')
-    val starts = IntArray(lines.size).also { s -> for (i in 1 until lines.size) s[i] = s[i - 1] + lines[i - 1].length + 1 }
-    val at = starts.indexOfLast { it <= boxAt }
-    val p = listPrefix(text, starts[at])?.takeIf { it.isBox && boxAt == it.start + it.indent.length + 2 } ?: return null
-    val depth = p.indent.length
-    fun depthOf(i: Int) = lines[i].takeWhile { it == ' ' || it == '\t' }.length
-    fun isSibling(i: Int) = depthOf(i) == depth && listPrefix(text, starts[i])?.isBox == true
-    fun isChild(i: Int) = lines[i].isNotBlank() && depthOf(i) > depth
-    fun itemEnd(i: Int): Int {
-        var j = i + 1
-        while (j < lines.size && isChild(j)) j++
-        return j
-    }
-
-    // The run of sibling boxes around this one, each with its nested lines.
-    var first = at
-    var k = at - 1
-    while (k >= 0) {
-        when {
-            isChild(k) -> k--
-            isSibling(k) -> first = k.also { k-- }
-            else -> break
-        }
-    }
-    val items = mutableListOf<IntRange>()
-    var i = first
-    while (i < lines.size && (i == first || isSibling(i))) {
-        val end = itemEnd(i)
-        items += i until end
-        i = end
-    }
-    val ticked = !p.checked
-    fun checked(item: IntRange) = if (item.first == at) ticked else listPrefix(text, starts[item.first])!!.checked
-
-    val moved = items.first { it.first == at }
-    val rest = items - setOf(moved)
-    val order = rest.toMutableList().apply {
-        add(if (ticked) size else indexOfLast { !checked(it) } + 1, moved)
-    }
-
-    val groupStart = starts[first]
-    val groupEnd = starts[items.last().last] + lines[items.last().last].length
-    val out = StringBuilder()
-    val newStarts = HashMap<Int, Int>()
-    for ((n, item) in order.withIndex()) {
-        if (n > 0) out.append('\n')
-        newStarts[item.first] = groupStart + out.length
-        for (line in item) {
-            if (line != item.first) out.append('\n')
-            out.append(if (line == at) lines[line].replaceRange(depth + 3, depth + 4, if (ticked) "x" else " ") else lines[line])
-        }
-    }
-    fun map(x: Int): Int {
-        if (x < groupStart || x > groupEnd) return x
-        // A position belongs to the item whose text (up to its last line's end) holds it.
-        val item = items.first { x <= starts[it.last] + lines[it.last].length }
-        return newStarts.getValue(item.first) + (x - starts[item.first])
-    }
-    return Change(groupStart, groupEnd, out.toString(), map(selStart), map(selEnd))
+    val lineStart = text.lastIndexOf('\n', boxAt - 1) + 1
+    val p = listPrefix(text, lineStart)?.takeIf { it.isBox && boxAt == it.start + it.indent.length + 2 } ?: return null
+    return Change(boxAt + 1, boxAt + 2, if (p.checked) " " else "x", selStart, selEnd)
 }

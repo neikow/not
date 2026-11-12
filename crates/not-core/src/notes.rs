@@ -152,12 +152,10 @@ impl Store {
         })
     }
 
-    /// Replaces the body; the text CRDT merges it with concurrent edits from other devices. Lines
-    /// linked to tasks whose box or title changed tick, reopen or rename their task in the same
-    /// undo step (`today` is the user's date, for repeating tasks).
-    pub fn set_note_body(&self, id: &str, body: &str, today: crate::date::Date) -> Result<()> {
+    /// Replaces the body; the text CRDT merges it with concurrent edits from other devices.
+    pub fn set_note_body(&self, id: &str, body: &str) -> Result<()> {
         let id = self.notes_node(id, KIND_NOTE)?;
-        self.transact(|| self.write_note_body(id, body, today).map(|_| ()))
+        self.transact(|| self.write_note_body(id, body).map(|_| ()))
     }
 
     pub fn set_note_pinned(&self, id: &str, pinned: bool) -> Result<()> {

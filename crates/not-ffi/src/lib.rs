@@ -157,14 +157,6 @@ pub fn markdown_images(text: String) -> Vec<NoteImage> {
         .collect()
 }
 
-/// A note line linked to a task: see `Store::note_links`.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct NoteLink {
-    /// Index of the line in the body (split on `\n`).
-    pub line: u32,
-    pub task_id: String,
-}
-
 /// The line to insert for an image added with `add_image`.
 #[uniffi::export]
 pub fn image_markup(id: String) -> String {
@@ -182,7 +174,18 @@ pub struct NoteChecklist {
     pub suggested_title: String,
 }
 
-/// What making tasks of a checklist did: the lines stay, linked to `count` new tasks in `list_id`.
+/// The checklist items (`- [ ] …`) on the lines the selection `start..end` (UTF-16) touches in
+/// `body`; `None` when there are none, so "Make tasks" can hide.
+#[uniffi::export]
+pub fn note_checklist(body: String, start: u32, end: u32) -> Option<NoteChecklist> {
+    not_core::checklist(&body, start, end).map(|c| NoteChecklist {
+        count: c.items.len() as u32,
+        titles: c.items.into_iter().map(|i| i.title).collect(),
+        suggested_title: c.suggested_title,
+    })
+}
+
+/// What making tasks of a checklist did: `count` new tasks in `list_id`; the note is unchanged.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ChecklistMoved {
     pub list_id: String,
@@ -890,30 +893,9 @@ impl NotStore {
         Ok(self.store.image(&id)?)
     }
 
-    /// What "Make tasks" would take from the selection `start..end` (UTF-16) in `body` (what the
-    /// editor shows): checklist items not already linked to tasks. `None` hides "Make tasks".
-    pub fn note_checklist(
-        &self,
-        note_id: String,
-        body: String,
-        start: u32,
-        end: u32,
-    ) -> Result<Option<NoteChecklist>, NotError> {
-        Ok(self
-            .store
-            .note_checklist(&note_id, &body, start, end)?
-            .map(|c| NoteChecklist {
-                count: c.items.len() as u32,
-                titles: c.items.into_iter().map(|i| i.title).collect(),
-                suggested_title: c.suggested_title,
-            }))
-    }
-
     /// Makes tasks of the checklist items the selection touches in `body` (what the editor shows,
     /// saved first), in `list_id` or a new list titled `new_list` (empty: the suggested title)
-    /// when `list_id` is `None`. The lines stay, each linked to its task; one undo step. `today`
-    /// is the user's date (`YYYY-MM-DD`).
-    #[allow(clippy::too_many_arguments)]
+    /// when `list_id` is `None`. The note's lines stay as they are; one undo step.
     pub fn checklist_to_tasks(
         &self,
         note_id: String,
@@ -922,45 +904,24 @@ impl NotStore {
         end: u32,
         list_id: Option<String>,
         new_list: String,
-        today: String,
     ) -> Result<ChecklistMoved, NotError> {
-        let m = self.store.checklist_to_tasks(
-            &note_id,
-            &body,
-            start,
-            end,
-            list_id.as_deref(),
-            &new_list,
-            date(&today)?,
-        )?;
+        let m = self
+            .store
+            .checklist_to_tasks(&note_id, &body, start, end, list_id.as_deref(), &new_list)?;
         Ok(ChecklistMoved {
             list_id: m.list_id,
             count: m.count,
         })
     }
 
-    /// Replaces the markdown body; merges with concurrent edits from other devices. Edits of lines
-    /// linked to tasks tick, reopen or rename them; `today` is the user's date (`YYYY-MM-DD`).
-    pub fn set_note_body(&self, id: String, body: String, today: String) -> Result<(), NotError> {
-        Ok(self.store.set_note_body(&id, &body, date(&today)?)?)
+    /// Replaces the markdown body; merges with concurrent edits from other devices.
+    pub fn set_note_body(&self, id: String, body: String) -> Result<(), NotError> {
+        Ok(self.store.set_note_body(&id, &body)?)
     }
 
     /// The body for the editor to open (notes from earlier versions brought up to date first).
     pub fn open_note(&self, id: String) -> Result<String, NotError> {
         Ok(self.store.open_note(&id)?)
-    }
-
-    /// The note's lines linked to tasks.
-    pub fn note_links(&self, id: String) -> Result<Vec<NoteLink>, NotError> {
-        Ok(self
-            .store
-            .note_links(&id)?
-            .into_iter()
-            .map(|l| NoteLink {
-                line: l.line,
-                task_id: l.task_id,
-            })
-            .collect())
     }
 
     pub fn set_note_pinned(&self, id: String, pinned: bool) -> Result<(), NotError> {

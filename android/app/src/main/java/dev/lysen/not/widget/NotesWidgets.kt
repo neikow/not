@@ -200,7 +200,7 @@ class ToggleNoteCheckbox : ActionCallback {
             val match = CHECK_ITEM.find(lines.getOrNull(line) ?: return) ?: return
             val mark = if (match.groupValues[2] == " ") "x" else " "
             lines[line] = lines[line].replaceRange(match.groups[2]!!.range, mark)
-            store.setNoteBody(id, lines.joinToString("\n"), dev.lysen.not.today())
+            store.setNoteBody(id, lines.joinToString("\n"))
         } catch (_: NotException) {
             return
         }

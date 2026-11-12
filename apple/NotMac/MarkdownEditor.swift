@@ -21,10 +21,6 @@ struct MarkdownEditor: NSViewRepresentable {
     var imageToInsert: (id: String, request: Int)?
     /// Bumped when images arrive from the server, so placeholders redraw.
     var imageVersion = 0
-    /// Line indexes of checklist lines linked to tasks: their boxes are drawn in the accent.
-    var linkedLines: Set<Int> = []
-    /// What "Make tasks" would take from a UTF-16 range of the text (items not linked yet).
-    var checklist: ((_ text: String, _ range: NSRange) -> NoteChecklist?)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -69,7 +65,6 @@ struct MarkdownEditor: NSViewRepresentable {
             editor.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
         }
         editor.onAddImage = onAddImage
-        if editor.linkedLines != linkedLines { editor.linkedLines = linkedLines }
         if let insert = imageToInsert, context.coordinator.imageRequest != insert.request {
             context.coordinator.imageRequest = insert.request
             editor.insertImageLine(imageMarkup(id: insert.id))
@@ -137,12 +132,15 @@ struct MarkdownEditor: NSViewRepresentable {
         }
 
         /// "Make N Tasks In ▸ New List “Groceries” / Inbox / lists…" for the checklist items the
-        /// selection touches and that aren't linked yet; nil when there are none. The lines stay,
-        /// linked to their tasks.
+        /// selection touches; nil when there are none. The lines stay as they are.
         func makeTasksItem(for textView: NSTextView) -> NSMenuItem? {
             guard let make = parent.onMakeTasks else { return nil }
             let range = textView.selectedRange()
-            guard let checklist = parent.checklist?(textView.string, range) else { return nil }
+            guard let checklist = noteChecklist(
+                body: textView.string,
+                start: UInt32(range.location),
+                end: UInt32(range.location + range.length)
+            ) else { return nil }
             let items = checklist.count == 1 ? "1 Task" : "\(checklist.count) Tasks"
             let item = NSMenuItem(title: "Make \(items) In", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
@@ -171,10 +169,6 @@ struct MarkdownEditor: NSViewRepresentable {
 final class MarkdownTextView: NSTextView {
     /// Image lines (whole line, without its newline) the editor draws over; set by `MarkdownStyler`.
     var imageLines: [(range: NSRange, id: String)] = [] {
-        didSet { needsDisplay = true }
-    }
-    /// Line indexes of checklist lines linked to tasks.
-    var linkedLines: Set<Int> = [] {
         didSet { needsDisplay = true }
     }
     /// Lines edited only whole: images.
@@ -280,14 +274,12 @@ final class MarkdownTextView: NSTextView {
             }
             NSGraphicsContext.restoreGraphicsState()
         }
-        let ns = string as NSString
         for mark in marks {
             switch mark {
             case let .box(at, checked):
                 let box = boxRect(at: at)
                 guard box.intersects(rect) else { continue }
-                let line = ns.substring(to: min(at, ns.length)).reduce(0) { $1 == "\n" ? $0 + 1 : $0 }
-                drawCheckbox(box, checked: checked, linked: linkedLines.contains(line))
+                drawCheckbox(box, checked: checked)
             case let .dot(at):
                 let center = markCenter(at: at)
                 NSColor.controlAccentColor.setFill()
@@ -296,8 +288,7 @@ final class MarkdownTextView: NSTextView {
         }
     }
 
-    /// A box; `linked` (its line is linked to a task) draws an open one in the accent.
-    private func drawCheckbox(_ box: NSRect, checked: Bool, linked: Bool = false) {
+    private func drawCheckbox(_ box: NSRect, checked: Bool) {
         let path = NSBezierPath(roundedRect: box, xRadius: 3.5, yRadius: 3.5)
         if checked {
             NSColor.controlAccentColor.setFill()
@@ -314,7 +305,7 @@ final class MarkdownTextView: NSTextView {
         } else {
             let inset = NSBezierPath(roundedRect: box.insetBy(dx: 0.75, dy: 0.75), xRadius: 3, yRadius: 3)
             inset.lineWidth = 1.5
-            (linked ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor).setStroke()
+            NSColor.tertiaryLabelColor.setStroke()
             inset.stroke()
         }
     }

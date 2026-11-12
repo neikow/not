@@ -94,7 +94,7 @@ class MainActivity : ComponentActivity() {
             requestedTab.value = Tab.Workouts
         }
         // `--ez seedNotes true`: a checklist made into tasks, and a note in the earlier task-block
-        // format, for trying linked lines out; on a device without notes only.
+        // format; on a device without notes only.
         if (intent.getBooleanExtra("seedNotes", false)) {
             notes.seedDemo()
             requestedTab.value = Tab.Notes
