@@ -100,7 +100,7 @@ import kotlinx.coroutines.delay
 
 /** Notes of a folder (or all), with search; opening a note shows the editor. */
 @Composable
-fun NotesScreen(viewModel: NotesViewModel) {
+fun NotesScreen(viewModel: NotesViewModel, tasks: TasksViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val toasts = remember { ToastState() }
 
@@ -125,7 +125,7 @@ fun NotesScreen(viewModel: NotesViewModel) {
     Box(Modifier.fillMaxSize()) {
         if (open != null) {
             BackHandler { viewModel.open(null) }
-            NoteEditor(open, state, viewModel)
+            NoteEditor(open, state, viewModel, tasks)
         } else {
             NoteList(state, viewModel, showsFolders, onShowFolders = { showsFolders = it })
         }
@@ -569,7 +569,7 @@ private fun MoveSheet(note: NoteSummary, folders: List<Folder>, viewModel: Notes
 // ---- editor ----
 
 @Composable
-private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesViewModel) {
+private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesViewModel, tasks: TasksViewModel) {
     val editor = remember(note.id) { TextFieldState(viewModel.body(note.id)) }
     val text = editor.text.toString()
     // What the store had when last loaded or saved, to tell local edits from synced ones.
@@ -577,6 +577,23 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
     var actions by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf(false) }
     var makingTasks by remember { mutableStateOf(false) }
+    // A task block's "Add task": the block's line, while its prompt is open.
+    var addingTo by remember { mutableStateOf<String?>(null) }
+    // A task opened from a block, shown in the task sheet over the note.
+    var openedTask by remember { mutableStateOf(false) }
+    val tasksState by tasks.state.collectAsStateWithLifecycle()
+    val blockActions = remember(viewModel, tasks) {
+        TaskBlockActions(
+            view = viewModel::taskBlock,
+            toggle = tasks::toggle,
+            open = { task ->
+                tasks.select(task.listId)
+                tasks.openTask(task.id)
+                openedTask = true
+            },
+            add = { addingTo = it },
+        )
+    }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // The system photo picker: no storage permission, and it can't see more than what's picked.
@@ -644,6 +661,7 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp, vertical = 8.dp)
                 .focusRequester(focus),
+            taskBlocks = blockActions,
         )
         FormatBar(
             editor,
@@ -652,6 +670,34 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
             onAddImage = { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onMore = { actions = true },
         )
+    }
+    addingTo?.let { markup ->
+        PromptDialog(
+            title = "New task",
+            confirm = "Add",
+            placeholder = "What needs doing?",
+            onConfirm = { title ->
+                addingTo = null
+                val added = viewModel.addTaskFromBlock(markup, title) ?: return@PromptDialog
+                // A block of picked tasks takes the new one in: its line changes.
+                if (added.markup != markup) editor.edit {
+                    val at = asCharSequence().indexOf(markup)
+                    if (at >= 0) replace(at, at + markup.length, added.markup)
+                }
+            },
+            onDismiss = { addingTo = null },
+        )
+    }
+    if (openedTask) {
+        val task = tasksState.openTask
+        if (task == null) {
+            LaunchedEffect(Unit) { openedTask = false }
+        } else {
+            TaskDetailSheet(task, tasksState, tasks, onDismiss = {
+                tasks.openTask(null)
+                openedTask = false
+            })
+        }
     }
     if (makingTasks && checklist != null) {
         MakeTasksSheet(checklist, viewModel.taskLists(), onDismiss = { makingTasks = false }) { listId, title ->

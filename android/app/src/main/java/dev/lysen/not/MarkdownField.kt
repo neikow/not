@@ -1,6 +1,7 @@
 package dev.lysen.not
 
-import dev.lysen.not.core.markdownTaskLinks
+import dev.lysen.not.core.markdownTaskBlocks
+import androidx.compose.ui.text.rememberTextMeasurer
 
 import androidx.compose.ui.layout.onSizeChanged
 
@@ -78,10 +79,11 @@ import dev.lysen.not.ui.NotColors
 /**
  * A plain-text markdown editor that styles the markdown in place, using the core's spans so notes
  * look the same as on the Mac. The first line reads as the title; checklist boxes and bullets are
- * drawn over their (hidden) markup, and tapping a box ticks it. Return continues lists.
+ * drawn over their (hidden) markup, and tapping a box ticks it. Return continues lists. Image and
+ * task block lines are drawn over their hidden markup too, and edited only as whole lines.
  */
 @Composable
-fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
+fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier, taskBlocks: TaskBlockActions? = null) {
     val colors = Not.colors
     val text = state.text.toString()
     val marks = remember(text) { listMarks(markdownSpans(text)) }
@@ -106,7 +108,17 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
             image.id to (px + IMAGE_GAP.toPx() * 2).toSp()
         }
     }
-    val styling = remember(colors, heights) { MarkdownStyling(colors, heights) }
+    // Task blocks: drawn from the tasks as they are now (read again on every change).
+    val blocks = remember(text) { markdownTaskBlocks(text) }
+    val blockViews = remember(text, changes) { blocks.associate { it.markup to taskBlocks?.view?.invoke(it.markup) } }
+    val gapPx = with(density) { IMAGE_GAP.toPx() }
+    val blockHeights = with(density) { blockViews.mapValues { (_, view) -> taskBlockHeight(view, gapPx).toSp() } }
+    val currentBlocks by rememberUpdatedState(blocks)
+    val currentBlockViews by rememberUpdatedState(blockViews)
+    val currentActions by rememberUpdatedState(taskBlocks)
+    val measurer = rememberTextMeasurer()
+    val type = Not.type
+    val styling = remember(colors, heights, blockHeights) { MarkdownStyling(colors, heights, blockHeights) }
 
     // The caret never rests inside a box's or bullet's hidden markup.
     // Checked against the text as it is now (an edit may have just moved the markup), also when
@@ -114,13 +126,9 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
     LaunchedEffect(state) {
         snapshotFlow { state.text.toString() to state.selection }.collect { (now, selection) ->
             if (!selection.collapsed) return@collect
-            // Nothing is typed into an image's hidden markup: the caret goes after it.
-            val image = markdownImages(now).firstOrNull { selection.start >= it.start.toInt() && selection.start < it.end.toInt() }
-            if (image != null) return@collect state.edit { this.selection = TextRange(image.end.toInt()) }
-            // Nor into a task link: the caret goes before it, so typing at a linked line's end
-            // goes into the title.
-            val link = markdownTaskLinks(now).firstOrNull { selection.start > it.start.toInt() && selection.start <= it.end.toInt() }
-            if (link != null) return@collect state.edit { this.selection = TextRange(link.start.toInt()) }
+            // Nothing is typed into an image's or task block's hidden markup: the caret goes after it.
+            val line = atomicLines(now).firstOrNull { selection.start >= it.first && selection.start < it.last }
+            if (line != null) return@collect state.edit { this.selection = TextRange(line.last) }
             snappedCaret(state.text, selection.start)?.let { state.edit { this.selection = TextRange(it) } }
         }
     }
@@ -172,11 +180,31 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
         modifier = modifier
             .onSizeChanged { width = it.width }
             .then(heldReturn)
-            // Taps on a box tick it instead of moving the caret there.
+            // Taps on a box tick it instead of moving the caret there; taps on a task block go to
+            // its rows.
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(pass = PointerEventPass.Initial)
                     val text = layout ?: return@awaitEachGesture
+                    val hit = currentBlocks.firstNotNullOfOrNull { block ->
+                        text.taskBlockRect(block, size.width.toFloat(), IMAGE_GAP.toPx())
+                            ?.takeIf { it.contains(down.position) }
+                            ?.let { block to it }
+                    }
+                    if (hit != null) {
+                        val (block, rect) = hit
+                        down.consume()
+                        val up = waitForUpOrCancellation(PointerEventPass.Initial) ?: return@awaitEachGesture
+                        up.consume()
+                        val actions = currentActions ?: return@awaitEachGesture
+                        when (val tap = taskBlockTap(currentBlockViews[block.markup], rect, up.position)) {
+                            is BlockTap.Toggle -> actions.toggle(tap.task)
+                            is BlockTap.Open -> actions.open(tap.task)
+                            BlockTap.Add -> actions.add(block.markup)
+                            null -> {}
+                        }
+                        return@awaitEachGesture
+                    }
                     val box = currentMarks.filterIsInstance<ListMark.Box>()
                         .firstOrNull { text.boxRect(it).inflate(12.dp.toPx()).contains(down.position) }
                         ?: return@awaitEachGesture
@@ -189,6 +217,10 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
             .drawBehind {
                 val text = layout ?: return@drawBehind
                 for (image in images) drawImageLine(text, image, bitmaps[image.id], colors)
+                for (block in blocks) {
+                    val rect = text.taskBlockRect(block, size.width, gapPx) ?: continue
+                    drawTaskBlock(blockViews[block.markup], rect, measurer, type, colors) { r, checked -> drawBox(r, checked, colors) }
+                }
                 for (mark in marks) {
                     when (mark) {
                         is ListMark.Box -> drawBox(text.boxRect(mark), mark.checked, colors)
@@ -299,19 +331,18 @@ private const val RETURN_WAIT_MS = 60L
  * goes in there instead, before what was typed since, and the caret stays after that.
  */
 private fun TextFieldState.typeNewline(at: Int? = null) = edit {
-    val from = at ?: selection.min
-    // Before a task link, the newline goes after it instead (nothing selected is replaced then).
-    val start = pastTaskLink(asCharSequence().toString(), from)
+    val start = at ?: selection.min
     val ahead = if (at == null) 0 else selection.min - at
-    replace(start, if (at == null && start == from) selection.max else start, "\n")
+    replace(start, if (at == null) selection.max else start, "\n")
     val change = onNewline(asCharSequence().toString(), start + 1)
     if (change != null) replace(change.start, change.end, change.text)
     selection = TextRange((change?.selStart ?: (start + 1)) + ahead)
 }
 
-/** Where a newline typed at [at] goes: after a task link that starts there, so the link stays on its line. */
-private fun pastTaskLink(text: String, at: Int): Int =
-    markdownTaskLinks(text).firstOrNull { at >= it.start.toInt() && at < it.end.toInt() }?.end?.toInt() ?: at
+/** Image and task block lines (start until end, as an IntRange-like pair): edited only whole. */
+private fun atomicLines(text: String): List<IntRange> =
+    markdownImages(text).map { it.start.toInt()..it.end.toInt() } +
+        markdownTaskBlocks(text).map { it.start.toInt()..it.end.toInt() }
 
 private fun TextFieldBuffer.apply(change: Change?) {
     change ?: return
@@ -320,23 +351,24 @@ private fun TextFieldBuffer.apply(change: Change?) {
 }
 
 /** Styles the markdown in place; the text itself is left alone, so offsets map one to one. */
-private class MarkdownStyling(private val colors: NotColors, private val imageHeights: Map<String, TextUnit>) : OutputTransformation {
+private class MarkdownStyling(
+    private val colors: NotColors,
+    private val imageHeights: Map<String, TextUnit>,
+    private val blockHeights: Map<String, TextUnit>,
+) : OutputTransformation {
     override fun TextFieldBuffer.transformOutput() {
         val raw = asCharSequence().toString()
         val spans = markdownSpans(raw)
         val styled = this
-        for (link in markdownTaskLinks(raw)) {
-            // Squeezed to nothing, so the caret at the line's end sits right after the title.
-            styled.addStyle(SpanStyle(color = Color.Transparent, fontSize = 1.sp, letterSpacing = (-0.5).sp), link.start.toInt(), link.end.toInt())
-        }
-        for (image in markdownImages(raw)) {
-            val (start, end) = image.start.toInt() to image.end.toInt()
+        val tall = markdownImages(raw).map { Triple(it.start.toInt(), it.end.toInt(), imageHeights[it.id] ?: 160.sp) } +
+            markdownTaskBlocks(raw).map { Triple(it.start.toInt(), it.end.toInt(), blockHeights[it.markup] ?: 60.sp) }
+        for ((start, end, height) in tall) {
             // A paragraph style has to take in its newline, or the newline splits off as a line of its own.
             val paragraphEnd = if (end < raw.length && raw[end] == '\n') end + 1 else end
             // No trimming: the default trims a one-line paragraph back down to its (tiny) text.
             styled.addStyle(
                 ParagraphStyle(
-                    lineHeight = imageHeights[image.id] ?: 160.sp,
+                    lineHeight = height,
                     lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
                 ),
                 start,
@@ -456,32 +488,11 @@ private object ListEditing : InputTransformation {
         // A newline before the caret that wasn't there before. The keyboard may commit the word it
         // was composing in the same edit, so the length can grow by more than one.
         val typedNewline = caret > 0 && text[caret - 1] == '\n' && text.count { it == '\n' } > original.count { it == '\n' }
-        val images = markdownImages(original)
-        // Any other edit that would break a task link only partly (keyboards replace and delete in
-        // their own ways) is undone: a link goes whole, with its line, or stays.
-        val damaged = markdownTaskLinks(original).any { link ->
-            val marker = original.substring(link.start.toInt(), link.end.toInt()).trim()
-            val id = marker.removePrefix("<!--task:").removeSuffix("-->")
-            marker !in text && id in text
-        }
-        if (damaged && !deletedOneBack) {
+        val lines = atomicLines(original)
+        // Backspace after an image or task block takes it (and its line) out whole.
+        if (deletedOneBack) lines.firstOrNull { was.start > it.first && was.start <= it.last }?.let { line ->
             revertAllChanges()
-            return
-        }
-        // Backspace at the end of a linked line takes the title's last letter, not the link.
-        if (deletedOneBack) markdownTaskLinks(original).firstOrNull { was.start > it.start.toInt() && was.start <= it.end.toInt() }?.let { link ->
-            revertAllChanges()
-            val at = link.start.toInt()
-            if (at > 0 && original[at - 1] != '\n') {
-                replace(at - 1, at, "")
-                selection = TextRange(at - 1)
-            }
-            return
-        }
-        // Backspace after an image takes the whole image (and its line) out.
-        if (deletedOneBack) images.firstOrNull { was.start > it.start.toInt() && was.start <= it.end.toInt() }?.let { image ->
-            revertAllChanges()
-            val (s, e) = image.start.toInt() to image.end.toInt()
+            val (s, e) = line.first to line.last
             val (from, to) = when {
                 s > 0 -> s - 1 to e
                 e < original.length -> s to e + 1
@@ -491,8 +502,8 @@ private object ListEditing : InputTransformation {
             selection = TextRange(from)
             return
         }
-        // Typing right after an image starts a new line, rather than breaking its markup.
-        if (was.collapsed && text.length > original.length && images.any { it.end.toInt() == was.start } &&
+        // Typing right after one starts a new line, rather than breaking its markup.
+        if (was.collapsed && text.length > original.length && lines.any { it.last == was.start } &&
             text.getOrNull(was.start) != '\n'
         ) {
             replace(was.start, was.start, "\n")
@@ -500,18 +511,7 @@ private object ListEditing : InputTransformation {
         }
         when {
             deletedOneBack -> onBackspace(original, was.start)?.let { revertAllChanges(); apply(it) }
-            typedNewline -> {
-                // Return before a task link: the newline goes after it.
-                val after = pastTaskLink(original, was.min)
-                if (was.collapsed && after != was.min && text.length == original.length + 1) {
-                    revertAllChanges()
-                    replace(after, after, "\n")
-                    selection = TextRange(after + 1)
-                    apply(onNewline(asCharSequence().toString(), after + 1))
-                } else {
-                    apply(onNewline(text, caret))
-                }
-            }
+            typedNewline -> apply(onNewline(text, caret))
         }
     }
 }

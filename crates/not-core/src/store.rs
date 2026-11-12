@@ -944,8 +944,7 @@ pub(crate) fn complete_in(tree: &LoroTree, id: TreeID, completed: bool, today: D
         return Ok(());
     }
     let schedule = read_schedule(&meta);
-    let (Some(due), Some(repeat), None) = (schedule.due, schedule.repeat, meta.get(COMPLETED_AT))
-    else {
+    let (Some(due), Some(repeat), None) = (schedule.due, schedule.repeat, meta.get(COMPLETED_AT)) else {
         meta.insert(COMPLETED_AT, now_millis())?;
         return Ok(());
     };

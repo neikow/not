@@ -6,7 +6,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.lysen.not.core.BlockTaskAdded
 import dev.lysen.not.core.ChecklistMoved
+import dev.lysen.not.core.TaskBlockView
 import dev.lysen.not.core.Folder
 import dev.lysen.not.core.TaskList
 import dev.lysen.not.core.NoteSummary
@@ -146,12 +148,20 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
     /** Keeps an (already downscaled) image for notes; its id, for [imageMarkup]. */
     fun addImage(bytes: ByteArray): String? = run { store.addImage(bytes) }
 
+    /** What a task block line shows now. */
+    fun taskBlock(markup: String): TaskBlockView? = run { store.taskBlock(markup) }
+
+    /** A task added from a block; the block's line may change (see [BlockTaskAdded]). */
+    fun addTaskFromBlock(markup: String, title: String): BlockTaskAdded? =
+        if (title.isBlank()) null else run { store.addTaskFromBlock(markup, title.trim()) }
+
     /** Where a note's checklist can go: the task lists, for the "Make tasks" sheet. */
     fun taskLists(): List<TaskList> = run { store.lists() }.orEmpty().filter { it.id != INBOX_ID }
 
     /**
      * Makes tasks of the checklist items the selection touches in [body] (the editor's text), in
-     * [listId] or a new list titled [newList] when null; the lines stay, linked. Returns the new body.
+     * [listId] or a new list titled [newList] when null; a task block takes their place. Returns
+     * the new body.
      */
     fun checklistToTasks(noteId: String, body: String, start: Int, end: Int, listId: String?, newList: String, listTitle: String): ChecklistMoved? {
         val moved = run { store.checklistToTasks(noteId, body, start.toUInt(), end.toUInt(), listId, newList) } ?: return null

@@ -63,33 +63,71 @@ pub fn images(text: &str) -> Vec<ImageRef> {
     out
 }
 
-/// Where the hidden task links (` <!--task:ID-->`, see `checklist`) are: UTF-16 ranges,
-/// the space before each included, for the editors to hide and keep the caret out of.
-pub fn task_links(text: &str) -> Vec<(u32, u32)> {
+/// What a task block line (`![](not-tasks:…)`) shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskSource {
+    /// A whole list (or [`crate::INBOX`]): `not-tasks:list:<id>`.
+    List(String),
+    /// Picked tasks with their subtasks: `not-tasks:<id>,<id>`.
+    Tasks(Vec<String>),
+}
+
+/// A task block line of a note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskBlockRef {
+    /// UTF-16 range of the line, without its newline.
+    pub start: u32,
+    pub end: u32,
+    pub source: TaskSource,
+}
+
+const TASKS_SCHEME: &str = "not-tasks:";
+
+/// The line for a task block.
+pub fn task_block_markup(source: &TaskSource) -> String {
+    match source {
+        TaskSource::List(id) => format!("![]({TASKS_SCHEME}list:{id})"),
+        TaskSource::Tasks(ids) => format!("![]({TASKS_SCHEME}{})", ids.join(",")),
+    }
+}
+
+/// The task block lines of a note, outside code fences, in order.
+pub fn task_blocks(text: &str) -> Vec<TaskBlockRef> {
     let mut out = Vec::new();
     let mut offset = 0u32;
+    let mut in_fence = false;
     for line in text.split('\n') {
         let len = line.encode_utf16().count() as u32;
-        if let (_, Some(id)) = crate::checklist::split_link(line) {
-            let link = crate::checklist::task_link(id); // " <!--task:ID-->"
-            let (at, link) = match line.find(&link) {
-                Some(at) => (at, link.as_str()),
-                None => (line.find(&link[1..]).unwrap_or(0), &link[1..]),
-            };
-            let start = offset + line[..at].encode_utf16().count() as u32;
-            out.push((start, start + link.encode_utf16().count() as u32));
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence && let Some(source) = task_block_line(trimmed) {
+            out.push(TaskBlockRef {
+                start: offset,
+                end: offset + len,
+                source,
+            });
         }
         offset += len + 1;
     }
     out
 }
 
-/// The text without task links, for reading elsewhere (web pages, exports).
-pub fn strip_task_links(text: &str) -> String {
-    text.split('\n')
-        .map(|l| crate::checklist::split_link(l).0)
-        .collect::<Vec<_>>()
-        .join("\n")
+fn task_block_line(line: &str) -> Option<TaskSource> {
+    let rest = line.strip_prefix("![")?;
+    let (_, rest) = rest.split_once("](")?;
+    let target = rest.strip_suffix(')')?.strip_prefix(TASKS_SCHEME)?;
+    let valid = |id: &str| {
+        !id.is_empty()
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '@' || c == '-' || c == '_')
+    };
+    if let Some(id) = target.strip_prefix("list:") {
+        return valid(id).then(|| TaskSource::List(id.to_owned()));
+    }
+    let ids: Vec<String> = target.split(',').map(str::to_owned).collect();
+    ids.iter().all(|id| valid(id)).then_some(TaskSource::Tasks(ids))
 }
 
 /// The image line for `id`, as the editors insert it.
@@ -334,19 +372,39 @@ mod image_tests {
 }
 
 #[cfg(test)]
-mod link_tests {
+mod block_tests {
     use super::*;
 
     #[test]
-    fn task_links_are_found_with_their_space() {
-        let text = "Day\n- [ ] tea <!--task:5@9-->\n- [ ] 😀 <!--task:6@9-->";
-        let links = task_links(text);
-        assert_eq!(links.len(), 2);
-        let (s, e) = links[0];
-        let utf16: Vec<u16> = text.encode_utf16().collect();
-        assert_eq!(String::from_utf16(&utf16[s as usize..e as usize]).unwrap(), " <!--task:5@9-->");
-        let (s, e) = links[1];
-        assert_eq!(String::from_utf16(&utf16[s as usize..e as usize]).unwrap(), " <!--task:6@9-->");
-        assert_eq!(strip_task_links(text), "Day\n- [ ] tea\n- [ ] 😀");
+    fn block_lines_round_trip() {
+        for source in [
+            TaskSource::List("12@345".into()),
+            TaskSource::List("inbox".into()),
+            TaskSource::Tasks(vec!["1@2".into(), "3@4".into()]),
+        ] {
+            let text = format!("Note\n{}\nafter", task_block_markup(&source));
+            let found = task_blocks(&text);
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].source, source);
+            assert_eq!(found[0].start, 5);
+            assert_eq!(found[0].end, 5 + task_block_markup(&source).len() as u32);
+        }
+    }
+
+    #[test]
+    fn only_whole_valid_lines_outside_code_are_blocks() {
+        let line = task_block_markup(&TaskSource::List("1@2".into()));
+        assert!(task_blocks(&format!("see {line}")).is_empty(), "inside text");
+        assert!(task_blocks(&format!("```\n{line}\n```")).is_empty(), "in code");
+        assert!(task_blocks("![](not-tasks:)").is_empty());
+        assert!(task_blocks("![](not-tasks:list:)").is_empty());
+        assert!(task_blocks("![](not-tasks:1@2,,3@4)").is_empty());
+        assert!(task_blocks("![](not-tasks:1@2) x").is_empty());
+        assert!(task_blocks("![](not-tasks:<script>)").is_empty());
+        assert_eq!(
+            task_blocks(&format!("  {line}  ")).len(),
+            1,
+            "spaces around are fine"
+        );
     }
 }

@@ -166,7 +166,17 @@ private struct NoteEditor: View {
                 },
                 onAddImage: model.addImage,
                 imageToInsert: model.imageToInsert,
-                imageVersion: model.imageVersion
+                imageVersion: model.imageVersion,
+                taskBlocks: TaskBlockActions(
+                    view: model.taskBlock,
+                    toggle: model.toggle,
+                    open: model.showTask,
+                    add: { markup in
+                        if let grown = model.addTaskFromBlock(markup), grown != markup {
+                            text = text.replacingOccurrences(of: markup, with: grown)
+                        }
+                    }
+                )
             )
         }
         .onAppear {

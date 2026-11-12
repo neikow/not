@@ -259,3 +259,42 @@ async fn shared_lists_update_live_and_close_when_revoked() {
         "a revoked link can't reconnect"
     );
 }
+
+#[tokio::test]
+async fn note_pages_show_task_blocks_as_their_tasks() {
+    let (state, base) = start().await;
+    let code = state.create_pairing_code().unwrap();
+    let client = SyncClient::from_credentials(&SyncClient::pair(&base, &code.code, "Phone").await.unwrap());
+    let phone = Store::open_in_memory().unwrap();
+    let note = phone
+        .create_note(None, "Trip\n- [ ] passport\n  - [ ] renew <b>")
+        .unwrap();
+    let body = phone.note_body(&note).unwrap();
+    phone
+        .checklist_to_tasks(&note, &body, 5, body.len() as u32, None, "")
+        .unwrap();
+    client.sync(&phone).await.unwrap();
+
+    let code = state.create_pairing_code().unwrap().code;
+    let response = not_server::router(state.clone())
+        .oneshot(post("/login", &format!("code={code}"), None))
+        .await
+        .unwrap();
+    let cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (status, _, html) = send(&state, get(&format!("/n/{note}"), Some(&cookie))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("☐ passport") && html.contains("renew &lt;b&gt;"),
+        "{html}"
+    );
+    assert!(!html.contains("not-tasks:"), "no markup shows");
+}

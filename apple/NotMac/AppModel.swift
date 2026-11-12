@@ -172,6 +172,14 @@ final class AppModel {
             ] {
                 if let id = run({ try store.createNote(folderId: nil, body: body) }) { _ = id }
             }
+            // A checklist made into a task block, with a subtask added in the list afterwards.
+            if let note = run({ try store.createNote(folderId: nil, body: "Errands\nBefore leaving:\n- [ ] Post office\n- [x] Pharmacy\nThat's all") }) {
+                let body = noteBody(note)
+                if let moved = run({ try store.checklistToTasks(noteId: note, body: body, start: 0, end: UInt32((body as NSString).length), listId: nil, newList: "") }),
+                   let first = run({ try store.outline(listId: moved.listId) })?.open.first {
+                    _ = run { try store.addTask(parentId: first.task.id, title: "Stamps") }
+                }
+            }
             // A note with a picture (the app icon), to see images drawn in the editor.
             if let tiff = NSImage(named: NSImage.applicationIconName)?.tiffRepresentation,
                let png = NoteImageEncoder.encode(tiff), let id = addImage(png) {
@@ -615,6 +623,35 @@ final class AppModel {
         run { try store.setNoteBody(id: id, body: body) }
     }
 
+    /// What a task block line shows now.
+    func taskBlock(_ markup: String) -> TaskBlockView? {
+        run { try store.taskBlock(markup: markup) }
+    }
+
+    /// Shows a task from a note's block in its list, with the inspector open.
+    func showTask(_ task: TaskItem) {
+        selectedListID = task.listId
+        selectedTaskID = task.id
+        showsInspector = true
+    }
+
+    /// Asks for a title and adds a task from a block; returns the block's line now (a block of
+    /// picked tasks takes the new one in), or nil if nothing was added.
+    func addTaskFromBlock(_ markup: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = "New Task"
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "What needs doing?"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let title = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { return nil }
+        return run { try store.addTaskFromBlock(markup: markup, title: title).markup }
+    }
+
     /// Keeps image data (downscaled first) for notes; its id, for `imageMarkup`.
     func addImage(_ data: Data) -> String? {
         run { try store.addImage(bytes: data) }
@@ -634,7 +671,7 @@ final class AppModel {
     }
 
     /// Makes tasks of the checklist items `start..<end` (UTF-16) touches in `body`, in a list or a new
-    /// one titled `newList` when `listID` is nil; the lines stay, linked. Returns the note's new body.
+    /// one titled `newList` when `listID` is nil; a task block takes their place. Returns the new body.
     func checklistToTasks(_ noteID: String, _ body: String, start: Int, end: Int, listID: String?, newList: String) -> String? {
         run {
             try store.checklistToTasks(noteId: noteID, body: body, start: UInt32(start), end: UInt32(end), listId: listID, newList: newList).body

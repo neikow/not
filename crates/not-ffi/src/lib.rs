@@ -157,21 +157,54 @@ pub fn markdown_images(text: String) -> Vec<NoteImage> {
         .collect()
 }
 
-/// A UTF-16 range of text.
+/// A task block line in a note: its UTF-16 range, and the line's text, which is what
+/// `task_block` and `add_task_from_block` take.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct TextSpan {
+pub struct NoteTaskBlock {
     pub start: u32,
     pub end: u32,
+    pub markup: String,
 }
 
-/// The hidden links on checklist lines made into tasks (` <!--task:ID-->`, its space included):
-/// editors hide them and keep the caret out of them.
+/// The task block lines (`![](not-tasks:…)`) of a note, for the editor to draw.
 #[uniffi::export]
-pub fn markdown_task_links(text: String) -> Vec<TextSpan> {
-    not_core::markdown::task_links(&text)
+pub fn markdown_task_blocks(text: String) -> Vec<NoteTaskBlock> {
+    not_core::markdown::task_blocks(&text)
         .into_iter()
-        .map(|(start, end)| TextSpan { start, end })
+        .map(|b| NoteTaskBlock {
+            start: b.start,
+            end: b.end,
+            markup: not_core::markdown::task_block_markup(&b.source),
+        })
         .collect()
+}
+
+/// What a task block shows now: rows like a list's outline (depths from the block's top level).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TaskBlockView {
+    /// The list's title for a whole-list block; empty for picked tasks.
+    pub title: String,
+    /// Where tasks added from the block go.
+    pub list_id: String,
+    pub rows: Vec<OutlineRow>,
+    /// The list or every picked task was deleted (or hasn't synced yet).
+    pub gone: bool,
+}
+
+/// A task added from a block: its id, and the block's line now (picked-task blocks take the new
+/// task in, so the editor replaces the old line with this one).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BlockTaskAdded {
+    pub task_id: String,
+    pub markup: String,
+}
+
+fn block_source(markup: &str) -> Result<not_core::markdown::TaskSource, NotError> {
+    not_core::markdown::task_blocks(markup.trim())
+        .into_iter()
+        .next()
+        .map(|b| b.source)
+        .ok_or_else(|| not_core::Error::Invalid(format!("not a task block: {markup:?}")).into())
 }
 
 /// The line to insert for an image added with `add_image`.
@@ -901,6 +934,34 @@ impl NotStore {
         Ok(self.store.create_note(folder_id.as_deref(), &body)?)
     }
 
+    /// What the task block line `markup` shows now.
+    pub fn task_block(&self, markup: String) -> Result<TaskBlockView, NotError> {
+        let block = self.store.task_block(&block_source(&markup)?)?;
+        Ok(TaskBlockView {
+            title: block.title,
+            list_id: block.list_id,
+            rows: block
+                .rows
+                .into_iter()
+                .map(|r| OutlineRow {
+                    task: r.task.into(),
+                    depth: r.depth,
+                    done: r.done,
+                })
+                .collect(),
+            gone: block.gone,
+        })
+    }
+
+    /// Adds a task from the block line `markup`; see [`BlockTaskAdded`].
+    pub fn add_task_from_block(&self, markup: String, title: String) -> Result<BlockTaskAdded, NotError> {
+        let (task_id, source) = self.store.add_task_from_block(&block_source(&markup)?, &title)?;
+        Ok(BlockTaskAdded {
+            task_id,
+            markup: not_core::markdown::task_block_markup(&source),
+        })
+    }
+
     /// Keeps an image (JPEG, PNG, WebP or GIF bytes, already downscaled) for notes; returns the id
     /// for [`image_markup`]. Syncs beside the doc.
     pub fn add_image(&self, bytes: Vec<u8>) -> Result<String, NotError> {
@@ -914,7 +975,7 @@ impl NotStore {
 
     /// Makes tasks of the checklist items the selection touches in `body` (what the editor shows),
     /// in `list_id` or a new list titled `new_list` (empty: the suggested title) when `list_id` is
-    /// `None`. The lines stay in the note, linked to the tasks; one undo step.
+    /// `None`. A task block line takes their place; one undo step.
     pub fn checklist_to_tasks(
         &self,
         note_id: String,
