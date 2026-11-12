@@ -1,5 +1,7 @@
 package dev.lysen.not
 
+import dev.lysen.not.core.markdownTaskLinks
+
 import androidx.compose.ui.layout.onSizeChanged
 
 import androidx.compose.ui.text.style.LineHeightStyle
@@ -90,6 +92,9 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
     // behind, like the boxes), sized to the field's width.
     val images = remember(text) { markdownImages(text) }
     val currentImages by rememberUpdatedState(images)
+    // Hidden links of checklist lines made into tasks.
+    val links = remember(text) { markdownTaskLinks(text) }
+    val currentLinks by rememberUpdatedState(links)
     val density = LocalDensity.current
     // The field's width (the text layout is only as wide as its longest line).
     var width by remember { mutableStateOf(0) }
@@ -114,6 +119,9 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
             // Nothing is typed into an image's hidden markup: the caret goes after it.
             val image = currentImages.firstOrNull { selection.start >= it.start.toInt() && selection.start < it.end.toInt() }
             if (image != null) return@collect state.edit { this.selection = TextRange(image.end.toInt()) }
+            // Nor into a task link: the caret goes to the line's end, after it.
+            val link = currentLinks.firstOrNull { selection.start >= it.start.toInt() && selection.start < it.end.toInt() }
+            if (link != null) return@collect state.edit { this.selection = TextRange(link.end.toInt()) }
             snappedCaret(state.text, selection.start)?.let { state.edit { this.selection = TextRange(it) } }
         }
     }
@@ -312,6 +320,10 @@ private class MarkdownStyling(private val colors: NotColors, private val imageHe
         val raw = asCharSequence().toString()
         val spans = markdownSpans(raw)
         val styled = this
+        for (link in markdownTaskLinks(raw)) {
+            // Squeezed to nothing, so the caret at the line's end sits right after the title.
+            styled.addStyle(SpanStyle(color = Color.Transparent, fontSize = 1.sp, letterSpacing = (-0.5).sp), link.start.toInt(), link.end.toInt())
+        }
         for (image in markdownImages(raw)) {
             val (start, end) = image.start.toInt() to image.end.toInt()
             // A paragraph style has to take in its newline, or the newline splits off as a line of its own.
@@ -440,6 +452,16 @@ private object ListEditing : InputTransformation {
         // was composing in the same edit, so the length can grow by more than one.
         val typedNewline = caret > 0 && text[caret - 1] == '\n' && text.count { it == '\n' } > original.count { it == '\n' }
         val images = markdownImages(original)
+        // Backspace at the end of a linked line takes the title's last letter, not the link.
+        if (deletedOneBack) markdownTaskLinks(original).firstOrNull { was.start > it.start.toInt() && was.start <= it.end.toInt() }?.let { link ->
+            revertAllChanges()
+            val at = link.start.toInt()
+            if (at > 0 && original[at - 1] != '\n') {
+                replace(at - 1, at, "")
+                selection = TextRange(at - 1)
+            }
+            return
+        }
         // Backspace after an image takes the whole image (and its line) out.
         if (deletedOneBack) images.firstOrNull { was.start > it.start.toInt() && was.start <= it.end.toInt() }?.let { image ->
             revertAllChanges()

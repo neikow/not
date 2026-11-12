@@ -181,8 +181,9 @@ private struct NoteEditor: View {
             saved = text
             model.setNoteBody(note.id, text)
         }
-        .onChange(of: note.updatedAt) {
-            // Edited on another device: take it unless there are unsaved local changes.
+        .onChange(of: [note.updatedAt, Int64(model.imageVersion)]) {
+            // Edited on another device, or a linked task ticked or renamed: take it unless there
+            // are unsaved local changes.
             let body = model.noteBody(note.id)
             if text == saved, body != text {
                 text = body

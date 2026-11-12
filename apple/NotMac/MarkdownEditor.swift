@@ -98,10 +98,11 @@ struct MarkdownEditor: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? MarkdownTextView else { return }
             let selection = textView.selectedRange()
-            guard selection.length == 0,
-                  let image = textView.imageLines.first(where: { NSLocationInRange(selection.location, $0.range) })
-            else { return }
-            textView.setSelectedRange(NSRange(location: NSMaxRange(image.range), length: 0))
+            guard selection.length == 0 else { return }
+            // Nor into a task link: the caret goes to the line's end, after it.
+            let hidden = textView.imageLines.map(\.range) + textView.taskLinks
+            guard let range = hidden.first(where: { NSLocationInRange(selection.location, $0) }) else { return }
+            textView.setSelectedRange(NSRange(location: NSMaxRange(range), length: 0))
         }
 
         /// Backspace into an image takes it out whole; typing right after one starts a new line.
@@ -115,6 +116,18 @@ struct MarkdownEditor: NSViewRepresentable {
                 if whole.location > 0 { whole = NSRange(location: whole.location - 1, length: whole.length + 1) }
                 else if NSMaxRange(whole) < ns.length { whole.length += 1 }
                 DispatchQueue.main.async { view.editImages { view.replace(whole, with: "") } }
+                return false
+            }
+            // Backspace at the end of a linked line takes the title's last letter, not the link.
+            if text.isEmpty, range.length > 0,
+               let link = view.taskLinks.first(where: { NSIntersectionRange($0, range).length > 0 }) {
+                if link.location > 0, ns.character(at: link.location - 1) != 10 {
+                    let letter = NSRange(location: link.location - 1, length: 1)
+                    DispatchQueue.main.async {
+                        view.editImages { view.replace(letter, with: "") }
+                        view.setSelectedRange(NSRange(location: letter.location, length: 0))
+                    }
+                }
                 return false
             }
             if !text.isEmpty, !text.hasPrefix("\n"), range.length == 0,
@@ -131,8 +144,8 @@ struct MarkdownEditor: NSViewRepresentable {
             parent.text = textView.string
         }
 
-        /// "Move to Tasks ▸ New List “Groceries” / Inbox / lists…" for the checklist items the
-        /// selection touches; nil when there are none.
+        /// "Make N Tasks In ▸ New List “Groceries” / Inbox / lists…" for the checklist items the
+        /// selection touches that aren't tasks yet; nil when there are none. The lines stay, linked.
         func makeTasksItem(for textView: NSTextView) -> NSMenuItem? {
             guard let make = parent.onMakeTasks else { return nil }
             let range = textView.selectedRange()
@@ -141,8 +154,8 @@ struct MarkdownEditor: NSViewRepresentable {
                 start: UInt32(range.location),
                 end: UInt32(range.location + range.length)
             ) else { return nil }
-            let items = checklist.count == 1 ? "1 Item" : "\(checklist.count) Items"
-            let item = NSMenuItem(title: "Move \(items) to Tasks", action: nil, keyEquivalent: "")
+            let items = checklist.count == 1 ? "1 Task" : "\(checklist.count) Tasks"
+            let item = NSMenuItem(title: "Make \(items) In", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
             func add(_ title: String, _ image: String, _ run: @escaping () -> Void) {
                 let entry = ClosureMenuItem(title: title, run: run)
@@ -171,6 +184,8 @@ final class MarkdownTextView: NSTextView {
     var imageLines: [(range: NSRange, id: String)] = [] {
         didSet { needsDisplay = true }
     }
+    /// Hidden links of checklist lines made into tasks; set by `MarkdownStyler`.
+    var taskLinks: [NSRange] = []
     var onAddImage: ((Data) -> String?)?
     private var styledWidth: CGFloat = 0
     /// Set while the image rules make their own edit, so they don't apply to it again.
@@ -495,6 +510,14 @@ enum MarkdownStyler {
                 )
             }
         }
+        // Task links are hidden; the lines read as plain checklist items.
+        let links = markdownTaskLinks(text: storage.string).map {
+            NSRange(location: Int($0.start), length: Int($0.end - $0.start))
+        }
+        for link in links {
+            storage.addAttributes([.font: NSFont.systemFont(ofSize: 0.1), .foregroundColor: NSColor.clear], range: link)
+        }
+        (textView as? MarkdownTextView)?.taskLinks = links
         // Image lines: markup hidden, the line as tall as the picture at the editor's width.
         let images = markdownImages(text: storage.string)
         let width = max((textView.textContainer?.size.width ?? 400) - 2 * (textView.textContainer?.lineFragmentPadding ?? 0), 100)

@@ -1,5 +1,7 @@
 package dev.lysen.not
 
+import androidx.compose.runtime.collectAsState
+
 import dev.lysen.not.core.imageMarkup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -599,8 +601,10 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
             viewModel.setBody(note.id, text)
         }
     }
-    // Edited on another device: take it unless there are unsaved local changes.
-    LaunchedEffect(note.updatedAt) {
+    // Edited on another device, or a linked task ticked or renamed: take it unless there are
+    // unsaved local changes.
+    val changes by (LocalContext.current.applicationContext as NotApp).changes.collectAsState()
+    LaunchedEffect(note.updatedAt, changes) {
         val body = viewModel.body(note.id)
         if (text == saved && body != text) {
             editor.edit { replaceChanged(body) }
@@ -681,7 +685,7 @@ private fun FormatBar(editor: TextFieldState, checklist: NoteChecklist?, onMakeT
                         .padding(end = 4.dp)
                         .clip(CircleShape)
                         .background(Not.colors.accentSoft)
-                        .pressable(onMakeTasks, pressedScale = 0.95f, onClickLabel = "Move the checklist into a task list")
+                        .pressable(onMakeTasks, pressedScale = 0.95f, onClickLabel = "Make tasks of the checklist")
                         .heightIn(min = 36.dp)
                         .padding(start = 10.dp, end = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -722,9 +726,9 @@ private fun MakeTasksSheet(checklist: NoteChecklist, lists: List<TaskList>, onDi
             close()
         }
         Column(Modifier.padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
-            val items = if (checklist.count == 1u) "1 item" else "${checklist.count} items"
+            val items = if (checklist.count == 1u) "1 task" else "${checklist.count} tasks"
             Text(
-                "Move $items to",
+                "Make $items in",
                 style = Not.type.caption,
                 color = Not.colors.inkMuted,
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),

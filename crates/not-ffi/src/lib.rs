@@ -157,6 +157,23 @@ pub fn markdown_images(text: String) -> Vec<NoteImage> {
         .collect()
 }
 
+/// A UTF-16 range of text.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TextSpan {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// The hidden links on checklist lines made into tasks (` <!--task:ID-->`, its space included):
+/// editors hide them and keep the caret out of them.
+#[uniffi::export]
+pub fn markdown_task_links(text: String) -> Vec<TextSpan> {
+    not_core::markdown::task_links(&text)
+        .into_iter()
+        .map(|(start, end)| TextSpan { start, end })
+        .collect()
+}
+
 /// The line to insert for an image added with `add_image`.
 #[uniffi::export]
 pub fn image_markup(id: String) -> String {
@@ -895,9 +912,9 @@ impl NotStore {
         Ok(self.store.image(&id)?)
     }
 
-    /// Moves the checklist items the selection touches in `body` (what the editor shows) into
-    /// `list_id`, or a new list titled `new_list` (empty: the suggested title) when `list_id` is
-    /// `None`. The note is saved without them; one undo step.
+    /// Makes tasks of the checklist items the selection touches in `body` (what the editor shows),
+    /// in `list_id` or a new list titled `new_list` (empty: the suggested title) when `list_id` is
+    /// `None`. The lines stay in the note, linked to the tasks; one undo step.
     pub fn checklist_to_tasks(
         &self,
         note_id: String,

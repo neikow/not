@@ -355,7 +355,7 @@ async fn note_page(
         .to_owned();
     let body = format!(
         r#"<main><article class="note">{}</article></main>"#,
-        markdown_html(&text)
+        markdown_html(&not_core::markdown::strip_task_links(&text))
     );
     page(
         &title,

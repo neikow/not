@@ -150,13 +150,13 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
     fun taskLists(): List<TaskList> = run { store.lists() }.orEmpty().filter { it.id != INBOX_ID }
 
     /**
-     * Moves the checklist items the selection touches in [body] (the editor's text) into [listId],
-     * or a new list titled [newList] when null; the note loses those lines. Returns the new body.
+     * Makes tasks of the checklist items the selection touches in [body] (the editor's text), in
+     * [listId] or a new list titled [newList] when null; the lines stay, linked. Returns the new body.
      */
     fun checklistToTasks(noteId: String, body: String, start: Int, end: Int, listId: String?, newList: String, listTitle: String): ChecklistMoved? {
         val moved = run { store.checklistToTasks(noteId, body, start.toUInt(), end.toUInt(), listId, newList) } ?: return null
         val what = if (moved.count == 1u) "1 task" else "${moved.count} tasks"
-        _undoables.trySend(Undoable("$what moved to “$listTitle”"))
+        _undoables.trySend(Undoable("$what added to “$listTitle”"))
         return moved
     }
 

@@ -375,50 +375,7 @@ impl Store {
     /// copy and moves the task on to its next due date after `today`, with its subtasks reopened.
     pub fn set_completed(&self, id: &str, completed: bool, today: Date) -> Result<()> {
         let id = self.node(id, &[KIND_TASK])?;
-        self.write(|tree| {
-            let meta = tree.get_meta(id)?;
-            if !completed {
-                meta.delete(COMPLETED_AT)?;
-                return Ok(());
-            }
-            let schedule = read_schedule(&meta);
-            let (Some(due), Some(repeat), None) = (schedule.due, schedule.repeat, meta.get(COMPLETED_AT))
-            else {
-                meta.insert(COMPLETED_AT, now_millis())?;
-                return Ok(());
-            };
-            let parent = tree.parent(id).ok_or_else(|| Error::NotFound(id.to_string()))?;
-            let copy = tree.create(parent)?;
-            let done = tree.get_meta(copy)?;
-            done.insert(KIND, KIND_TASK)?;
-            done.insert(TITLE, meta_str(&meta, TITLE).unwrap_or_default())?;
-            write_schedule(
-                &done,
-                &Schedule {
-                    repeat: None,
-                    ..schedule
-                },
-            )?;
-            write_priority(&done, meta_i64(&meta, PRIORITY).unwrap_or(0) as u8)?;
-            if let Some(notes) = meta_text(&meta, NOTES).filter(|n| !n.is_empty()) {
-                done.ensure_mergeable_text(NOTES)?
-                    .update(&notes, Default::default())
-                    .map_err(|e| Error::Invalid(format!("notes: {e}")))?;
-            }
-            done.insert(COMPLETED_AT, now_millis())?;
-
-            let mut next = repeat.next_after(due);
-            while next <= today {
-                next = repeat.next_after(next);
-            }
-            meta.insert(DUE, next.to_string())?;
-            let mut stack = tree.children(id).unwrap_or_default();
-            while let Some(child) = stack.pop() {
-                tree.get_meta(child)?.delete(COMPLETED_AT)?;
-                stack.extend(tree.children(child).unwrap_or_default());
-            }
-            Ok(())
-        })
+        self.write(|tree| complete_in(tree, id, completed, today))
     }
 
     /// Moves a task under `parent` (a list, [`INBOX`] or a task) to `index` among its sibling tasks.
@@ -977,6 +934,52 @@ fn push_subtree(
     for kid in kids {
         push_subtree(rows, children, kid, depth + 1, done);
     }
+}
+
+/// [`Store::set_completed`] inside a transaction (for edits that change more than one thing).
+pub(crate) fn complete_in(tree: &LoroTree, id: TreeID, completed: bool, today: Date) -> Result<()> {
+    let meta = tree.get_meta(id)?;
+    if !completed {
+        meta.delete(COMPLETED_AT)?;
+        return Ok(());
+    }
+    let schedule = read_schedule(&meta);
+    let (Some(due), Some(repeat), None) = (schedule.due, schedule.repeat, meta.get(COMPLETED_AT))
+    else {
+        meta.insert(COMPLETED_AT, now_millis())?;
+        return Ok(());
+    };
+    let parent = tree.parent(id).ok_or_else(|| Error::NotFound(id.to_string()))?;
+    let copy = tree.create(parent)?;
+    let done = tree.get_meta(copy)?;
+    done.insert(KIND, KIND_TASK)?;
+    done.insert(TITLE, meta_str(&meta, TITLE).unwrap_or_default())?;
+    write_schedule(
+        &done,
+        &Schedule {
+            repeat: None,
+            ..schedule
+        },
+    )?;
+    write_priority(&done, meta_i64(&meta, PRIORITY).unwrap_or(0) as u8)?;
+    if let Some(notes) = meta_text(&meta, NOTES).filter(|n| !n.is_empty()) {
+        done.ensure_mergeable_text(NOTES)?
+            .update(&notes, Default::default())
+            .map_err(|e| Error::Invalid(format!("notes: {e}")))?;
+    }
+    done.insert(COMPLETED_AT, now_millis())?;
+
+    let mut next = repeat.next_after(due);
+    while next <= today {
+        next = repeat.next_after(next);
+    }
+    meta.insert(DUE, next.to_string())?;
+    let mut stack = tree.children(id).unwrap_or_default();
+    while let Some(child) = stack.pop() {
+        tree.get_meta(child)?.delete(COMPLETED_AT)?;
+        stack.extend(tree.children(child).unwrap_or_default());
+    }
+    Ok(())
 }
 
 /// New tasks go first in a list (or the Inbox) and last under a task.

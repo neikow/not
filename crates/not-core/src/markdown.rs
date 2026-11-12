@@ -63,6 +63,35 @@ pub fn images(text: &str) -> Vec<ImageRef> {
     out
 }
 
+/// Where the hidden task links (` <!--task:ID-->`, see `checklist`) are: UTF-16 ranges,
+/// the space before each included, for the editors to hide and keep the caret out of.
+pub fn task_links(text: &str) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    let mut offset = 0u32;
+    for line in text.split('\n') {
+        let len = line.encode_utf16().count() as u32;
+        if let (_, Some(id)) = crate::checklist::split_link(line) {
+            let link = crate::checklist::task_link(id); // " <!--task:ID-->"
+            let (at, link) = match line.find(&link) {
+                Some(at) => (at, link.as_str()),
+                None => (line.find(&link[1..]).unwrap_or(0), &link[1..]),
+            };
+            let start = offset + line[..at].encode_utf16().count() as u32;
+            out.push((start, start + link.encode_utf16().count() as u32));
+        }
+        offset += len + 1;
+    }
+    out
+}
+
+/// The text without task links, for reading elsewhere (web pages, exports).
+pub fn strip_task_links(text: &str) -> String {
+    text.split('\n')
+        .map(|l| crate::checklist::split_link(l).0)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The image line for `id`, as the editors insert it.
 pub fn image_markup(id: &str) -> String {
     format!("![]({}{id})", not_protocol::IMAGE_SCHEME)
@@ -301,5 +330,23 @@ mod image_tests {
             images(&format!("see ![](not-image:{id})")).is_empty(),
             "only whole lines"
         );
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn task_links_are_found_with_their_space() {
+        let text = "Day\n- [ ] tea <!--task:5@9-->\n- [ ] 😀 <!--task:6@9-->";
+        let links = task_links(text);
+        assert_eq!(links.len(), 2);
+        let (s, e) = links[0];
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        assert_eq!(String::from_utf16(&utf16[s as usize..e as usize]).unwrap(), " <!--task:5@9-->");
+        let (s, e) = links[1];
+        assert_eq!(String::from_utf16(&utf16[s as usize..e as usize]).unwrap(), " <!--task:6@9-->");
+        assert_eq!(strip_task_links(text), "Day\n- [ ] tea\n- [ ] 😀");
     }
 }

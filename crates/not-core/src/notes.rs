@@ -153,9 +153,13 @@ impl Store {
     }
 
     /// Replaces the body; the text CRDT merges it with concurrent edits from other devices.
+    /// Lines linked to tasks whose tick or title changed (against what [`Store::note_body`]
+    /// showed) tick or rename their task in the same undo step.
     pub fn set_note_body(&self, id: &str, body: &str) -> Result<()> {
+        let shown = self.note_body(id)?;
         let id = self.notes_node(id, KIND_NOTE)?;
         self.transact(|| {
+            self.apply_task_link_edits(&shown, body)?;
             let meta = self.notes.get_meta(id)?;
             let text = meta.ensure_mergeable_text(BODY)?;
             if text.to_string() == body {
@@ -416,13 +420,17 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// The markdown body, with lines linked to tasks showing those tasks as they are now.
     pub fn note_body(&self, id: &str) -> Result<String> {
-        let inner = self.lock();
-        inner
-            .db
-            .query_row("SELECT body FROM note WHERE id = ?1", [id], |r| r.get(0))
-            .optional()?
-            .ok_or_else(|| Error::NotFound(id.to_owned()))
+        let body: String = {
+            let inner = self.lock();
+            inner
+                .db
+                .query_row("SELECT body FROM note WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?
+                .ok_or_else(|| Error::NotFound(id.to_owned()))?
+        };
+        Ok(self.render_task_links(&body))
     }
 
     fn note_id(&self, id: &str) -> Result<TreeID> {
@@ -476,7 +484,7 @@ pub fn title_and_preview(body: &str) -> (String, String) {
     let mut lines = body
         .lines()
         .filter(|l| !images.iter().any(|id| l.contains(id.as_str())))
-        .map(plain)
+        .map(|l| plain(&crate::checklist::split_link(l).0))
         .filter(|l| !l.is_empty());
     let title = lines.next().unwrap_or_default();
     let mut preview = String::new();

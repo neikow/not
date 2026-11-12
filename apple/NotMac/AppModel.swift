@@ -633,8 +633,8 @@ final class AppModel {
         }
     }
 
-    /// Moves the checklist items `start..<end` (UTF-16) touches in `body` into a list, or a new one
-    /// titled `newList` when `listID` is nil; returns the note's new body. ⌘Z puts them back.
+    /// Makes tasks of the checklist items `start..<end` (UTF-16) touches in `body`, in a list or a new
+    /// one titled `newList` when `listID` is nil; the lines stay, linked. Returns the note's new body.
     func checklistToTasks(_ noteID: String, _ body: String, start: Int, end: Int, listID: String?, newList: String) -> String? {
         run {
             try store.checklistToTasks(noteId: noteID, body: body, start: UInt32(start), end: UInt32(end), listId: listID, newList: newList).body
