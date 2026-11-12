@@ -16,6 +16,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.TransformOrigin
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.roundToInt
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.composed
@@ -383,26 +389,73 @@ class TabItem(val label: String, val icon: Int, val badge: Int = 0, val holdLabe
 /**
  * The floating pill at the bottom: equal, fixed slots (icon over label), with a mint capsule that
  * slides behind the selected one. Nothing inside changes size, so nothing shifts.
+ *
+ * Dragging sideways along the bar pulls the capsule under the finger (a tick per tab it crosses);
+ * letting go picks the tab under it, and a quick fling moves on to the next tab that way.
  */
 @Composable
 fun FloatingTabBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, onHold: (Int) -> Unit, modifier: Modifier = Modifier) {
     val colors = Not.colors
-    val indicator by animateDpAsState(
-        TabWidth * selected,
-        spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
-        label = "tab indicator",
-    )
+    val density = LocalDensity.current
+    val haptics = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val slot = with(density) { TabWidth.toPx() }
+    val inset = with(density) { TabBarPadding.toPx() }
+    val flingSpeed = with(density) { TabFlingSpeed.toPx() }
+    val maxX = slot * (tabs.size - 1)
+    val latestSelected by rememberUpdatedState(selected)
+    val latestSelect by rememberUpdatedState(onSelect)
+    // Capsule position in px. While dragging it is plain state (snapping an Animatable from drag
+    // deltas would cancel its settle animation); otherwise an Animatable springs it to the tab.
+    val settled = remember { Animatable(slot * selected) }
+    var dragX by remember { mutableStateOf<Float?>(null) }
+    val spring = spring<Float>(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)
+    LaunchedEffect(selected, slot) { if (dragX == null) settled.animateTo(slot * selected, spring) }
+    val capsuleX = dragX ?: settled.value
+    val hovered = dragX?.let { (it / slot).roundToInt().coerceIn(0, tabs.lastIndex) }
+    LaunchedEffect(hovered) { if (hovered != null) haptics.performHapticFeedback(HapticFeedbackType.SegmentTick) }
     Box(
         modifier
             .shadow(18.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.18f), spotColor = Color.Black.copy(alpha = 0.18f))
             .clip(CircleShape)
             .background(colors.surface)
-            .padding(6.dp),
+            .pointerInput(slot, maxX, flingSpeed) {
+                val velocity = VelocityTracker()
+                fun under(x: Float) = (x - inset - slot / 2).coerceIn(0f, maxX)
+                fun release(fling: Float) {
+                    val at = dragX ?: return
+                    val position = at / slot
+                    val target = when {
+                        fling > flingSpeed -> ceil(position)
+                        fling < -flingSpeed -> floor(position)
+                        else -> position.roundToInt().toFloat()
+                    }.toInt().coerceIn(0, tabs.lastIndex)
+                    scope.launch {
+                        settled.snapTo(at)
+                        dragX = null
+                        if (target != latestSelected) latestSelect(target)
+                        settled.animateTo(slot * target, spring)
+                    }
+                }
+                detectHorizontalDragGestures(
+                    onDragStart = { start ->
+                        velocity.resetTracking()
+                        dragX = under(start.x)
+                    },
+                    onDragEnd = { release(velocity.calculateVelocity().x) },
+                    onDragCancel = { release(0f) },
+                ) { change, _ ->
+                    velocity.addPosition(change.uptimeMillis, change.position)
+                    dragX = under(change.position.x)
+                    change.consume()
+                }
+            }
+            .padding(TabBarPadding),
     ) {
-        Box(Modifier.offset(x = indicator).size(TabWidth, TabHeight).clip(CircleShape).background(colors.accent))
+        Box(Modifier.offset { IntOffset(capsuleX.roundToInt(), 0) }.size(TabWidth, TabHeight).clip(CircleShape).background(colors.accent))
         Row {
             tabs.forEachIndexed { index, tab ->
-                val isSelected = index == selected
+                val isSelected = index == (hovered ?: selected)
                 val tint by animateColorAsState(if (isSelected) colors.onAccent else colors.inkMuted, label = "tab tint")
                 Column(
                     Modifier
@@ -428,6 +481,9 @@ fun FloatingTabBar(tabs: List<TabItem>, selected: Int, onSelect: (Int) -> Unit, 
 // Four tabs and the + fit a 360dp-wide phone.
 private val TabWidth = 68.dp
 private val TabHeight = 52.dp
+private val TabBarPadding = 6.dp
+/** Sideways speed past which letting go of the bar moves on to the next tab. */
+private val TabFlingSpeed = 500.dp
 
 /** What the + beside the tab bar does on the current screen; screens set it with [AddAction]. */
 @Stable
