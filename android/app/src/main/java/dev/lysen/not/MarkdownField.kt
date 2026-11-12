@@ -91,10 +91,6 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
     // Image lines: their markup is hidden and the line grows to the picture's height (drawn
     // behind, like the boxes), sized to the field's width.
     val images = remember(text) { markdownImages(text) }
-    val currentImages by rememberUpdatedState(images)
-    // Hidden links of checklist lines made into tasks.
-    val links = remember(text) { markdownTaskLinks(text) }
-    val currentLinks by rememberUpdatedState(links)
     val density = LocalDensity.current
     // The field's width (the text layout is only as wide as its longest line).
     var width by remember { mutableStateOf(0) }
@@ -113,15 +109,18 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
     val styling = remember(colors, heights) { MarkdownStyling(colors, heights) }
 
     // The caret never rests inside a box's or bullet's hidden markup.
+    // Checked against the text as it is now (an edit may have just moved the markup), also when
+    // only the text changed.
     LaunchedEffect(state) {
-        snapshotFlow { state.selection }.collect { selection ->
+        snapshotFlow { state.text.toString() to state.selection }.collect { (now, selection) ->
             if (!selection.collapsed) return@collect
             // Nothing is typed into an image's hidden markup: the caret goes after it.
-            val image = currentImages.firstOrNull { selection.start >= it.start.toInt() && selection.start < it.end.toInt() }
+            val image = markdownImages(now).firstOrNull { selection.start >= it.start.toInt() && selection.start < it.end.toInt() }
             if (image != null) return@collect state.edit { this.selection = TextRange(image.end.toInt()) }
-            // Nor into a task link: the caret goes to the line's end, after it.
-            val link = currentLinks.firstOrNull { selection.start >= it.start.toInt() && selection.start < it.end.toInt() }
-            if (link != null) return@collect state.edit { this.selection = TextRange(link.end.toInt()) }
+            // Nor into a task link: the caret goes before it, so typing at a linked line's end
+            // goes into the title.
+            val link = markdownTaskLinks(now).firstOrNull { selection.start > it.start.toInt() && selection.start <= it.end.toInt() }
+            if (link != null) return@collect state.edit { this.selection = TextRange(link.start.toInt()) }
             snappedCaret(state.text, selection.start)?.let { state.edit { this.selection = TextRange(it) } }
         }
     }
@@ -300,13 +299,19 @@ private const val RETURN_WAIT_MS = 60L
  * goes in there instead, before what was typed since, and the caret stays after that.
  */
 private fun TextFieldState.typeNewline(at: Int? = null) = edit {
-    val start = at ?: selection.min
+    val from = at ?: selection.min
+    // Before a task link, the newline goes after it instead (nothing selected is replaced then).
+    val start = pastTaskLink(asCharSequence().toString(), from)
     val ahead = if (at == null) 0 else selection.min - at
-    replace(start, if (at == null) selection.max else start, "\n")
+    replace(start, if (at == null && start == from) selection.max else start, "\n")
     val change = onNewline(asCharSequence().toString(), start + 1)
     if (change != null) replace(change.start, change.end, change.text)
     selection = TextRange((change?.selStart ?: (start + 1)) + ahead)
 }
+
+/** Where a newline typed at [at] goes: after a task link that starts there, so the link stays on its line. */
+private fun pastTaskLink(text: String, at: Int): Int =
+    markdownTaskLinks(text).firstOrNull { at >= it.start.toInt() && at < it.end.toInt() }?.end?.toInt() ?: at
 
 private fun TextFieldBuffer.apply(change: Change?) {
     change ?: return
@@ -452,6 +457,17 @@ private object ListEditing : InputTransformation {
         // was composing in the same edit, so the length can grow by more than one.
         val typedNewline = caret > 0 && text[caret - 1] == '\n' && text.count { it == '\n' } > original.count { it == '\n' }
         val images = markdownImages(original)
+        // Any other edit that would break a task link only partly (keyboards replace and delete in
+        // their own ways) is undone: a link goes whole, with its line, or stays.
+        val damaged = markdownTaskLinks(original).any { link ->
+            val marker = original.substring(link.start.toInt(), link.end.toInt()).trim()
+            val id = marker.removePrefix("<!--task:").removeSuffix("-->")
+            marker !in text && id in text
+        }
+        if (damaged && !deletedOneBack) {
+            revertAllChanges()
+            return
+        }
         // Backspace at the end of a linked line takes the title's last letter, not the link.
         if (deletedOneBack) markdownTaskLinks(original).firstOrNull { was.start > it.start.toInt() && was.start <= it.end.toInt() }?.let { link ->
             revertAllChanges()
@@ -484,7 +500,18 @@ private object ListEditing : InputTransformation {
         }
         when {
             deletedOneBack -> onBackspace(original, was.start)?.let { revertAllChanges(); apply(it) }
-            typedNewline -> apply(onNewline(text, caret))
+            typedNewline -> {
+                // Return before a task link: the newline goes after it.
+                val after = pastTaskLink(original, was.min)
+                if (was.collapsed && after != was.min && text.length == original.length + 1) {
+                    revertAllChanges()
+                    replace(after, after, "\n")
+                    selection = TextRange(after + 1)
+                    apply(onNewline(asCharSequence().toString(), after + 1))
+                } else {
+                    apply(onNewline(text, caret))
+                }
+            }
         }
     }
 }

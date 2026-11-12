@@ -99,10 +99,14 @@ struct MarkdownEditor: NSViewRepresentable {
             guard let textView = notification.object as? MarkdownTextView else { return }
             let selection = textView.selectedRange()
             guard selection.length == 0 else { return }
-            // Nor into a task link: the caret goes to the line's end, after it.
-            let hidden = textView.imageLines.map(\.range) + textView.taskLinks
-            guard let range = hidden.first(where: { NSLocationInRange(selection.location, $0) }) else { return }
-            textView.setSelectedRange(NSRange(location: NSMaxRange(range), length: 0))
+            if let image = textView.imageLines.first(where: { NSLocationInRange(selection.location, $0.range) }) {
+                textView.setSelectedRange(NSRange(location: NSMaxRange(image.range), length: 0))
+            }
+            // Nor into a task link: the caret goes before it, so typing at a linked line's end
+            // goes into the title.
+            if let link = textView.taskLinks.first(where: { selection.location > $0.location && selection.location <= NSMaxRange($0) }) {
+                textView.setSelectedRange(NSRange(location: link.location, length: 0))
+            }
         }
 
         /// Backspace into an image takes it out whole; typing right after one starts a new line.
@@ -174,6 +178,11 @@ struct MarkdownEditor: NSViewRepresentable {
 
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
             guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            // Return before a task link: the new line starts after it, so the link stays put.
+            if let view = textView as? MarkdownTextView, view.selectedRange().length == 0,
+               let link = view.taskLinks.first(where: { $0.location == view.selectedRange().location }) {
+                view.setSelectedRange(NSRange(location: NSMaxRange(link), length: 0))
+            }
             return (textView as? MarkdownTextView)?.continueList() ?? false
         }
     }
