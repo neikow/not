@@ -191,6 +191,7 @@ impl Store {
         storage::init(&db)?;
 
         let doc = LoroDoc::new();
+        crate::note_links::configure(&doc);
         for blob in storage::load_doc(&db, WORKSPACE)? {
             doc.import(&blob)?;
         }
@@ -240,7 +241,11 @@ impl Store {
         };
 
         // Created after loading, so stored history isn't undoable.
-        let history = Mutex::new(UndoManager::new(&doc));
+        let history = {
+            let mut history = UndoManager::new(&doc);
+            history.add_exclude_origin_prefix(crate::checklist::MIGRATE_ORIGIN);
+            Mutex::new(history)
+        };
 
         Ok(Self {
             inner: Mutex::new(Inner {
@@ -787,12 +792,33 @@ impl Store {
     }
 
     /// Runs `mutate` as one Loro commit (one undo step), then persists and projects it.
+    ///
+    /// Notes with checklist lines linked to tasks catch up with the change in the same commit (see
+    /// [`crate::note_links`]).
     pub(crate) fn transact<T>(&self, mutate: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.transact_with_origin("", mutate)
+    }
+
+    /// [`Store::transact`] with a commit origin (undo skips some origins).
+    pub(crate) fn transact_with_origin<T>(
+        &self,
+        origin: &str,
+        mutate: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
         let (out, changed) = {
             let mut inner = self.lock();
             let out = mutate();
+            if out.is_ok()
+                && let Err(e) = self.sync_note_links()
+            {
+                debug_assert!(false, "linked notes didn't catch up: {e}");
+            }
             // Commit and flush even on error so the read model never lags behind applied ops.
-            self.doc.commit();
+            if origin.is_empty() {
+                self.doc.commit();
+            } else {
+                self.doc.commit_with(loro::CommitOptions::new().origin(origin));
+            }
             (out, self.flush(&mut inner)?)
         };
         if changed {

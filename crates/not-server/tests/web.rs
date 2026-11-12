@@ -261,7 +261,7 @@ async fn shared_lists_update_live_and_close_when_revoked() {
 }
 
 #[tokio::test]
-async fn note_pages_show_task_blocks_as_their_tasks() {
+async fn note_pages_show_linked_checklists_as_checklists() {
     let (state, base) = start().await;
     let code = state.create_pairing_code().unwrap();
     let client = SyncClient::from_credentials(&SyncClient::pair(&base, &code.code, "Phone").await.unwrap());
@@ -270,9 +270,13 @@ async fn note_pages_show_task_blocks_as_their_tasks() {
         .create_note(None, "Trip\n- [ ] passport\n  - [ ] renew <b>")
         .unwrap();
     let body = phone.note_body(&note).unwrap();
+    let today = not_core::date::Date::parse("2026-11-12").unwrap();
     phone
-        .checklist_to_tasks(&note, &body, 5, body.len() as u32, None, "")
+        .checklist_to_tasks(&note, &body, 5, body.len() as u32, None, "", today)
         .unwrap();
+    let list = phone.lists().unwrap().into_iter().find(|l| l.title == "Trip").unwrap();
+    let passport = phone.tasks(&list.id).unwrap().into_iter().find(|t| t.title == "passport").unwrap();
+    phone.set_completed(&passport.id, true, today).unwrap();
     client.sync(&phone).await.unwrap();
 
     let code = state.create_pairing_code().unwrap().code;
@@ -293,8 +297,9 @@ async fn note_pages_show_task_blocks_as_their_tasks() {
     let (status, _, html) = send(&state, get(&format!("/n/{note}"), Some(&cookie))).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        html.contains("☐ passport") && html.contains("renew &lt;b&gt;"),
+        html.contains("☑ passport") && html.contains("☐ renew &lt;b&gt;"),
         "{html}"
     );
     assert!(!html.contains("not-tasks:"), "no markup shows");
+    assert!(!html.contains("task:"), "no link shows");
 }

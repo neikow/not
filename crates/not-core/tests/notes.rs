@@ -3,6 +3,10 @@ mod common;
 use common::Log;
 use not_core::{NoteSort, NoteSummary, Store};
 
+fn day() -> not_core::date::Date {
+    not_core::date::Date::parse("2026-11-12").unwrap()
+}
+
 fn titles(notes: &[NoteSummary]) -> Vec<&str> {
     notes.iter().map(|n| n.title.as_str()).collect()
 }
@@ -51,7 +55,7 @@ fn folders_nest_and_delete_with_their_notes() {
     store.delete_note_or_folder(&home).unwrap();
     assert_eq!(store.folders().unwrap().len(), 1);
     assert!(store.notes(None).unwrap().is_empty());
-    assert!(store.set_note_body(&soup, "x").is_err());
+    assert!(store.set_note_body(&soup, "x", day()).is_err());
 
     store.undo().unwrap();
     assert_eq!(titles(&store.notes(None).unwrap()), ["Soup"]);
@@ -67,8 +71,8 @@ fn concurrent_body_edits_merge() {
     log.sync(&mac);
     log.sync(&phone);
 
-    mac.set_note_body(&id, "Groceries\nmilk\neggs").unwrap();
-    phone.set_note_body(&id, "Shopping\nmilk").unwrap();
+    mac.set_note_body(&id, "Groceries\nmilk\neggs", day()).unwrap();
+    phone.set_note_body(&id, "Shopping\nmilk", day()).unwrap();
     log.sync(&mac);
     log.sync(&phone);
     log.sync(&mac);
@@ -109,11 +113,17 @@ fn dragging_switches_a_folder_to_manual_order() {
     assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["c", "a", "b"]);
 
     // Editing no longer reshuffles; new notes go on top.
-    store.set_note_body(&ids[1], "b edited").unwrap();
+    store.set_note_body(&ids[1], "b edited", day()).unwrap();
     store.create_note(Some(&work), "d").unwrap();
-    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["d", "c", "a", "b edited"]);
+    assert_eq!(
+        titles(&store.notes(Some(&work)).unwrap()),
+        ["d", "c", "a", "b edited"]
+    );
     store.move_note_before(&ids[2], None).unwrap();
-    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["d", "a", "b edited", "c"]);
+    assert_eq!(
+        titles(&store.notes(Some(&work)).unwrap()),
+        ["d", "a", "b edited", "c"]
+    );
 
     // Undo goes back step by step; switching back sorts by edits again.
     store.set_folder_manual_order(&work, false).unwrap();
@@ -136,7 +146,10 @@ fn notes_from_before_fractional_indexes_can_be_reordered() {
         let meta = tree.get_meta(n).unwrap();
         meta.insert("kind", "note").unwrap();
         meta.insert("updated_at", i as i64).unwrap();
-        meta.ensure_mergeable_text("body").unwrap().insert(0, title).unwrap();
+        meta.ensure_mergeable_text("body")
+            .unwrap()
+            .insert(0, title)
+            .unwrap();
         ids.push(n.to_string());
     }
     old.commit();
@@ -186,20 +199,34 @@ fn folders_and_all_notes_sort_by_edit_creation_or_title() {
     pause();
     store.create_note(Some(&work), "cherry").unwrap();
     pause();
-    store.set_note_body(&banana, "banana\nedited last").unwrap();
+    store
+        .set_note_body(&banana, "banana\nedited last", day())
+        .unwrap();
 
     assert_eq!(store.folders().unwrap()[0].sort, NoteSort::Edited);
-    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["banana", "cherry", "Apple"]);
+    assert_eq!(
+        titles(&store.notes(Some(&work)).unwrap()),
+        ["banana", "cherry", "Apple"]
+    );
     store.set_note_sort(Some(&work), NoteSort::Created).unwrap();
-    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["cherry", "Apple", "banana"]);
+    assert_eq!(
+        titles(&store.notes(Some(&work)).unwrap()),
+        ["cherry", "Apple", "banana"]
+    );
     store.set_note_sort(Some(&work), NoteSort::Title).unwrap();
     assert_eq!(store.folders().unwrap()[0].sort, NoteSort::Title);
-    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["Apple", "banana", "cherry"]);
+    assert_eq!(
+        titles(&store.notes(Some(&work)).unwrap()),
+        ["Apple", "banana", "cherry"]
+    );
 
     // By hand starts from what was shown.
     store.set_note_sort(Some(&work), NoteSort::Manual).unwrap();
     assert!(store.folders().unwrap()[0].manual_order);
-    assert_eq!(titles(&store.notes(Some(&work)).unwrap()), ["Apple", "banana", "cherry"]);
+    assert_eq!(
+        titles(&store.notes(Some(&work)).unwrap()),
+        ["Apple", "banana", "cherry"]
+    );
 
     store.set_note_sort(None, NoteSort::Title).unwrap();
     assert_eq!(store.all_notes_sort(), NoteSort::Title);

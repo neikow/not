@@ -1,8 +1,5 @@
 package dev.lysen.not
 
-import dev.lysen.not.core.markdownTaskBlocks
-import androidx.compose.ui.text.rememberTextMeasurer
-
 import androidx.compose.ui.layout.onSizeChanged
 
 import androidx.compose.ui.text.style.LineHeightStyle
@@ -79,14 +76,19 @@ import dev.lysen.not.ui.NotColors
 /**
  * A plain-text markdown editor that styles the markdown in place, using the core's spans so notes
  * look the same as on the Mac. The first line reads as the title; checklist boxes and bullets are
- * drawn over their (hidden) markup, and tapping a box ticks it. Return continues lists. Image and
- * task block lines are drawn over their hidden markup too, and edited only as whole lines.
+ * drawn over their (hidden) markup, and tapping a box ticks it. Return continues lists. Image lines
+ * are drawn over their hidden markup too, and edited only as whole lines. Boxes on [linkedLines]
+ * (line indexes of checklist lines linked to tasks) are drawn in the accent.
  */
 @Composable
-fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier, taskBlocks: TaskBlockActions? = null) {
+fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier, linkedLines: Set<Int> = emptySet()) {
     val colors = Not.colors
     val text = state.text.toString()
     val marks = remember(text) { listMarks(markdownSpans(text)) }
+    // Line index of each box, to tell linked ones.
+    val boxLines = remember(text, marks) {
+        marks.filterIsInstance<ListMark.Box>().associateWith { box -> text.substring(0, box.at).count { it == '\n' } }
+    }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val currentMarks by rememberUpdatedState(marks)
 
@@ -108,17 +110,7 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier, taskBloc
             image.id to (px + IMAGE_GAP.toPx() * 2).toSp()
         }
     }
-    // Task blocks: drawn from the tasks as they are now (read again on every change).
-    val blocks = remember(text) { markdownTaskBlocks(text) }
-    val blockViews = remember(text, changes) { blocks.associate { it.markup to taskBlocks?.view?.invoke(it.markup) } }
-    val gapPx = with(density) { IMAGE_GAP.toPx() }
-    val blockHeights = with(density) { blockViews.mapValues { (_, view) -> taskBlockHeight(view, gapPx).toSp() } }
-    val currentBlocks by rememberUpdatedState(blocks)
-    val currentBlockViews by rememberUpdatedState(blockViews)
-    val currentActions by rememberUpdatedState(taskBlocks)
-    val measurer = rememberTextMeasurer()
-    val type = Not.type
-    val styling = remember(colors, heights, blockHeights) { MarkdownStyling(colors, heights, blockHeights) }
+    val styling = remember(colors, heights) { MarkdownStyling(colors, heights) }
 
     // The caret never rests inside a box's or bullet's hidden markup.
     // Checked against the text as it is now (an edit may have just moved the markup), also when
@@ -126,7 +118,7 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier, taskBloc
     LaunchedEffect(state) {
         snapshotFlow { state.text.toString() to state.selection }.collect { (now, selection) ->
             if (!selection.collapsed) return@collect
-            // Nothing is typed into an image's or task block's hidden markup: the caret goes after it.
+            // Nothing is typed into an image's hidden markup: the caret goes after it.
             val line = atomicLines(now).firstOrNull { selection.start >= it.first && selection.start < it.last }
             if (line != null) return@collect state.edit { this.selection = TextRange(line.last) }
             snappedCaret(state.text, selection.start)?.let { state.edit { this.selection = TextRange(it) } }
@@ -180,31 +172,11 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier, taskBloc
         modifier = modifier
             .onSizeChanged { width = it.width }
             .then(heldReturn)
-            // Taps on a box tick it instead of moving the caret there; taps on a task block go to
-            // its rows.
+            // Taps on a box tick it instead of moving the caret there.
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(pass = PointerEventPass.Initial)
                     val text = layout ?: return@awaitEachGesture
-                    val hit = currentBlocks.firstNotNullOfOrNull { block ->
-                        text.taskBlockRect(block, size.width.toFloat(), IMAGE_GAP.toPx())
-                            ?.takeIf { it.contains(down.position) }
-                            ?.let { block to it }
-                    }
-                    if (hit != null) {
-                        val (block, rect) = hit
-                        down.consume()
-                        val up = waitForUpOrCancellation(PointerEventPass.Initial) ?: return@awaitEachGesture
-                        up.consume()
-                        val actions = currentActions ?: return@awaitEachGesture
-                        when (val tap = taskBlockTap(currentBlockViews[block.markup], rect, up.position)) {
-                            is BlockTap.Toggle -> actions.toggle(tap.task)
-                            is BlockTap.Open -> actions.open(tap.task)
-                            BlockTap.Add -> actions.add(block.markup)
-                            null -> {}
-                        }
-                        return@awaitEachGesture
-                    }
                     val box = currentMarks.filterIsInstance<ListMark.Box>()
                         .firstOrNull { text.boxRect(it).inflate(12.dp.toPx()).contains(down.position) }
                         ?: return@awaitEachGesture
@@ -217,13 +189,9 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier, taskBloc
             .drawBehind {
                 val text = layout ?: return@drawBehind
                 for (image in images) drawImageLine(text, image, bitmaps[image.id], colors)
-                for (block in blocks) {
-                    val rect = text.taskBlockRect(block, size.width, gapPx) ?: continue
-                    drawTaskBlock(blockViews[block.markup], rect, measurer, type, colors) { r, checked -> drawBox(r, checked, colors) }
-                }
                 for (mark in marks) {
                     when (mark) {
-                        is ListMark.Box -> drawBox(text.boxRect(mark), mark.checked, colors)
+                        is ListMark.Box -> drawBox(text.boxRect(mark), mark.checked, colors, linked = boxLines[mark] in linkedLines)
                         is ListMark.Dot -> {
                             // Where a box's centre would be: half its 3-character markup in.
                             val r = text.getBoundingBox(mark.at)
@@ -296,7 +264,8 @@ private fun TextLayoutResult.boxRect(box: ListMark.Box): Rect {
     return Rect(markup.center - Offset(side / 2, side / 2), Size(side, side))
 }
 
-private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: NotColors) {
+/** A box; [linked] (its line is linked to a task) draws an open one in the accent. */
+private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: NotColors, linked: Boolean = false) {
     val corner = CornerRadius(rect.width * 0.25f)
     if (checked) {
         drawRoundRect(colors.accent, rect.topLeft, rect.size, corner)
@@ -310,7 +279,7 @@ private fun DrawScope.drawBox(rect: Rect, checked: Boolean, colors: NotColors) {
     } else {
         val stroke = 2.dp.toPx()
         drawRoundRect(
-            colors.inkFaint,
+            if (linked) colors.accentInk else colors.inkFaint,
             rect.topLeft + Offset(stroke / 2, stroke / 2),
             Size(rect.width - stroke, rect.height - stroke),
             corner,
@@ -339,10 +308,9 @@ private fun TextFieldState.typeNewline(at: Int? = null) = edit {
     selection = TextRange((change?.selStart ?: (start + 1)) + ahead)
 }
 
-/** Image and task block lines (start until end, as an IntRange-like pair): edited only whole. */
+/** Image lines (start until end, as an IntRange-like pair): edited only whole. */
 private fun atomicLines(text: String): List<IntRange> =
-    markdownImages(text).map { it.start.toInt()..it.end.toInt() } +
-        markdownTaskBlocks(text).map { it.start.toInt()..it.end.toInt() }
+    markdownImages(text).map { it.start.toInt()..it.end.toInt() }
 
 private fun TextFieldBuffer.apply(change: Change?) {
     change ?: return
@@ -354,14 +322,12 @@ private fun TextFieldBuffer.apply(change: Change?) {
 private class MarkdownStyling(
     private val colors: NotColors,
     private val imageHeights: Map<String, TextUnit>,
-    private val blockHeights: Map<String, TextUnit>,
 ) : OutputTransformation {
     override fun TextFieldBuffer.transformOutput() {
         val raw = asCharSequence().toString()
         val spans = markdownSpans(raw)
         val styled = this
-        val tall = markdownImages(raw).map { Triple(it.start.toInt(), it.end.toInt(), imageHeights[it.id] ?: 160.sp) } +
-            markdownTaskBlocks(raw).map { Triple(it.start.toInt(), it.end.toInt(), blockHeights[it.markup] ?: 60.sp) }
+        val tall = markdownImages(raw).map { Triple(it.start.toInt(), it.end.toInt(), imageHeights[it.id] ?: 160.sp) }
         for ((start, end, height) in tall) {
             // A paragraph style has to take in its newline, or the newline splits off as a line of its own.
             val paragraphEnd = if (end < raw.length && raw[end] == '\n') end + 1 else end
@@ -489,7 +455,7 @@ private object ListEditing : InputTransformation {
         // was composing in the same edit, so the length can grow by more than one.
         val typedNewline = caret > 0 && text[caret - 1] == '\n' && text.count { it == '\n' } > original.count { it == '\n' }
         val lines = atomicLines(original)
-        // Backspace after an image or task block takes it (and its line) out whole.
+        // Backspace after an image takes it (and its line) out whole.
         if (deletedOneBack) lines.firstOrNull { was.start > it.first && was.start <= it.last }?.let { line ->
             revertAllChanges()
             val (s, e) = line.first to line.last

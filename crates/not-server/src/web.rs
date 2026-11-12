@@ -355,7 +355,7 @@ async fn note_page(
         .to_owned();
     let body = format!(
         r#"<main><article class="note">{}</article></main>"#,
-        markdown_html(&text, &|line| task_block_html(&store, line))
+        markdown_html(&text)
     );
     page(
         &title,
@@ -674,32 +674,8 @@ fn task_rows(
     out
 }
 
-/// A task block line as the list it shows (read only), or `None` for other lines.
-fn task_block_html(store: &not_core::Store, line: &str) -> Option<String> {
-    let source = not_core::markdown::task_blocks(line).into_iter().next()?.source;
-    let block = store.task_block(&source).ok()?;
-    if block.gone {
-        return Some(r#"<p class="muted">Tasks deleted</p>"#.to_owned());
-    }
-    let mut out = String::from(r#"<ul class="block">"#);
-    for row in &block.rows {
-        let done = row.task.completed_at.is_some();
-        let _ = write!(
-            out,
-            r#"<li style="--depth:{}"{}>{} {}</li>"#,
-            row.depth,
-            if done { r#" class="done""# } else { "" },
-            if done { "☑" } else { "☐" },
-            esc(&row.task.title)
-        );
-    }
-    out.push_str("</ul>");
-    Some(out)
-}
-
 /// Headings, bullets, checkboxes and paragraphs: enough to read a note; everything escaped.
-/// `block` renders task block lines.
-fn markdown_html(text: &str, block: &dyn Fn(&str) -> Option<String>) -> String {
+fn markdown_html(text: &str) -> String {
     let mut out = String::new();
     let mut in_list = false;
     let images: std::collections::HashMap<usize, String> = {
@@ -720,12 +696,8 @@ fn markdown_html(text: &str, block: &dyn Fn(&str) -> Option<String>) -> String {
     };
     for (index, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
-        if let Some(html) = block(line) {
-            if in_list {
-                out.push_str("</ul>");
-                in_list = false;
-            }
-            out.push_str(&html);
+        // A task block of an earlier version, until the note is opened in an app: markup only.
+        if !not_core::markdown::task_blocks(line).is_empty() {
             continue;
         }
         if let Some(id) = images.get(&index) {
@@ -828,7 +800,7 @@ button.check:hover{border-color:var(--accent-ink)}
 details{margin-top:16px}summary{cursor:pointer;color:var(--muted);padding:8px 0}
 ul.notes{list-style:none;padding:0;margin:0;display:grid;gap:8px}ul.notes a{display:flex;flex-direction:column;padding:12px 16px;border-radius:16px;background:var(--surface);color:inherit;text-decoration:none}
 ul.notes span{color:var(--muted);font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.note{background:var(--surface);border-radius:20px;padding:8px 20px}.note p{margin:.3rem 0}.note ul.block{list-style:none;padding:0}.note ul.block li{padding:2px 0 2px calc(var(--depth)*24px)}.note ul.block li.done{color:var(--faint);text-decoration:line-through}.note img{display:block;max-width:100%;max-height:70vh;border-radius:12px;margin:.6rem 0}
+.note{background:var(--surface);border-radius:20px;padding:8px 20px}.note p{margin:.3rem 0}.note img{display:block;max-width:100%;max-height:70vh;border-radius:12px;margin:.6rem 0}
 .signout{margin-top:32px}code{background:var(--surface);padding:1px 6px;border-radius:6px}
 "#;
 

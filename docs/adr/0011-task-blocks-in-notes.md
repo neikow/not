@@ -1,6 +1,6 @@
 # 0011 — Checklists made into tasks show as a live task block
 
-Status: accepted (2026-11-12); replaces per-line task links (briefly shipped the same day)
+Status: superseded by 0012 (2026-11-12); replaced per-line task links (briefly shipped the same day)
 
 ## Context
 "Make tasks" turns a note's checklist into tasks. The user wants them to stay in the note and keep

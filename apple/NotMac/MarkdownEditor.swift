@@ -19,10 +19,12 @@ struct MarkdownEditor: NSViewRepresentable {
     var onAddImage: ((Data) -> String?)?
     /// An image id to put in at the caret, with a counter so the same picture can go in twice.
     var imageToInsert: (id: String, request: Int)?
-    /// Bumped when images arrive from the server, so placeholders redraw. Also redraws task blocks.
+    /// Bumped when images arrive from the server, so placeholders redraw.
     var imageVersion = 0
-    /// Ticks, opens and adds tasks from task blocks; without it blocks are read only.
-    var taskBlocks: TaskBlockActions?
+    /// Line indexes of checklist lines linked to tasks: their boxes are drawn in the accent.
+    var linkedLines: Set<Int> = []
+    /// What "Make tasks" would take from a UTF-16 range of the text (items not linked yet).
+    var checklist: ((_ text: String, _ range: NSRange) -> NoteChecklist?)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -67,7 +69,7 @@ struct MarkdownEditor: NSViewRepresentable {
             editor.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
         }
         editor.onAddImage = onAddImage
-        editor.blockActions = taskBlocks
+        if editor.linkedLines != linkedLines { editor.linkedLines = linkedLines }
         if let insert = imageToInsert, context.coordinator.imageRequest != insert.request {
             context.coordinator.imageRequest = insert.request
             editor.insertImageLine(imageMarkup(id: insert.id))
@@ -97,7 +99,7 @@ struct MarkdownEditor: NSViewRepresentable {
             imageVersion = parent.imageVersion
         }
 
-        /// Nothing is typed into an image's or task block's hidden markup: the caret goes after it.
+        /// Nothing is typed into an image's hidden markup: the caret goes after it.
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? MarkdownTextView else { return }
             let selection = textView.selectedRange()
@@ -107,8 +109,7 @@ struct MarkdownEditor: NSViewRepresentable {
             textView.setSelectedRange(NSRange(location: NSMaxRange(line), length: 0))
         }
 
-        /// Backspace into an image or task block takes it out whole; typing right after one starts
-        /// a new line.
+        /// Backspace into an image takes it out whole; typing right after one starts a new line.
         func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString text: String?) -> Bool {
             guard let view = textView as? MarkdownTextView, let text, !view.editingImages else { return true }
             let ns = view.string as NSString
@@ -136,15 +137,12 @@ struct MarkdownEditor: NSViewRepresentable {
         }
 
         /// "Make N Tasks In ▸ New List “Groceries” / Inbox / lists…" for the checklist items the
-        /// selection touches; nil when there are none. A task block takes their place.
+        /// selection touches and that aren't linked yet; nil when there are none. The lines stay,
+        /// linked to their tasks.
         func makeTasksItem(for textView: NSTextView) -> NSMenuItem? {
             guard let make = parent.onMakeTasks else { return nil }
             let range = textView.selectedRange()
-            guard let checklist = noteChecklist(
-                body: textView.string,
-                start: UInt32(range.location),
-                end: UInt32(range.location + range.length)
-            ) else { return nil }
+            guard let checklist = parent.checklist?(textView.string, range) else { return nil }
             let items = checklist.count == 1 ? "1 Task" : "\(checklist.count) Tasks"
             let item = NSMenuItem(title: "Make \(items) In", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
@@ -175,15 +173,12 @@ final class MarkdownTextView: NSTextView {
     var imageLines: [(range: NSRange, id: String)] = [] {
         didSet { needsDisplay = true }
     }
-    /// Task block lines (whole line, without its newline) and their markup; set by `MarkdownStyler`.
-    var taskBlocks: [(range: NSRange, markup: String)] = [] {
+    /// Line indexes of checklist lines linked to tasks.
+    var linkedLines: Set<Int> = [] {
         didSet { needsDisplay = true }
     }
-    /// The blocks as they were when last styled, by markup.
-    var blockViews: [String: TaskBlockView] = [:]
-    var blockActions: TaskBlockActions?
-    /// Lines edited only whole: images and task blocks.
-    var atomicLines: [NSRange] { imageLines.map(\.range) + taskBlocks.map(\.range) }
+    /// Lines edited only whole: images.
+    var atomicLines: [NSRange] { imageLines.map(\.range) }
     var onAddImage: ((Data) -> String?)?
     private var styledWidth: CGFloat = 0
     /// Set while the image rules make their own edit, so they don't apply to it again.
@@ -198,7 +193,7 @@ final class MarkdownTextView: NSTextView {
     /// Images are sized to the width, so a resize restyles them.
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        if !imageLines.isEmpty || !taskBlocks.isEmpty, abs(newSize.width - styledWidth) > 1 {
+        if !imageLines.isEmpty, abs(newSize.width - styledWidth) > 1 {
             styledWidth = newSize.width
             MarkdownStyler.apply(to: self)
         }
@@ -263,16 +258,6 @@ final class MarkdownTextView: NSTextView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        for block in taskBlocks {
-            guard let rect = lineRect(block.range), rect.contains(point) else { continue }
-            switch TaskBlockLayout.tap(blockViews[block.markup], in: rect, at: point) {
-            case let .toggle(task): blockActions?.toggle(task)
-            case let .open(task): blockActions?.open(task)
-            case .add: blockActions?.add(block.markup)
-            case nil: break
-            }
-            return
-        }
         for case let .box(at, checked) in marks where boxRect(at: at).insetBy(dx: -6, dy: -4).contains(point) {
             replace(NSRange(location: at + 1, length: 1), with: checked ? " " : "x")
             return
@@ -295,16 +280,14 @@ final class MarkdownTextView: NSTextView {
             }
             NSGraphicsContext.restoreGraphicsState()
         }
-        for block in taskBlocks {
-            guard let box = lineRect(block.range), box.intersects(rect) else { continue }
-            TaskBlockLayout.draw(blockViews[block.markup], in: box) { drawCheckbox($0, checked: $1) }
-        }
+        let ns = string as NSString
         for mark in marks {
             switch mark {
             case let .box(at, checked):
                 let box = boxRect(at: at)
                 guard box.intersects(rect) else { continue }
-                drawCheckbox(box, checked: checked)
+                let line = ns.substring(to: min(at, ns.length)).reduce(0) { $1 == "\n" ? $0 + 1 : $0 }
+                drawCheckbox(box, checked: checked, linked: linkedLines.contains(line))
             case let .dot(at):
                 let center = markCenter(at: at)
                 NSColor.controlAccentColor.setFill()
@@ -313,7 +296,8 @@ final class MarkdownTextView: NSTextView {
         }
     }
 
-    private func drawCheckbox(_ box: NSRect, checked: Bool) {
+    /// A box; `linked` (its line is linked to a task) draws an open one in the accent.
+    private func drawCheckbox(_ box: NSRect, checked: Bool, linked: Bool = false) {
         let path = NSBezierPath(roundedRect: box, xRadius: 3.5, yRadius: 3.5)
         if checked {
             NSColor.controlAccentColor.setFill()
@@ -330,21 +314,9 @@ final class MarkdownTextView: NSTextView {
         } else {
             let inset = NSBezierPath(roundedRect: box.insetBy(dx: 0.75, dy: 0.75), xRadius: 3, yRadius: 3)
             inset.lineWidth = 1.5
-            NSColor.tertiaryLabelColor.setStroke()
+            (linked ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor).setStroke()
             inset.stroke()
         }
-    }
-
-    /// A task block's box: its line fragment, less the gap, full width.
-    private func lineRect(_ range: NSRange) -> NSRect? {
-        guard let layout = layoutManager, range.location < (string as NSString).length else { return nil }
-        let glyph = layout.glyphIndexForCharacter(at: range.location)
-        let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-        let origin = textContainerOrigin
-        let padding = textContainer?.lineFragmentPadding ?? 0
-        let height = line.height - MarkdownStyler.imageGap * 2 - 7 // less lineSpacing + paragraphSpacing
-        guard height > 0 else { return nil }
-        return NSRect(x: origin.x + line.minX + padding, y: origin.y + line.minY + MarkdownStyler.imageGap, width: line.width - padding * 2, height: height)
     }
 
     /// Where an image line's picture goes: its line fragment, less the gap, as wide as it fits.
@@ -537,25 +509,6 @@ enum MarkdownStyler {
                     range: NSRange(location: at, length: 1)
                 )
             }
-        }
-        // Task blocks: markup hidden, the line as tall as the block's rows are now.
-        let blocks = markdownTaskBlocks(text: storage.string)
-        var views: [String: TaskBlockView] = [:]
-        for block in blocks {
-            let range = NSRange(location: Int(block.start), length: Int(block.end - block.start))
-            let view = (textView as? MarkdownTextView)?.blockActions?.view(block.markup)
-            if let view { views[block.markup] = view }
-            let paragraph = NSMutableParagraphStyle()
-            let height = TaskBlockLayout.height(view) + imageGap * 2
-            paragraph.minimumLineHeight = height
-            paragraph.maximumLineHeight = height
-            paragraph.lineSpacing = 3
-            paragraph.paragraphSpacing = 4
-            storage.addAttributes([.font: NSFont.systemFont(ofSize: 0.1), .foregroundColor: NSColor.clear, .paragraphStyle: paragraph], range: range)
-        }
-        (textView as? MarkdownTextView)?.blockViews = views
-        (textView as? MarkdownTextView)?.taskBlocks = blocks.map {
-            (NSRange(location: Int($0.start), length: Int($0.end - $0.start)), $0.markup)
         }
         // Image lines: markup hidden, the line as tall as the picture at the editor's width.
         let images = markdownImages(text: storage.string)

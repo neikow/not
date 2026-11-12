@@ -1,7 +1,5 @@
 package dev.lysen.not
 
-import androidx.compose.runtime.collectAsState
-
 import dev.lysen.not.core.imageMarkup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -12,7 +10,6 @@ import kotlinx.coroutines.launch
 
 import dev.lysen.not.core.NoteChecklist
 import dev.lysen.not.core.TaskList
-import dev.lysen.not.core.noteChecklist
 import androidx.compose.ui.text.TextRange
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -100,7 +97,7 @@ import kotlinx.coroutines.delay
 
 /** Notes of a folder (or all), with search; opening a note shows the editor. */
 @Composable
-fun NotesScreen(viewModel: NotesViewModel, tasks: TasksViewModel) {
+fun NotesScreen(viewModel: NotesViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val toasts = remember { ToastState() }
 
@@ -125,7 +122,7 @@ fun NotesScreen(viewModel: NotesViewModel, tasks: TasksViewModel) {
     Box(Modifier.fillMaxSize()) {
         if (open != null) {
             BackHandler { viewModel.open(null) }
-            NoteEditor(open, state, viewModel, tasks)
+            NoteEditor(open, state, viewModel)
         } else {
             NoteList(state, viewModel, showsFolders, onShowFolders = { showsFolders = it })
         }
@@ -569,31 +566,14 @@ private fun MoveSheet(note: NoteSummary, folders: List<Folder>, viewModel: Notes
 // ---- editor ----
 
 @Composable
-private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesViewModel, tasks: TasksViewModel) {
-    val editor = remember(note.id) { TextFieldState(viewModel.body(note.id)) }
+private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesViewModel) {
+    val editor = remember(note.id) { TextFieldState(viewModel.openBody(note.id)) }
     val text = editor.text.toString()
     // What the store had when last loaded or saved, to tell local edits from synced ones.
     var saved by remember(note.id) { mutableStateOf(text) }
     var actions by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf(false) }
     var makingTasks by remember { mutableStateOf(false) }
-    // A task block's "Add task": the block's line, while its prompt is open.
-    var addingTo by remember { mutableStateOf<String?>(null) }
-    // A task opened from a block, shown in the task sheet over the note.
-    var openedTask by remember { mutableStateOf(false) }
-    val tasksState by tasks.state.collectAsStateWithLifecycle()
-    val blockActions = remember(viewModel, tasks) {
-        TaskBlockActions(
-            view = viewModel::taskBlock,
-            toggle = tasks::toggle,
-            open = { task ->
-                tasks.select(task.listId)
-                tasks.openTask(task.id)
-                openedTask = true
-            },
-            add = { addingTo = it },
-        )
-    }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // The system photo picker: no storage permission, and it can't see more than what's picked.
@@ -608,7 +588,10 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
     val focus = remember { FocusRequester() }
     val selection = editor.selection
     // The checklist items under the caret or selection, which "Make tasks" would take.
-    val checklist = remember(text, selection) { noteChecklist(text, selection.min.toUInt(), selection.max.toUInt()) }
+    val changes by (LocalContext.current.applicationContext as NotApp).changes.collectAsStateWithLifecycle()
+    // Lines linked to tasks, as the store has them (read again on every change).
+    val linkedLines = remember(note.id, saved, changes) { viewModel.linkedLines(note.id) }
+    val checklist = remember(text, selection, linkedLines) { viewModel.checklist(note.id, text, selection.min, selection.max) }
     val colors = Not.colors
 
     LaunchedEffect(note.id, text) {
@@ -618,9 +601,8 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
             viewModel.setBody(note.id, text)
         }
     }
-    // Edited on another device, or a linked task ticked or renamed: take it unless there are
-    // unsaved local changes.
-    val changes by (LocalContext.current.applicationContext as NotApp).changes.collectAsState()
+    // Edited on another device, or a linked task ticked, renamed or given a subtask: take it unless
+    // there are unsaved local changes.
     LaunchedEffect(note.updatedAt, changes) {
         val body = viewModel.body(note.id)
         if (text == saved && body != text) {
@@ -661,7 +643,7 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp, vertical = 8.dp)
                 .focusRequester(focus),
-            taskBlocks = blockActions,
+            linkedLines = linkedLines,
         )
         FormatBar(
             editor,
@@ -671,44 +653,12 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
             onMore = { actions = true },
         )
     }
-    addingTo?.let { markup ->
-        PromptDialog(
-            title = "New task",
-            confirm = "Add",
-            placeholder = "What needs doing?",
-            onConfirm = { title ->
-                addingTo = null
-                val added = viewModel.addTaskFromBlock(markup, title) ?: return@PromptDialog
-                // A block of picked tasks takes the new one in: its line changes.
-                if (added.markup != markup) editor.edit {
-                    val at = asCharSequence().indexOf(markup)
-                    if (at >= 0) replace(at, at + markup.length, added.markup)
-                }
-            },
-            onDismiss = { addingTo = null },
-        )
-    }
-    if (openedTask) {
-        val task = tasksState.openTask
-        if (task == null) {
-            LaunchedEffect(Unit) { openedTask = false }
-        } else {
-            TaskDetailSheet(task, tasksState, tasks, onDismiss = {
-                tasks.openTask(null)
-                openedTask = false
-            })
-        }
-    }
     if (makingTasks && checklist != null) {
         MakeTasksSheet(checklist, viewModel.taskLists(), onDismiss = { makingTasks = false }) { listId, title ->
             makingTasks = false
-            val moved = viewModel.checklistToTasks(note.id, text, selection.min, selection.max, listId, if (listId == null) title else "", title)
-            if (moved != null) {
-                editor.edit {
-                    replace(0, length, moved.body)
-                    this.selection = TextRange(moved.caret.toInt())
-                }
-                saved = moved.body
+            // The text stays as it is: its lines are linked, and the body was saved with them.
+            if (viewModel.checklistToTasks(note.id, text, selection.min, selection.max, listId, if (listId == null) title else "", title) != null) {
+                saved = text
             }
         }
     }

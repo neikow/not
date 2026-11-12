@@ -145,6 +145,8 @@ private struct NoteEditor: View {
     @State private var text = ""
     /// What the store had when last loaded or saved, to tell local edits from synced ones.
     @State private var saved = ""
+    /// Line indexes of checklist lines linked to tasks, as the store has them.
+    @State private var linkedLines: Set<Int> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -159,29 +161,25 @@ private struct NoteEditor: View {
                 taskLists: model.lists,
                 onMakeTasks: { range, listID, title in
                     let end = range.location + range.length
-                    if let body = model.checklistToTasks(note.id, text, start: range.location, end: end, listID: listID, newList: listID == nil ? title : "") {
-                        text = body
-                        saved = body
+                    // The text stays as it is: its lines are linked, and the body was saved with them.
+                    if model.checklistToTasks(note.id, text, start: range.location, end: end, listID: listID, newList: listID == nil ? title : "") {
+                        saved = text
+                        linkedLines = model.noteLinkedLines(note.id)
                     }
                 },
                 onAddImage: model.addImage,
                 imageToInsert: model.imageToInsert,
                 imageVersion: model.imageVersion,
-                taskBlocks: TaskBlockActions(
-                    view: model.taskBlock,
-                    toggle: model.toggle,
-                    open: model.showTask,
-                    add: { markup in
-                        if let grown = model.addTaskFromBlock(markup), grown != markup {
-                            text = text.replacingOccurrences(of: markup, with: grown)
-                        }
-                    }
-                )
+                linkedLines: linkedLines,
+                checklist: { text, range in
+                    model.noteChecklist(note.id, text, start: range.location, end: range.location + range.length)
+                }
             )
         }
         .onAppear {
-            text = model.noteBody(note.id)
+            text = model.openNote(note.id)
             saved = text
+            linkedLines = model.noteLinkedLines(note.id)
         }
         // Saving pauses briefly after typing stops.
         .task(id: text) {
@@ -190,15 +188,17 @@ private struct NoteEditor: View {
             guard !Task.isCancelled else { return }
             saved = text
             model.setNoteBody(note.id, text)
+            linkedLines = model.noteLinkedLines(note.id)
         }
         .onChange(of: [note.updatedAt, Int64(model.imageVersion)]) {
-            // Edited on another device, or a linked task ticked or renamed: take it unless there
-            // are unsaved local changes.
+            // Edited on another device, or a linked task ticked, renamed or given a subtask: take it
+            // unless there are unsaved local changes.
             let body = model.noteBody(note.id)
             if text == saved, body != text {
                 text = body
                 saved = body
             }
+            linkedLines = model.noteLinkedLines(note.id)
         }
         .onDisappear {
             if text != saved { model.setNoteBody(note.id, text) }

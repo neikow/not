@@ -157,54 +157,12 @@ pub fn markdown_images(text: String) -> Vec<NoteImage> {
         .collect()
 }
 
-/// A task block line in a note: its UTF-16 range, and the line's text, which is what
-/// `task_block` and `add_task_from_block` take.
+/// A note line linked to a task: see `Store::note_links`.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct NoteTaskBlock {
-    pub start: u32,
-    pub end: u32,
-    pub markup: String,
-}
-
-/// The task block lines (`![](not-tasks:…)`) of a note, for the editor to draw.
-#[uniffi::export]
-pub fn markdown_task_blocks(text: String) -> Vec<NoteTaskBlock> {
-    not_core::markdown::task_blocks(&text)
-        .into_iter()
-        .map(|b| NoteTaskBlock {
-            start: b.start,
-            end: b.end,
-            markup: not_core::markdown::task_block_markup(&b.source),
-        })
-        .collect()
-}
-
-/// What a task block shows now: rows like a list's outline (depths from the block's top level).
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct TaskBlockView {
-    /// The list's title for a whole-list block; empty for picked tasks.
-    pub title: String,
-    /// Where tasks added from the block go.
-    pub list_id: String,
-    pub rows: Vec<OutlineRow>,
-    /// The list or every picked task was deleted (or hasn't synced yet).
-    pub gone: bool,
-}
-
-/// A task added from a block: its id, and the block's line now (picked-task blocks take the new
-/// task in, so the editor replaces the old line with this one).
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct BlockTaskAdded {
+pub struct NoteLink {
+    /// Index of the line in the body (split on `\n`).
+    pub line: u32,
     pub task_id: String,
-    pub markup: String,
-}
-
-fn block_source(markup: &str) -> Result<not_core::markdown::TaskSource, NotError> {
-    not_core::markdown::task_blocks(markup.trim())
-        .into_iter()
-        .next()
-        .map(|b| b.source)
-        .ok_or_else(|| not_core::Error::Invalid(format!("not a task block: {markup:?}")).into())
 }
 
 /// The line to insert for an image added with `add_image`.
@@ -224,23 +182,10 @@ pub struct NoteChecklist {
     pub suggested_title: String,
 }
 
-/// The checklist items (`- [ ] …`) on the lines the selection `start..end` (UTF-16) touches in
-/// `body`; `None` when there are none, so "Make tasks" can hide.
-#[uniffi::export]
-pub fn note_checklist(body: String, start: u32, end: u32) -> Option<NoteChecklist> {
-    not_core::checklist(&body, start, end).map(|c| NoteChecklist {
-        count: c.items.len() as u32,
-        titles: c.items.into_iter().map(|i| i.title).collect(),
-        suggested_title: c.suggested_title,
-    })
-}
-
-/// What moving a checklist into tasks did; the editor shows `body` with the caret at `caret`.
+/// What making tasks of a checklist did: the lines stay, linked to `count` new tasks in `list_id`.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ChecklistMoved {
     pub list_id: String,
-    pub body: String,
-    pub caret: u32,
     pub count: u32,
 }
 
@@ -934,34 +879,6 @@ impl NotStore {
         Ok(self.store.create_note(folder_id.as_deref(), &body)?)
     }
 
-    /// What the task block line `markup` shows now.
-    pub fn task_block(&self, markup: String) -> Result<TaskBlockView, NotError> {
-        let block = self.store.task_block(&block_source(&markup)?)?;
-        Ok(TaskBlockView {
-            title: block.title,
-            list_id: block.list_id,
-            rows: block
-                .rows
-                .into_iter()
-                .map(|r| OutlineRow {
-                    task: r.task.into(),
-                    depth: r.depth,
-                    done: r.done,
-                })
-                .collect(),
-            gone: block.gone,
-        })
-    }
-
-    /// Adds a task from the block line `markup`; see [`BlockTaskAdded`].
-    pub fn add_task_from_block(&self, markup: String, title: String) -> Result<BlockTaskAdded, NotError> {
-        let (task_id, source) = self.store.add_task_from_block(&block_source(&markup)?, &title)?;
-        Ok(BlockTaskAdded {
-            task_id,
-            markup: not_core::markdown::task_block_markup(&source),
-        })
-    }
-
     /// Keeps an image (JPEG, PNG, WebP or GIF bytes, already downscaled) for notes; returns the id
     /// for [`image_markup`]. Syncs beside the doc.
     pub fn add_image(&self, bytes: Vec<u8>) -> Result<String, NotError> {
@@ -973,9 +890,30 @@ impl NotStore {
         Ok(self.store.image(&id)?)
     }
 
-    /// Makes tasks of the checklist items the selection touches in `body` (what the editor shows),
-    /// in `list_id` or a new list titled `new_list` (empty: the suggested title) when `list_id` is
-    /// `None`. A task block line takes their place; one undo step.
+    /// What "Make tasks" would take from the selection `start..end` (UTF-16) in `body` (what the
+    /// editor shows): checklist items not already linked to tasks. `None` hides "Make tasks".
+    pub fn note_checklist(
+        &self,
+        note_id: String,
+        body: String,
+        start: u32,
+        end: u32,
+    ) -> Result<Option<NoteChecklist>, NotError> {
+        Ok(self
+            .store
+            .note_checklist(&note_id, &body, start, end)?
+            .map(|c| NoteChecklist {
+                count: c.items.len() as u32,
+                titles: c.items.into_iter().map(|i| i.title).collect(),
+                suggested_title: c.suggested_title,
+            }))
+    }
+
+    /// Makes tasks of the checklist items the selection touches in `body` (what the editor shows,
+    /// saved first), in `list_id` or a new list titled `new_list` (empty: the suggested title)
+    /// when `list_id` is `None`. The lines stay, each linked to its task; one undo step. `today`
+    /// is the user's date (`YYYY-MM-DD`).
+    #[allow(clippy::too_many_arguments)]
     pub fn checklist_to_tasks(
         &self,
         note_id: String,
@@ -984,21 +922,45 @@ impl NotStore {
         end: u32,
         list_id: Option<String>,
         new_list: String,
+        today: String,
     ) -> Result<ChecklistMoved, NotError> {
-        let m = self
-            .store
-            .checklist_to_tasks(&note_id, &body, start, end, list_id.as_deref(), &new_list)?;
+        let m = self.store.checklist_to_tasks(
+            &note_id,
+            &body,
+            start,
+            end,
+            list_id.as_deref(),
+            &new_list,
+            date(&today)?,
+        )?;
         Ok(ChecklistMoved {
             list_id: m.list_id,
-            body: m.body,
-            caret: m.caret,
             count: m.count,
         })
     }
 
-    /// Replaces the markdown body; merges with concurrent edits from other devices.
-    pub fn set_note_body(&self, id: String, body: String) -> Result<(), NotError> {
-        Ok(self.store.set_note_body(&id, &body)?)
+    /// Replaces the markdown body; merges with concurrent edits from other devices. Edits of lines
+    /// linked to tasks tick, reopen or rename them; `today` is the user's date (`YYYY-MM-DD`).
+    pub fn set_note_body(&self, id: String, body: String, today: String) -> Result<(), NotError> {
+        Ok(self.store.set_note_body(&id, &body, date(&today)?)?)
+    }
+
+    /// The body for the editor to open (notes from earlier versions brought up to date first).
+    pub fn open_note(&self, id: String) -> Result<String, NotError> {
+        Ok(self.store.open_note(&id)?)
+    }
+
+    /// The note's lines linked to tasks.
+    pub fn note_links(&self, id: String) -> Result<Vec<NoteLink>, NotError> {
+        Ok(self
+            .store
+            .note_links(&id)?
+            .into_iter()
+            .map(|l| NoteLink {
+                line: l.line,
+                task_id: l.task_id,
+            })
+            .collect())
     }
 
     pub fn set_note_pinned(&self, id: String, pinned: bool) -> Result<(), NotError> {

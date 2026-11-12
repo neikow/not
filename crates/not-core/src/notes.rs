@@ -152,20 +152,12 @@ impl Store {
         })
     }
 
-    /// Replaces the body; the text CRDT merges it with concurrent edits from other devices.
-    pub fn set_note_body(&self, id: &str, body: &str) -> Result<()> {
+    /// Replaces the body; the text CRDT merges it with concurrent edits from other devices. Lines
+    /// linked to tasks whose box or title changed tick, reopen or rename their task in the same
+    /// undo step (`today` is the user's date, for repeating tasks).
+    pub fn set_note_body(&self, id: &str, body: &str, today: crate::date::Date) -> Result<()> {
         let id = self.notes_node(id, KIND_NOTE)?;
-        self.transact(|| {
-            let meta = self.notes.get_meta(id)?;
-            let text = meta.ensure_mergeable_text(BODY)?;
-            if text.to_string() == body {
-                return Ok(());
-            }
-            text.update(body, Default::default())
-                .map_err(|e| Error::Invalid(format!("note body: {e}")))?;
-            meta.insert(UPDATED_AT, now_millis())?;
-            Ok(())
-        })
+        self.transact(|| self.write_note_body(id, body, today).map(|_| ()))
     }
 
     pub fn set_note_pinned(&self, id: &str, pinned: bool) -> Result<()> {
@@ -416,7 +408,8 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// The markdown body (per-line task links of an earlier version taken out).
+    /// The markdown body (per-line task links of an earlier version taken out; see
+    /// [`Store::open_note`]).
     pub fn note_body(&self, id: &str) -> Result<String> {
         let body: String = {
             let inner = self.lock();

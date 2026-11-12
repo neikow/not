@@ -101,7 +101,7 @@ fun NotAppUi(
                     tab = Tab.Habits
                 })
                 Tab.Habits -> HabitsScreen(habits)
-                Tab.Notes -> NotesScreen(notes, tasks)
+                Tab.Notes -> NotesScreen(notes)
                 Tab.Workouts -> WorkoutsScreen(workouts)
             }
         }
