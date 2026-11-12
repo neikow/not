@@ -152,7 +152,7 @@ pub struct ListenerId(u64);
 /// blob and refreshes the read model in a single SQLite transaction.
 pub struct Store {
     pub(crate) doc: LoroDoc,
-    tasks: LoroTree,
+    pub(crate) tasks: LoroTree,
     pub(crate) habits: LoroTree,
     pub(crate) habit_log: LoroMap,
     pub(crate) notes: LoroTree,
@@ -873,14 +873,14 @@ impl Store {
     }
 
     /// Where tasks can go: the Inbox (the tree root), a list, or a task.
-    fn container(&self, id: &str) -> Result<TreeParentId> {
+    pub(crate) fn container(&self, id: &str) -> Result<TreeParentId> {
         if id == INBOX {
             return Ok(TreeParentId::Root);
         }
         Ok(TreeParentId::Node(self.node(id, &[KIND_LIST, KIND_TASK])?))
     }
 
-    fn node(&self, id: &str, kinds: &[&str]) -> Result<TreeID> {
+    pub(crate) fn node(&self, id: &str, kinds: &[&str]) -> Result<TreeID> {
         if id == INBOX {
             return Err(Error::Invalid(
                 "the Inbox is built in and can't be changed".into(),
@@ -980,7 +980,7 @@ fn push_subtree(
 }
 
 /// New tasks go first in a list (or the Inbox) and last under a task.
-fn create_task_node(tree: &LoroTree, parent: TreeParentId) -> Result<TreeID> {
+pub(crate) fn create_task_node(tree: &LoroTree, parent: TreeParentId) -> Result<TreeID> {
     let under_task =
         matches!(parent, TreeParentId::Node(p) if projection::kind(tree, p).as_deref() == Some(KIND_TASK));
     Ok(if under_task {

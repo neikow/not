@@ -39,6 +39,12 @@ struct NotesView: View {
                     }
                     .help("Sort notes in this folder — drag a note to sort by hand")
                 }
+                if model.selectedNote != nil {
+                    Button(action: model.pickImagesForNote) {
+                        Label("Add Image", systemImage: "photo.badge.plus")
+                    }
+                    .help("Add images to the note (or paste or drop them in)")
+                }
                 if let note = model.selectedNote {
                     Button { model.togglePin(note) } label: {
                         Label(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin")
@@ -147,7 +153,21 @@ private struct NoteEditor: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .padding(.top, 10)
-            MarkdownEditor(text: $text, focusRequests: model.editorFocusRequests)
+            MarkdownEditor(
+                text: $text,
+                focusRequests: model.editorFocusRequests,
+                taskLists: model.lists,
+                onMakeTasks: { range, listID, title in
+                    let end = range.location + range.length
+                    if let body = model.checklistToTasks(note.id, text, start: range.location, end: end, listID: listID, newList: listID == nil ? title : "") {
+                        text = body
+                        saved = body
+                    }
+                },
+                onAddImage: model.addImage,
+                imageToInsert: model.imageToInsert,
+                imageVersion: model.imageVersion
+            )
         }
         .onAppear {
             text = model.noteBody(note.id)

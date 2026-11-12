@@ -207,3 +207,68 @@ mod tests {
         assert_eq!(PairingLink::parse("https://example.com/?server=a&code=b"), None);
     }
 }
+
+// ---- images ----
+
+/// How a note points at an image: `![](not-image:<id>)` on a line of its own.
+pub const IMAGE_SCHEME: &str = "not-image:";
+
+/// Image kinds notes carry, by file extension.
+pub const IMAGE_EXTENSIONS: [&str; 4] = ["jpg", "png", "webp", "gif"];
+
+/// An image's id: the SHA-256 of its bytes in hex, then its kind's extension
+/// (`9f86d0….jpg`). Content-addressed, so the same picture is stored and synced once, and the
+/// server can check an upload is what its name says. `None` for bytes that aren't a known kind.
+pub fn image_id(bytes: &[u8]) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let ext = image_extension(bytes)?;
+    let hash = Sha256::digest(bytes);
+    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    Some(format!("{hex}.{ext}"))
+}
+
+/// Looks like an image id (no hashing): 64 lowercase hex digits, a dot, a known extension.
+pub fn is_image_id(id: &str) -> bool {
+    id.split_once('.').is_some_and(|(hash, ext)| {
+        hash.len() == 64
+            && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            && IMAGE_EXTENSIONS.contains(&ext)
+    })
+}
+
+/// The MIME type for an image id's extension.
+pub fn image_mime(id: &str) -> &'static str {
+    match id.rsplit('.').next() {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "image/jpeg",
+    }
+}
+
+/// From the file's magic bytes.
+fn image_extension(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0xFF, 0xD8, 0xFF, ..] => Some("jpg"),
+        [0x89, b'P', b'N', b'G', ..] => Some("png"),
+        [b'G', b'I', b'F', b'8', ..] => Some("gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("webp"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn ids_name_the_bytes() {
+        let png = b"\x89PNG\r\n\x1a\nrest";
+        let id = image_id(png).unwrap();
+        assert!(id.ends_with(".png") && is_image_id(&id));
+        assert_eq!(image_id(png), Some(id), "same bytes, same id");
+        assert_eq!(image_id(b"not an image"), None);
+        assert!(!is_image_id("../etc/passwd.png"));
+        assert!(!is_image_id(&format!("{}.exe", "a".repeat(64))));
+    }
+}

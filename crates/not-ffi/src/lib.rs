@@ -136,6 +136,64 @@ pub fn markdown_spans(text: String) -> Vec<MarkdownSpan> {
         .collect()
 }
 
+/// An image line in a note: UTF-16 range of the line and the image's id.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NoteImage {
+    pub start: u32,
+    pub end: u32,
+    pub id: String,
+}
+
+/// The image lines (`![](not-image:<id>)` alone on a line) of a note, for the editor to draw.
+#[uniffi::export]
+pub fn markdown_images(text: String) -> Vec<NoteImage> {
+    not_core::markdown::images(&text)
+        .into_iter()
+        .map(|i| NoteImage {
+            start: i.start,
+            end: i.end,
+            id: i.id,
+        })
+        .collect()
+}
+
+/// The line to insert for an image added with `add_image`.
+#[uniffi::export]
+pub fn image_markup(id: String) -> String {
+    not_core::markdown::image_markup(&id)
+}
+
+/// What "Make tasks" would take from a note: see [`note_checklist`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NoteChecklist {
+    /// Items found, in order.
+    pub count: u32,
+    /// Titles in order, for the picker's preview.
+    pub titles: Vec<String>,
+    /// For a new list: the nearest heading above the items, else the note's title.
+    pub suggested_title: String,
+}
+
+/// The checklist items (`- [ ] …`) on the lines the selection `start..end` (UTF-16) touches in
+/// `body`; `None` when there are none, so "Make tasks" can hide.
+#[uniffi::export]
+pub fn note_checklist(body: String, start: u32, end: u32) -> Option<NoteChecklist> {
+    not_core::checklist(&body, start, end).map(|c| NoteChecklist {
+        count: c.items.len() as u32,
+        titles: c.items.into_iter().map(|i| i.title).collect(),
+        suggested_title: c.suggested_title,
+    })
+}
+
+/// What moving a checklist into tasks did; the editor shows `body` with the caret at `caret`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ChecklistMoved {
+    pub list_id: String,
+    pub body: String,
+    pub caret: u32,
+    pub count: u32,
+}
+
 /// Server URL and one-time code, as carried by a pairing QR code.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PairingLink {
@@ -824,6 +882,40 @@ impl NotStore {
 
     pub fn create_note(&self, folder_id: Option<String>, body: String) -> Result<String, NotError> {
         Ok(self.store.create_note(folder_id.as_deref(), &body)?)
+    }
+
+    /// Keeps an image (JPEG, PNG, WebP or GIF bytes, already downscaled) for notes; returns the id
+    /// for [`image_markup`]. Syncs beside the doc.
+    pub fn add_image(&self, bytes: Vec<u8>) -> Result<String, NotError> {
+        Ok(self.store.add_image(&bytes)?)
+    }
+
+    /// An image's bytes; `None` until it has arrived from the server.
+    pub fn image(&self, id: String) -> Result<Option<Vec<u8>>, NotError> {
+        Ok(self.store.image(&id)?)
+    }
+
+    /// Moves the checklist items the selection touches in `body` (what the editor shows) into
+    /// `list_id`, or a new list titled `new_list` (empty: the suggested title) when `list_id` is
+    /// `None`. The note is saved without them; one undo step.
+    pub fn checklist_to_tasks(
+        &self,
+        note_id: String,
+        body: String,
+        start: u32,
+        end: u32,
+        list_id: Option<String>,
+        new_list: String,
+    ) -> Result<ChecklistMoved, NotError> {
+        let m = self
+            .store
+            .checklist_to_tasks(&note_id, &body, start, end, list_id.as_deref(), &new_list)?;
+        Ok(ChecklistMoved {
+            list_id: m.list_id,
+            body: m.body,
+            caret: m.caret,
+            count: m.count,
+        })
     }
 
     /// Replaces the markdown body; merges with concurrent edits from other devices.

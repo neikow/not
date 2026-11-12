@@ -304,7 +304,9 @@ private struct TaskListView: View {
 
     private var parsed: ParsedTask? { model.parse(draft.text, dismissed: draft.dismissed) }
 
-    private var isEmpty: Bool { model.outline.open.isEmpty && model.outline.completed.isEmpty }
+    private var isEmpty: Bool {
+        model.outline.open.isEmpty && model.outline.completed.isEmpty && !(model.isToday && !model.todayHabits.isEmpty)
+    }
 
     /// The last open row under the task getting a subtask: the inline field goes after it.
     private var subtaskAnchorID: String? {
@@ -399,6 +401,14 @@ private struct TaskListView: View {
 
     private var taskList: some View {
         List(selection: $model.selectedTaskID) {
+            // Today's habits lead, as rows like the tasks under them.
+            if model.isToday {
+                ForEach(model.todayHabits, id: \.habit.id) { summary in
+                    TodayHabitRow(summary: summary, model: model)
+                        .selectionDisabled()
+                        .moveDisabled(true)
+                }
+            }
             ForEach(model.outline.open, id: \.task.id) { row in
                 TaskRowView(row: row, model: model, showsList: model.isDateView)
                 if row.task.id == subtaskAnchorID, let parent = model.addingSubtaskTo,
@@ -486,6 +496,51 @@ private struct TaskListView: View {
             guard press.modifiers == .command, model.editingTaskID == nil else { return .ignored }
             model.moveSelected(by: press.key == .upArrow ? -1 : 1)
             return .handled
+        }
+    }
+}
+
+/// A habit on Today, shaped like a task row: its ring checks in (showing the goal's progress),
+/// double-clicking opens it in Habits. Done ones stay, struck through.
+private struct TodayHabitRow: View {
+    let summary: HabitSummary
+    let model: AppModel
+
+    private var habit: Habit { summary.habit }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Button { withAnimation(.snappy) { model.toggleHabit(habit.id) } } label: {
+                HabitRing(summary: summary, size: 15)
+            }
+            .buttonStyle(.plain)
+            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+            .help(summary.doneToday ? "Done today. Click to take it back." : "Check in")
+            VStack(alignment: .leading, spacing: 1) {
+                Text(habit.title)
+                    .strikethrough(summary.doneToday)
+                    .foregroundStyle(summary.doneToday ? .secondary : .primary)
+                HStack(spacing: 4) {
+                    Image(systemName: "repeat")
+                    Text(scheduleText(habit, summary))
+                    if summary.streak > 0, !summary.doneToday {
+                        Label("\(summary.streak)\(streakUnit(habit.period))", systemImage: "flame.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { model.openHabit(habit.id) }
+        .contextMenu {
+            Button("Check In") { model.logHabit(habit.id, 1) }.disabled(summary.doneToday)
+            Button("Take One Back") { model.logHabit(habit.id, -1) }.disabled(summary.count == 0)
+            Divider()
+            Button("Show in Habits") { model.openHabit(habit.id) }
         }
     }
 }

@@ -1,5 +1,21 @@
 package dev.lysen.not
 
+import androidx.compose.ui.layout.onSizeChanged
+
+import androidx.compose.ui.text.style.LineHeightStyle
+
+import dev.lysen.not.core.NoteImage
+import dev.lysen.not.core.markdownImages
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.collectAsState
+import kotlin.math.roundToInt
+
 import dev.lysen.not.ui.Text
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.text.TextStyle
@@ -65,16 +81,39 @@ import dev.lysen.not.ui.NotColors
 @Composable
 fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
     val colors = Not.colors
-    val styling = remember(colors) { MarkdownStyling(colors) }
     val text = state.text.toString()
     val marks = remember(text) { listMarks(markdownSpans(text)) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val currentMarks by rememberUpdatedState(marks)
 
+    // Image lines: their markup is hidden and the line grows to the picture's height (drawn
+    // behind, like the boxes), sized to the field's width.
+    val images = remember(text) { markdownImages(text) }
+    val currentImages by rememberUpdatedState(images)
+    val density = LocalDensity.current
+    // The field's width (the text layout is only as wide as its longest line).
+    var width by remember { mutableStateOf(0) }
+    val changes by (LocalContext.current.applicationContext as NotApp).changes.collectAsState()
+    val bitmaps = rememberNoteImages(images.map { it.id }.distinct(), width, changes)
+    val heights = with(density) {
+        val placeholder = IMAGE_PLACEHOLDER_HEIGHT.toPx()
+        val most = IMAGE_MAX_HEIGHT.toPx()
+        images.associate { image ->
+            val bitmap = bitmaps[image.id]
+            val px = if (bitmap == null || width == 0) placeholder
+            else (width * bitmap.height.toFloat() / bitmap.width).coerceAtMost(most)
+            image.id to (px + IMAGE_GAP.toPx() * 2).toSp()
+        }
+    }
+    val styling = remember(colors, heights) { MarkdownStyling(colors, heights) }
+
     // The caret never rests inside a box's or bullet's hidden markup.
     LaunchedEffect(state) {
         snapshotFlow { state.selection }.collect { selection ->
             if (!selection.collapsed) return@collect
+            // Nothing is typed into an image's hidden markup: the caret goes after it.
+            val image = currentImages.firstOrNull { selection.start >= it.start.toInt() && selection.start < it.end.toInt() }
+            if (image != null) return@collect state.edit { this.selection = TextRange(image.end.toInt()) }
             snappedCaret(state.text, selection.start)?.let { state.edit { this.selection = TextRange(it) } }
         }
     }
@@ -124,6 +163,7 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
         cursorBrush = SolidColor(colors.accentInk),
         onTextLayout = { result -> layout = result() },
         modifier = modifier
+            .onSizeChanged { width = it.width }
             .then(heldReturn)
             // Taps on a box tick it instead of moving the caret there.
             .pointerInput(Unit) {
@@ -141,6 +181,7 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
             }
             .drawBehind {
                 val text = layout ?: return@drawBehind
+                for (image in images) drawImageLine(text, image, bitmaps[image.id], colors)
                 for (mark in marks) {
                     when (mark) {
                         is ListMark.Box -> drawBox(text.boxRect(mark), mark.checked, colors)
@@ -153,6 +194,32 @@ fun MarkdownField(state: TextFieldState, modifier: Modifier = Modifier) {
                 }
             },
     )
+}
+
+private val IMAGE_PLACEHOLDER_HEIGHT = 160.dp
+private val IMAGE_MAX_HEIGHT = 480.dp
+/** Space above and below a picture, inside its line. */
+private val IMAGE_GAP = 6.dp
+
+/** A picture filling its line's box (less the gap), with rounded corners; a soft block while it loads. */
+private fun DrawScope.drawImageLine(text: TextLayoutResult, image: NoteImage, bitmap: ImageBitmap?, colors: NotColors) {
+    val line = text.getLineForOffset(image.start.toInt())
+    val gap = IMAGE_GAP.toPx()
+    val top = text.getLineTop(line) + gap
+    val height = text.getLineBottom(line) - gap - top
+    if (height <= 0f) return
+    val width = if (bitmap == null) size.width else minOf(size.width, height * bitmap.width / bitmap.height)
+    val corner = CornerRadius(12.dp.toPx())
+    if (bitmap == null) {
+        drawRoundRect(colors.sunken, Offset(0f, top), Size(width, height), corner)
+        return
+    }
+    val clip = androidx.compose.ui.graphics.Path().apply {
+        addRoundRect(androidx.compose.ui.geometry.RoundRect(Rect(Offset(0f, top), Size(width, height)), corner))
+    }
+    clipPath(clip) {
+        drawImage(bitmap, dstOffset = IntOffset(0, top.roundToInt()), dstSize = IntSize(width.roundToInt(), height.roundToInt()))
+    }
 }
 
 /** Width of a box's `[ ]` markup: three monospaced characters at 13sp. */
@@ -240,11 +307,26 @@ private fun TextFieldBuffer.apply(change: Change?) {
 }
 
 /** Styles the markdown in place; the text itself is left alone, so offsets map one to one. */
-private class MarkdownStyling(private val colors: NotColors) : OutputTransformation {
+private class MarkdownStyling(private val colors: NotColors, private val imageHeights: Map<String, TextUnit>) : OutputTransformation {
     override fun TextFieldBuffer.transformOutput() {
         val raw = asCharSequence().toString()
         val spans = markdownSpans(raw)
         val styled = this
+        for (image in markdownImages(raw)) {
+            val (start, end) = image.start.toInt() to image.end.toInt()
+            // A paragraph style has to take in its newline, or the newline splits off as a line of its own.
+            val paragraphEnd = if (end < raw.length && raw[end] == '\n') end + 1 else end
+            // No trimming: the default trims a one-line paragraph back down to its (tiny) text.
+            styled.addStyle(
+                ParagraphStyle(
+                    lineHeight = imageHeights[image.id] ?: 160.sp,
+                    lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
+                ),
+                start,
+                paragraphEnd,
+            )
+            styled.addStyle(SpanStyle(color = Color.Transparent, fontSize = 1.sp), start, end)
+        }
         titleRange(raw, spans)?.let { (start, end) ->
             styled.addStyle(ParagraphStyle(lineHeight = TitleStyle.lineHeight), start, end)
             styled.addStyle(TitleStyle.toSpanStyle(), start, end)
@@ -357,6 +439,27 @@ private object ListEditing : InputTransformation {
         // A newline before the caret that wasn't there before. The keyboard may commit the word it
         // was composing in the same edit, so the length can grow by more than one.
         val typedNewline = caret > 0 && text[caret - 1] == '\n' && text.count { it == '\n' } > original.count { it == '\n' }
+        val images = markdownImages(original)
+        // Backspace after an image takes the whole image (and its line) out.
+        if (deletedOneBack) images.firstOrNull { was.start > it.start.toInt() && was.start <= it.end.toInt() }?.let { image ->
+            revertAllChanges()
+            val (s, e) = image.start.toInt() to image.end.toInt()
+            val (from, to) = when {
+                s > 0 -> s - 1 to e
+                e < original.length -> s to e + 1
+                else -> s to e
+            }
+            replace(from, to, "")
+            selection = TextRange(from)
+            return
+        }
+        // Typing right after an image starts a new line, rather than breaking its markup.
+        if (was.collapsed && text.length > original.length && images.any { it.end.toInt() == was.start } &&
+            text.getOrNull(was.start) != '\n'
+        ) {
+            replace(was.start, was.start, "\n")
+            return
+        }
         when {
             deletedOneBack -> onBackspace(original, was.start)?.let { revertAllChanges(); apply(it) }
             typedNewline -> apply(onNewline(text, caret))

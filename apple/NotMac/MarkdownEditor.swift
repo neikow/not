@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import NotCore
 import SwiftUI
 
@@ -9,6 +10,17 @@ struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
     /// Bumped by the owner to move keyboard focus here.
     var focusRequests = 0
+    /// Where "Move to Tasks" in the context menu can send checklist items.
+    var taskLists: [TaskList] = []
+    /// Moves the checklist items in a UTF-16 range of the text into a list (nil: a new one with
+    /// the given title). Without it the menu item doesn't show.
+    var onMakeTasks: ((_ range: NSRange, _ listID: String?, _ title: String) -> Void)?
+    /// Keeps pasted or dropped image data (downscaled first) and returns its id.
+    var onAddImage: ((Data) -> String?)?
+    /// An image id to put in at the caret, with a counter so the same picture can go in twice.
+    var imageToInsert: (id: String, request: Int)?
+    /// Bumped when images arrive from the server, so placeholders redraw.
+    var imageVersion = 0
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -34,6 +46,7 @@ struct MarkdownEditor: NSViewRepresentable {
         editor.isAutomaticDashSubstitutionEnabled = false
         editor.textContainerInset = NSSize(width: 28, height: 22)
         editor.typingAttributes = MarkdownStyler.base
+        editor.registerForDraggedTypes([.fileURL, .png, .tiff])
         editor.string = text
         MarkdownStyler.apply(to: editor)
         scroll.documentView = editor
@@ -51,6 +64,15 @@ struct MarkdownEditor: NSViewRepresentable {
             let length = (text as NSString).length
             editor.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
         }
+        editor.onAddImage = onAddImage
+        if let insert = imageToInsert, context.coordinator.imageRequest != insert.request {
+            context.coordinator.imageRequest = insert.request
+            editor.insertImageLine(imageMarkup(id: insert.id))
+        }
+        if context.coordinator.imageVersion != imageVersion {
+            context.coordinator.imageVersion = imageVersion
+            MarkdownStyler.apply(to: editor)
+        }
         if context.coordinator.focusRequests != focusRequests {
             context.coordinator.focusRequests = focusRequests
             DispatchQueue.main.async { editor.window?.makeFirstResponder(editor) }
@@ -62,16 +84,79 @@ struct MarkdownEditor: NSViewRepresentable {
         var parent: MarkdownEditor
         weak var textView: MarkdownTextView?
         var focusRequests: Int
+        var imageRequest: Int?
+        var imageVersion: Int
 
         init(_ parent: MarkdownEditor) {
             self.parent = parent
             focusRequests = parent.focusRequests
+            imageRequest = parent.imageToInsert?.request
+            imageVersion = parent.imageVersion
+        }
+
+        /// Nothing is typed into an image's hidden markup: the caret goes after it.
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? MarkdownTextView else { return }
+            let selection = textView.selectedRange()
+            guard selection.length == 0,
+                  let image = textView.imageLines.first(where: { NSLocationInRange(selection.location, $0.range) })
+            else { return }
+            textView.setSelectedRange(NSRange(location: NSMaxRange(image.range), length: 0))
+        }
+
+        /// Backspace into an image takes it out whole; typing right after one starts a new line.
+        func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString text: String?) -> Bool {
+            guard let view = textView as? MarkdownTextView, let text, !view.editingImages else { return true }
+            let ns = view.string as NSString
+            if text.isEmpty, range.length > 0,
+               let image = view.imageLines.first(where: { NSIntersectionRange($0.range, range).length > 0 }),
+               NSMaxRange(range) <= NSMaxRange(image.range) {
+                var whole = image.range
+                if whole.location > 0 { whole = NSRange(location: whole.location - 1, length: whole.length + 1) }
+                else if NSMaxRange(whole) < ns.length { whole.length += 1 }
+                DispatchQueue.main.async { view.editImages { view.replace(whole, with: "") } }
+                return false
+            }
+            if !text.isEmpty, !text.hasPrefix("\n"), range.length == 0,
+               view.imageLines.contains(where: { NSMaxRange($0.range) == range.location }) {
+                DispatchQueue.main.async { view.editImages { view.replace(range, with: "\n" + text) } }
+                return false
+            }
+            return true
         }
 
         func textDidChange(_ notification: Notification) {
             guard let textView else { return }
             MarkdownStyler.apply(to: textView)
             parent.text = textView.string
+        }
+
+        /// "Move to Tasks ▸ New List “Groceries” / Inbox / lists…" for the checklist items the
+        /// selection touches; nil when there are none.
+        func makeTasksItem(for textView: NSTextView) -> NSMenuItem? {
+            guard let make = parent.onMakeTasks else { return nil }
+            let range = textView.selectedRange()
+            guard let checklist = noteChecklist(
+                body: textView.string,
+                start: UInt32(range.location),
+                end: UInt32(range.location + range.length)
+            ) else { return nil }
+            let items = checklist.count == 1 ? "1 Item" : "\(checklist.count) Items"
+            let item = NSMenuItem(title: "Move \(items) to Tasks", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            func add(_ title: String, _ image: String, _ run: @escaping () -> Void) {
+                let entry = ClosureMenuItem(title: title, run: run)
+                entry.image = NSImage(systemSymbolName: image, accessibilityDescription: nil)
+                submenu.addItem(entry)
+            }
+            add("New List “\(checklist.suggestedTitle)”", "plus") { make(range, nil, checklist.suggestedTitle) }
+            submenu.addItem(.separator())
+            add("Inbox", "tray") { make(range, inboxId(), "Inbox") }
+            for list in parent.taskLists where list.id != inboxId() {
+                add(list.title, "list.bullet") { make(range, list.id, list.title) }
+            }
+            item.submenu = submenu
+            return item
         }
 
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -82,9 +167,85 @@ struct MarkdownEditor: NSViewRepresentable {
 }
 
 final class MarkdownTextView: NSTextView {
+    /// Image lines (whole line, without its newline) the editor draws over; set by `MarkdownStyler`.
+    var imageLines: [(range: NSRange, id: String)] = [] {
+        didSet { needsDisplay = true }
+    }
+    var onAddImage: ((Data) -> String?)?
+    private var styledWidth: CGFloat = 0
+    /// Set while the image rules make their own edit, so they don't apply to it again.
+    private(set) var editingImages = false
+
+    func editImages(_ edit: () -> Void) {
+        editingImages = true
+        defer { editingImages = false }
+        edit()
+    }
+
+    /// Images are sized to the width, so a resize restyles them.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        if !imageLines.isEmpty, abs(newSize.width - styledWidth) > 1 {
+            styledWidth = newSize.width
+            MarkdownStyler.apply(to: self)
+        }
+    }
+
+    /// Pasting a picture (a screenshot, a copied photo) adds it as an image line.
+    override func paste(_ sender: Any?) {
+        let board = NSPasteboard.general
+        let hasText = board.string(forType: .string) != nil
+        if !hasText, addImages(from: board) { return }
+        super.paste(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if addImages(from: sender.draggingPasteboard) { return true }
+        return super.performDragOperation(sender)
+    }
+
+    /// Image files or image data on `board`, each as a line of its own at the caret.
+    private func addImages(from board: NSPasteboard) -> Bool {
+        guard let add = onAddImage else { return false }
+        var datas: [Data] = []
+        let urls = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingContentsConformToTypes: [UTType.image.identifier]]) as? [URL] ?? []
+        datas += urls.compactMap { try? Data(contentsOf: $0) }
+        if datas.isEmpty, let data = board.data(forType: .png) ?? board.data(forType: .tiff) {
+            datas.append(data)
+        }
+        let ids = datas.compactMap { NoteImageEncoder.encode($0).flatMap(add) }
+        for id in ids { insertImageLine(imageMarkup(id: id)) }
+        return !ids.isEmpty
+    }
+
+    /// Puts an image on a line of its own at the caret: after the caret's line, or in place of it
+    /// when it's empty, with the caret on a fresh line below.
+    func insertImageLine(_ markup: String) {
+        let ns = string as NSString
+        let at = NSMaxRange(selectedRange())
+        let line = ns.lineRange(for: NSRange(location: at, length: 0))
+        var content = line
+        if content.length > 0, ns.character(at: NSMaxRange(content) - 1) == 10 { content.length -= 1 }
+        let empty = ns.substring(with: content).trimmingCharacters(in: .whitespaces).isEmpty
+        let target = empty ? content : NSRange(location: NSMaxRange(content), length: 0)
+        let before = empty ? "" : "\n"
+        let after = NSMaxRange(target) < ns.length ? "" : "\n"
+        editImages { replace(target, with: before + markup + "\n" + after) }
+        setSelectedRange(NSRange(location: target.location + (before + markup + "\n" as NSString).length, length: 0))
+    }
+
     /// Checklist boxes and bullets drawn over their hidden markup; set by `MarkdownStyler`.
     var marks: [ListMark] = [] {
         didSet { needsDisplay = true }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        if let item = (delegate as? MarkdownEditor.Coordinator)?.makeTasksItem(for: self) {
+            menu.insertItem(item, at: 0)
+            menu.insertItem(.separator(), at: 1)
+        }
+        return menu
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -98,6 +259,19 @@ final class MarkdownTextView: NSTextView {
 
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
+        for line in imageLines {
+            guard let box = imageRect(line.range), box.intersects(rect) else { continue }
+            NSGraphicsContext.saveGraphicsState()
+            let path = NSBezierPath(roundedRect: box, xRadius: 10, yRadius: 10)
+            if let image = NoteImageCache.shared.image(line.id) {
+                path.addClip()
+                image.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            } else {
+                NSColor.quaternaryLabelColor.withAlphaComponent(0.15).setFill()
+                path.fill()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
         for mark in marks {
             switch mark {
             case let .box(at, checked):
@@ -128,6 +302,22 @@ final class MarkdownTextView: NSTextView {
                 NSBezierPath(ovalIn: NSRect(x: center.x - 2.5, y: center.y - 2.5, width: 5, height: 5)).fill()
             }
         }
+    }
+
+    /// Where an image line's picture goes: its line fragment, less the gap, as wide as it fits.
+    private func imageRect(_ range: NSRange) -> NSRect? {
+        guard let layout = layoutManager, range.location < (string as NSString).length else { return nil }
+        let glyph = layout.glyphIndexForCharacter(at: range.location)
+        let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let origin = textContainerOrigin
+        let padding = textContainer?.lineFragmentPadding ?? 0
+        let height = line.height - MarkdownStyler.imageGap * 2 - 7 // less lineSpacing + paragraphSpacing
+        guard height > 0 else { return nil }
+        var width = line.width - padding * 2
+        if let image = NoteImageCache.shared.image(imageLines.first { $0.range == range }?.id ?? "") , image.size.height > 0 {
+            width = min(width, height * image.size.width / image.size.height)
+        }
+        return NSRect(x: origin.x + line.minX + padding, y: origin.y + line.minY + MarkdownStyler.imageGap, width: width, height: height)
     }
 
     /// The square a box is drawn in, centred on its `[ ]`.
@@ -194,7 +384,7 @@ final class MarkdownTextView: NSTextView {
     }
 
     /// An undoable edit that goes through the delegate like typing.
-    private func replace(_ range: NSRange, with text: String) {
+    func replace(_ range: NSRange, with text: String) {
         guard shouldChangeText(in: range, replacementString: text) else { return }
         textStorage?.replaceCharacters(in: range, with: text)
         didChangeText()
@@ -305,10 +495,33 @@ enum MarkdownStyler {
                 )
             }
         }
+        // Image lines: markup hidden, the line as tall as the picture at the editor's width.
+        let images = markdownImages(text: storage.string)
+        let width = max((textView.textContainer?.size.width ?? 400) - 2 * (textView.textContainer?.lineFragmentPadding ?? 0), 100)
+        for image in images {
+            let range = NSRange(location: Int(image.start), length: Int(image.end - image.start))
+            var height = imagePlaceholderHeight
+            if let picture = NoteImageCache.shared.image(image.id), picture.size.width > 0 {
+                height = min(width * picture.size.height / picture.size.width, imageMaxHeight)
+            }
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.minimumLineHeight = height + imageGap * 2
+            paragraph.maximumLineHeight = height + imageGap * 2
+            paragraph.lineSpacing = 3
+            paragraph.paragraphSpacing = 4
+            storage.addAttributes([.font: NSFont.systemFont(ofSize: 0.1), .foregroundColor: NSColor.clear, .paragraphStyle: paragraph], range: range)
+        }
         storage.endEditing()
         textView.typingAttributes = base
         (textView as? MarkdownTextView)?.marks = marks
+        (textView as? MarkdownTextView)?.imageLines = images.map {
+            (NSRange(location: Int($0.start), length: Int($0.end - $0.start)), $0.id)
+        }
     }
+
+    static let imageGap: CGFloat = 6
+    static let imagePlaceholderHeight: CGFloat = 160
+    static let imageMaxHeight: CGFloat = 520
 
     /// The first non-blank line, which titles the note, unless it is a heading, quote or list item.
     private static func titleRange(_ text: NSString, spans: [(range: NSRange, style: MarkdownStyle)]) -> NSRange? {
@@ -330,4 +543,20 @@ enum MarkdownStyler {
         }
         return nil
     }
+}
+
+/// A menu item that runs a closure, for menus built on the fly.
+final class ClosureMenuItem: NSMenuItem {
+    private let run: () -> Void
+
+    init(title: String, run: @escaping () -> Void) {
+        self.run = run
+        super.init(title: title, action: #selector(fire), keyEquivalent: "")
+        target = self
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func fire() { run() }
 }

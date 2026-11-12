@@ -79,6 +79,7 @@ import dev.lysen.not.ui.ToastHost
 import dev.lysen.not.ui.ButtonKind
 import dev.lysen.not.ui.Spinner
 import androidx.compose.ui.platform.LocalContext
+import dev.lysen.not.core.HabitSummary
 import dev.lysen.not.core.ListShare
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.text.input.ImeAction
@@ -89,7 +90,7 @@ import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
+fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHabit: (String) -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val toasts = remember { ToastState() }
     var showsLists by remember { mutableStateOf(false) }
@@ -140,7 +141,13 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit) {
             next = neighbour(state, forward = true)?.second,
         ) {
             val outline = state.outline
-            if (outline.open.isEmpty()) {
+            // Today's habits lead, as rows like the tasks under them.
+            if (state.isToday) {
+                items(state.todayHabits, key = { "habit-${it.habit.id}" }) { summary ->
+                    TodayHabitRow(summary, viewModel, Modifier.animateItem(), onOpen = { onOpenHabit(summary.habit.id) })
+                }
+            }
+            if (outline.open.isEmpty() && !(state.isToday && state.todayHabits.isNotEmpty())) {
                 // Fades in once the last row has left, instead of popping in under it.
                 item(key = "empty") {
                     Box(Modifier.animateItem(fadeInSpec = tween(260, delayMillis = 180), fadeOutSpec = tween(120))) {
@@ -395,6 +402,60 @@ private fun TaskRow(
                 TaskMeta(row.task, done = row.done, listTitle = listTitle)
                 val preview = row.task.notes.lineSequence().firstOrNull { it.isNotBlank() }
                 if (preview != null) Text(preview, style = Not.type.caption, color = colors.inkMuted, maxLines = 1)
+            }
+        }
+    }
+}
+
+/**
+ * A habit on Today, shaped like a task row: its ring checks in (the goal's progress shows in it),
+ * swiping right checks in and left takes one back, tapping opens it on the Habits tab. Done ones
+ * stay, struck through, like ticked subtasks.
+ */
+@Composable
+private fun TodayHabitRow(summary: HabitSummary, viewModel: TasksViewModel, modifier: Modifier, onOpen: () -> Unit) {
+    val haptics = LocalHapticFeedback.current
+    val colors = Not.colors
+    val habit = summary.habit
+    val done = summary.doneToday
+    SwipeRow(
+        start = SwipeAction(R.drawable.ic_check, colors.accent, colors.onAccent) {
+            if (done) return@SwipeAction
+            haptics.performHapticFeedback(HapticFeedbackType.ToggleOn)
+            viewModel.logHabit(habit.id, 1)
+        },
+        end = SwipeAction(R.drawable.ic_remove, colors.sunken, colors.ink) {
+            if (summary.count == 0u) return@SwipeAction
+            haptics.performHapticFeedback(HapticFeedbackType.ToggleOff)
+            viewModel.logHabit(habit.id, -1)
+        },
+        modifier = modifier,
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(colors.background)
+                .pressable(onOpen, pressedScale = 0.985f, onClickLabel = "Open habit")
+                .heightIn(min = 56.dp)
+                .padding(start = 12.dp, end = 24.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HabitRing(summary, onClick = {
+                haptics.performHapticFeedback(if (done) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
+                viewModel.toggleHabit(habit.id)
+            }, size = 24.dp)
+            Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                Text(
+                    habit.title,
+                    style = Not.type.body,
+                    color = if (done) colors.inkFaint else colors.ink,
+                    textDecoration = if (done) TextDecoration.LineThrough else null,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(R.drawable.ic_repeat, null, tint = colors.inkFaint, size = 13.dp)
+                    Text(scheduleText(habit, summary), style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
+                    if (summary.streak > 0u && !done) Streak(summary.streak, habit.period)
+                }
             }
         }
     }

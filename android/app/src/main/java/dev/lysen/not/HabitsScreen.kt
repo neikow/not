@@ -273,7 +273,7 @@ private fun HabitRow(summary: HabitSummary, day: LocalDate, viewModel: HabitsVie
 
 /** The ring for a habit's goal: the day's for daily habits, the week's or month's otherwise. */
 @Composable
-private fun HabitRing(summary: HabitSummary, onClick: () -> Unit, size: Dp = 32.dp) {
+internal fun HabitRing(summary: HabitSummary, onClick: () -> Unit, size: Dp = 32.dp) {
     val habit = summary.habit
     if (habit.isDaily) {
         CheckRing(summary.count, habit.goal, summary.due, onClick, size)
@@ -284,7 +284,7 @@ private fun HabitRing(summary: HabitSummary, onClick: () -> Unit, size: Dp = 32.
 
 /** Flame and count; weeks and months get a unit so they don't read as days. */
 @Composable
-private fun Streak(n: UInt, period: HabitPeriod) {
+internal fun Streak(n: UInt, period: HabitPeriod) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         Icon(R.drawable.ic_flame, null, tint = StreakColor, size = 13.dp)
         val unit = when (period) {
@@ -583,7 +583,7 @@ private fun HistoryGrid(summary: HabitSummary, today: LocalDate, viewModel: Habi
 
 private fun isScheduled(days: UByte, day: DayOfWeek) = days.toInt() and (1 shl day.ordinal) != 0
 
-private fun scheduleText(habit: Habit, summary: HabitSummary): String {
+internal fun scheduleText(habit: Habit, summary: HabitSummary): String {
     if (!habit.isDaily) return "${goalText(habit.goal, habit.period)} · ${summary.progress} so far"
     val days = when (habit.days.toInt()) {
         everyDay().toInt() -> "Every day"

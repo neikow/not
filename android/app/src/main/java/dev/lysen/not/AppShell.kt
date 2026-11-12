@@ -95,7 +95,11 @@ fun NotAppUi(
     Box(Modifier.fillMaxSize().background(Not.colors.background)) {
         CompositionLocalProvider(LocalBottomBarHeight provides barHeight) {
             when (tab) {
-                Tab.Tasks -> TasksScreen(tasks, onOpenSettings = { showsSettings = true })
+                Tab.Tasks -> TasksScreen(tasks, onOpenSettings = { showsSettings = true }, onOpenHabit = { id ->
+                    habits.selectDay(java.time.LocalDate.now())
+                    habits.open(id)
+                    tab = Tab.Habits
+                })
                 Tab.Habits -> HabitsScreen(habits)
                 Tab.Notes -> NotesScreen(notes)
                 Tab.Workouts -> WorkoutsScreen(workouts)

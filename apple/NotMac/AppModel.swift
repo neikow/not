@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import NotCore
 import Observation
+import UniformTypeIdentifiers
 import SystemConfiguration
 
 @MainActor
@@ -88,6 +89,10 @@ final class AppModel {
     }
     /// Bumped to move keyboard focus to the note editor.
     private(set) var editorFocusRequests = 0
+    /// An image for the open note's editor to put in at the caret (see `MarkdownEditor`).
+    private(set) var imageToInsert: (id: String, request: Int)?
+    /// Bumped on every store change, so editors redraw images that just arrived.
+    private(set) var imageVersion = 0
 
     /// Latest first.
     private(set) var workouts: [WorkoutSummary] = []
@@ -127,6 +132,8 @@ final class AppModel {
         let observer = ModelObserver(model: self)
         store.setObserver(observer: observer)
         self.observer = observer
+        let store = store
+        NoteImageCache.shared.load = { id in (try? store.image(id: id)).flatMap { $0 } }
         selectedListID = inboxID
         reload()
 
@@ -165,9 +172,15 @@ final class AppModel {
             ] {
                 if let id = run({ try store.createNote(folderId: nil, body: body) }) { _ = id }
             }
+            // A note with a picture (the app icon), to see images drawn in the editor.
+            if let tiff = NSImage(named: NSImage.applicationIconName)?.tiffRepresentation,
+               let png = NoteImageEncoder.encode(tiff), let id = addImage(png) {
+                _ = run { try store.createNote(folderId: nil, body: "Photos\nThe icon:\n\(imageMarkup(id: id))\nafter") }
+            }
         }
         switch defaults.string(forKey: "show") {
         case "habits": selection = .habits
+        case "today": selection = .today
         case "workouts":
             selection = .workouts
             if workouts.isEmpty {
@@ -443,6 +456,16 @@ final class AppModel {
 
     var selectedHabit: HabitSummary? { habits.first { $0.habit.id == selectedHabitID } }
 
+    /// The habits on today's to-do, done ones included, for the top of Today.
+    var todayHabits: [HabitSummary] { habits.filter(\.onToday) }
+
+    /// Shows a habit in Habits, with its inspector open (from Today).
+    func openHabit(_ id: String) {
+        selection = .habits
+        selectedHabitID = id
+        showsInspector = true
+    }
+
     @discardableResult
     func addHabit(_ title: String) -> String? {
         guard !title.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
@@ -590,6 +613,32 @@ final class AppModel {
 
     func setNoteBody(_ id: String, _ body: String) {
         run { try store.setNoteBody(id: id, body: body) }
+    }
+
+    /// Keeps image data (downscaled first) for notes; its id, for `imageMarkup`.
+    func addImage(_ data: Data) -> String? {
+        run { try store.addImage(bytes: data) }
+    }
+
+    /// Picks image files and puts them into the open note at the caret.
+    func pickImagesForNote() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.message = "Add images to the note"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let data = try? Data(contentsOf: url), let encoded = NoteImageEncoder.encode(data), let id = addImage(encoded) else { continue }
+            imageToInsert = (id, (imageToInsert?.request ?? 0) + 1)
+        }
+    }
+
+    /// Moves the checklist items `start..<end` (UTF-16) touches in `body` into a list, or a new one
+    /// titled `newList` when `listID` is nil; returns the note's new body. ⌘Z puts them back.
+    func checklistToTasks(_ noteID: String, _ body: String, start: Int, end: Int, listID: String?, newList: String) -> String? {
+        run {
+            try store.checklistToTasks(noteId: noteID, body: body, start: UInt32(start), end: UInt32(end), listId: listID, newList: newList).body
+        }
     }
 
     func togglePin(_ note: NoteSummary) {
@@ -774,6 +823,7 @@ final class AppModel {
     // MARK: Reading
 
     fileprivate func reload() {
+        imageVersion += 1
         reminders.reschedule()
         guard let lists = run({ try store.lists() }) else { return }
         self.lists = lists

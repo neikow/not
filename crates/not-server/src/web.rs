@@ -42,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/t/{task}/toggle", post(toggle_task))
         .route("/notes", get(notes_page))
         .route("/n/{note}", get(note_page))
+        .route("/img/{id}", get(image))
         .route("/s/{token}", get(shared_page))
         .route("/s/{token}/live", get(shared_live))
         .route("/s/{token}/add", post(shared_add))
@@ -364,6 +365,14 @@ async fn note_page(
     .into_response()
 }
 
+/// A note's image, for the signed-in owner only.
+async fn image(State(state): State<AppState>, headers: HeaderMap, UrlPath(id): UrlPath<String>) -> Response {
+    if signed_in(&state, &headers).is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    crate::image_response(&state, &id).unwrap_or_else(server_error)
+}
+
 // ---- shared lists --------------------------------------------------------------------------------
 
 async fn shared_page(
@@ -669,8 +678,32 @@ fn task_rows(
 fn markdown_html(text: &str) -> String {
     let mut out = String::new();
     let mut in_list = false;
-    for line in text.lines() {
+    let images: std::collections::HashMap<usize, String> = {
+        // Line index → image id, from the core's parser.
+        let mut by_start = std::collections::HashMap::new();
+        let mut line_of = std::collections::HashMap::new();
+        let mut offset = 0u32;
+        for (i, line) in text.split('\n').enumerate() {
+            line_of.insert(offset, i);
+            offset += line.encode_utf16().count() as u32 + 1;
+        }
+        for img in not_core::markdown::images(text) {
+            if let Some(&i) = line_of.get(&img.start) {
+                by_start.insert(i, img.id);
+            }
+        }
+        by_start
+    };
+    for (index, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
+        if let Some(id) = images.get(&index) {
+            if in_list {
+                out.push_str("</ul>");
+                in_list = false;
+            }
+            let _ = write!(out, r#"<img src="/img/{}" alt="" loading="lazy">"#, esc(id));
+            continue;
+        }
         let item = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* "));
         if item.is_none() && in_list {
             out.push_str("</ul>");
@@ -763,7 +796,7 @@ button.check:hover{border-color:var(--accent-ink)}
 details{margin-top:16px}summary{cursor:pointer;color:var(--muted);padding:8px 0}
 ul.notes{list-style:none;padding:0;margin:0;display:grid;gap:8px}ul.notes a{display:flex;flex-direction:column;padding:12px 16px;border-radius:16px;background:var(--surface);color:inherit;text-decoration:none}
 ul.notes span{color:var(--muted);font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.note{background:var(--surface);border-radius:20px;padding:8px 20px}.note p{margin:.3rem 0}
+.note{background:var(--surface);border-radius:20px;padding:8px 20px}.note p{margin:.3rem 0}.note img{display:block;max-width:100%;max-height:70vh;border-radius:12px;margin:.6rem 0}
 .signout{margin-top:32px}code{background:var(--surface);padding:1px 6px;border-radius:6px}
 "#;
 

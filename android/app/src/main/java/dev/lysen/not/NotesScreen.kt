@@ -1,5 +1,23 @@
 package dev.lysen.not
 
+import dev.lysen.not.core.imageMarkup
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+
+import dev.lysen.not.core.NoteChecklist
+import dev.lysen.not.core.TaskList
+import dev.lysen.not.core.noteChecklist
+import androidx.compose.ui.text.TextRange
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
+
 import dev.lysen.not.core.NoteSort
 import dev.lysen.not.ui.OnTabGesture
 import dev.lysen.not.ui.PullAction
@@ -556,7 +574,22 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
     var saved by remember(note.id) { mutableStateOf(text) }
     var actions by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf(false) }
+    var makingTasks by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // The system photo picker: no storage permission, and it can't see more than what's picked.
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val bytes = runCatching { encodeForNote(context, uri) }.getOrNull() ?: return@launch
+            val id = viewModel.addImage(bytes) ?: return@launch
+            editor.edit { insertImageLine(imageMarkup(id)) }
+        }
+    }
     val focus = remember { FocusRequester() }
+    val selection = editor.selection
+    // The checklist items under the caret or selection, which "Make tasks" would take.
+    val checklist = remember(text, selection) { noteChecklist(text, selection.min.toUInt(), selection.max.toUInt()) }
     val colors = Not.colors
 
     LaunchedEffect(note.id, text) {
@@ -608,7 +641,26 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
                 .padding(horizontal = 24.dp, vertical = 8.dp)
                 .focusRequester(focus),
         )
-        FormatBar(editor, onMore = { actions = true })
+        FormatBar(
+            editor,
+            checklist,
+            onMakeTasks = { makingTasks = true },
+            onAddImage = { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            onMore = { actions = true },
+        )
+    }
+    if (makingTasks && checklist != null) {
+        MakeTasksSheet(checklist, viewModel.taskLists(), onDismiss = { makingTasks = false }) { listId, title ->
+            makingTasks = false
+            val moved = viewModel.checklistToTasks(note.id, text, selection.min, selection.max, listId, if (listId == null) title else "", title)
+            if (moved != null) {
+                editor.edit {
+                    replace(0, length, moved.body)
+                    this.selection = TextRange(moved.caret.toInt())
+                }
+                saved = moved.body
+            }
+        }
     }
     if (actions) NoteActionsSheet(note, viewModel, onMove = { moving = true }, onDismiss = { actions = false })
     if (moving) MoveSheet(note, state.folders, viewModel, onDismiss = { moving = false })
@@ -617,11 +669,28 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
 /** Formatting for the caret's line or the selection, riding above the keyboard; undo stays put at the end. */
 @OptIn(ExperimentalFoundationApi::class) // undoState
 @Composable
-private fun FormatBar(editor: TextFieldState, onMore: () -> Unit) {
+private fun FormatBar(editor: TextFieldState, checklist: NoteChecklist?, onMakeTasks: () -> Unit, onAddImage: () -> Unit, onMore: () -> Unit) {
     val muted = Not.colors.inkMuted
     Column(Modifier.navigationBarsPadding().imePadding()) {
         Divider()
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Only while the caret or selection is on checklist items.
+            AnimatedVisibility(checklist != null, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
+                Row(
+                    Modifier
+                        .padding(end = 4.dp)
+                        .clip(CircleShape)
+                        .background(Not.colors.accentSoft)
+                        .pressable(onMakeTasks, pressedScale = 0.95f, onClickLabel = "Move the checklist into a task list")
+                        .heightIn(min = 36.dp)
+                        .padding(start = 10.dp, end = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(R.drawable.ic_add_task, null, tint = Not.colors.accentInk, size = 18.dp)
+                    Text("Make tasks", style = Not.type.label, color = Not.colors.accentInk, maxLines = 1)
+                }
+            }
             Row(Modifier.weight(1f).horizontalScroll(rememberScrollState())) {
                 IconButton(R.drawable.ic_checklist, "Checklist", { editor.cycleChecklist() }, tint = muted)
                 IconButton(R.drawable.ic_bullets, "Bulleted list", { editor.toggleBullet() }, tint = muted)
@@ -631,11 +700,38 @@ private fun FormatBar(editor: TextFieldState, onMore: () -> Unit) {
                 IconButton(R.drawable.ic_format_bold, "Bold", { editor.wrap("**") }, tint = muted)
                 IconButton(R.drawable.ic_format_italic, "Italic", { editor.wrap("*") }, tint = muted)
                 IconButton(R.drawable.ic_code, "Code", { editor.wrap("`") }, tint = muted)
+                IconButton(R.drawable.ic_image, "Add image", onAddImage, tint = muted)
             }
             val undo = editor.undoState
             IconButton(R.drawable.ic_undo, "Undo", { if (undo.canUndo) undo.undo() }, tint = if (undo.canUndo) muted else Not.colors.inkFaint.copy(alpha = 0.5f))
             IconButton(R.drawable.ic_redo, "Redo", { if (undo.canRedo) undo.redo() }, tint = if (undo.canRedo) muted else Not.colors.inkFaint.copy(alpha = 0.5f))
             IconButton(R.drawable.ic_more_vert, "Note options", onMore, tint = muted)
+        }
+    }
+}
+
+/**
+ * Where "Make tasks" sends a note's checklist: a new list (named after the heading above it, or the
+ * note), the Inbox, or an existing list. [onPick] gets the list id (null for the new one) and title.
+ */
+@Composable
+private fun MakeTasksSheet(checklist: NoteChecklist, lists: List<TaskList>, onDismiss: () -> Unit, onPick: (String?, String) -> Unit) {
+    Sheet(onDismiss) { close ->
+        val pick = { id: String?, title: String ->
+            onPick(id, title)
+            close()
+        }
+        Column(Modifier.padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
+            val items = if (checklist.count == 1u) "1 item" else "${checklist.count} items"
+            Text(
+                "Move $items to",
+                style = Not.type.caption,
+                color = Not.colors.inkMuted,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            )
+            FolderRow(R.drawable.ic_add, "New list “${checklist.suggestedTitle}”", accent = true, onClick = { pick(null, checklist.suggestedTitle) })
+            FolderRow(R.drawable.ic_inbox, "Inbox", onClick = { pick(INBOX_ID, "Inbox") })
+            lists.forEach { list -> FolderRow(R.drawable.ic_list, list.title, onClick = { pick(list.id, list.title) }) }
         }
     }
 }
@@ -671,6 +767,24 @@ private fun NoteActionsSheet(note: NoteSummary, viewModel: NotesViewModel, onMov
             }
         }
     }
+}
+
+/**
+ * Puts an image on a line of its own at the caret: after the caret's line, or in place of it when
+ * it's empty, with the caret on a fresh line below.
+ */
+private fun TextFieldBuffer.insertImageLine(markup: String) {
+    val text = asCharSequence()
+    val at = selection.max
+    var start = at
+    while (start > 0 && text[start - 1] != '\n') start--
+    var end = at
+    while (end < text.length && text[end] != '\n') end++
+    val emptyLine = text.substring(start, end).isBlank()
+    val (from, to, before) = if (emptyLine) Triple(start, end, "") else Triple(end, end, "\n")
+    val after = if (to < text.length) "" else "\n"
+    replace(from, to, before + markup + "\n" + after)
+    selection = TextRange(from + before.length + markup.length + 1)
 }
 
 /**

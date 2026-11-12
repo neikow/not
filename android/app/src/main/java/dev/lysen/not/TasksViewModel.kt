@@ -8,6 +8,7 @@ import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.lysen.not.core.Device
+import dev.lysen.not.core.HabitSummary
 import dev.lysen.not.core.ListShare
 import dev.lysen.not.core.NotException
 import dev.lysen.not.core.Outline
@@ -33,6 +34,8 @@ data class UiState(
     val lists: List<TaskList> = emptyList(),
     val selectedListId: String = INBOX_ID,
     val outline: Outline = Outline(emptyList(), emptyList()),
+    /** Today only: the habits on today's to-do, done ones included, in the user's order. */
+    val todayHabits: List<HabitSummary> = emptyList(),
     /** Open tasks due today or earlier, for the Today entry's badge. */
     val dueCount: Int = 0,
     val upcomingCount: Int = 0,
@@ -122,6 +125,17 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteList(list: TaskList) {
         run { store.deleteItem(list.id) } ?: return
         _undoables.trySend(Undoable("“${list.title}” deleted"))
+    }
+
+    // ---- today's habits ----
+
+    /** A check-in today until the goal is met, then back to zero, as on the Habits tab. */
+    fun toggleHabit(id: String) {
+        run { store.toggleHabit(id, today()) }
+    }
+
+    fun logHabit(id: String, delta: Long) {
+        run { store.logHabit(id, today(), delta) }
     }
 
     // ---- tasks ----
@@ -309,11 +323,13 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             run { store.outline(_state.value.selectedListId) } ?: return
         }
+        val habits = if (_state.value.isToday) run { store.habits(today()) }.orEmpty().filter { it.onToday } else emptyList()
         _state.update { s ->
             // The open task may have been deleted or moved on another device.
             val open = (outline.open + outline.completed).firstOrNull { it.task.id == s.openTaskId }?.task
             s.copy(
                 outline = outline,
+                todayHabits = habits,
                 archive = archive,
                 dueCount = due.size,
                 upcomingCount = upcoming.size,

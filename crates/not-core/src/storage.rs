@@ -29,6 +29,13 @@ pub fn init(db: &Connection) -> Result<()> {
             key   TEXT PRIMARY KEY,
             value BLOB NOT NULL
         );
+        -- Images in notes, by content id (see `images`); kept apart from the docs so they stay small.
+        CREATE TABLE IF NOT EXISTS blob (
+            id       TEXT PRIMARY KEY,
+            data     BLOB NOT NULL,
+            -- 0 until the server has it.
+            uploaded INTEGER NOT NULL DEFAULT 0
+        );
         ",
     )?;
     Ok(())

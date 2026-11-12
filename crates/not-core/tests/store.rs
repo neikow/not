@@ -840,3 +840,79 @@ fn export_and_backup_carry_everything() {
     assert_eq!(titles(&fresh.tasks(&list).unwrap()), ["bins"]);
     assert!(fresh.restore_backup(b"hello").is_err());
 }
+
+#[test]
+fn checklist_lines_become_tasks_in_one_undo_step() {
+    let store = Store::open_in_memory().unwrap();
+    let note = store
+        .create_note(None, "Shopping\n- [ ] milk\n  - [x] oat\n- [ ] eggs\nthanks")
+        .unwrap();
+    let body = store.note_body(&note).unwrap();
+    let end = body.find("eggs").unwrap() as u32;
+
+    // Into a new list, named after the note.
+    let moved = store.checklist_to_tasks(&note, &body, 10, end, None, "").unwrap();
+    assert_eq!(moved.count, 3);
+    assert_eq!(moved.body, "Shopping\nthanks");
+    assert_eq!(store.note_body(&note).unwrap(), "Shopping\nthanks");
+    let list = store
+        .lists()
+        .unwrap()
+        .into_iter()
+        .find(|l| l.id == moved.list_id)
+        .unwrap();
+    assert_eq!(list.title, "Shopping");
+    let outline = store.outline(&moved.list_id).unwrap();
+    let open: Vec<_> = outline
+        .open
+        .iter()
+        .map(|r| (r.task.title.as_str(), r.depth))
+        .collect();
+    assert_eq!(
+        open,
+        [("milk", 0), ("oat", 1), ("eggs", 0)],
+        "order and nesting kept"
+    );
+    assert!(
+        outline.open[1].task.completed_at.is_some(),
+        "ticked items come done"
+    );
+
+    // One undo puts the lines back and takes the list away.
+    store.undo().unwrap();
+    assert_eq!(store.note_body(&note).unwrap(), body);
+    assert!(store.lists().unwrap().iter().all(|l| l.id != moved.list_id));
+
+    // Into an existing list: first, in note order, ahead of what's there.
+    let home = store.create_list("Home").unwrap();
+    store.add_task(&home, "old").unwrap();
+    let body = store.note_body(&note).unwrap();
+    store
+        .checklist_to_tasks(&note, &body, 0, body.len() as u32, Some(&home), "")
+        .unwrap();
+    let titles: Vec<_> = store.tasks(&home).unwrap().into_iter().map(|t| t.title).collect();
+    assert!(titles.starts_with(&["milk".into()]) && titles.contains(&"old".into()));
+    let top: Vec<_> = store
+        .outline(&home)
+        .unwrap()
+        .open
+        .into_iter()
+        .filter(|r| r.depth == 0)
+        .map(|r| r.task.title)
+        .collect();
+    assert_eq!(top, ["milk", "eggs", "old"]);
+}
+
+#[test]
+fn undo_after_checklist_move_following_body_saves() {
+    let store = Store::open_in_memory().unwrap();
+    let note = store.create_note(None, "Day").unwrap();
+    store.set_note_body(&note, "Day\n- [ ] ").unwrap();
+    store.set_note_body(&note, "Day\n- [ ] tea").unwrap();
+    let body = store.note_body(&note).unwrap();
+    store.checklist_to_tasks(&note, &body, 5, 5, Some(INBOX), "").unwrap();
+    assert_eq!(store.note_body(&note).unwrap(), "Day");
+    store.undo().unwrap();
+    assert_eq!(store.note_body(&note).unwrap(), "Day\n- [ ] tea");
+    assert!(store.tasks(INBOX).unwrap().is_empty());
+}

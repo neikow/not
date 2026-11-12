@@ -192,6 +192,12 @@ mod client {
     pub struct SyncReport {
         pub pushed: bool,
         pub pulled: usize,
+        /// Images sent and fetched.
+        pub images_up: usize,
+        pub images_down: usize,
+        /// Why images didn't all go through (they're tried again next round); text sync is
+        /// unaffected.
+        pub image_error: Option<String>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -371,9 +377,50 @@ mod client {
                 report.pulled += pulled.updates.len();
                 store.apply_pull(&pulled)?;
                 if !pulled.more {
-                    return Ok(report);
+                    break;
                 }
             }
+            // After the text: a note shows up straight away, its images as they arrive.
+            match self.sync_images(store, &mut report).await {
+                Err(Error::Unauthorized) => return Err(Error::Unauthorized),
+                Err(e) => report.image_error = Some(e.to_string()),
+                Ok(()) => {}
+            }
+            Ok(report)
+        }
+
+        /// Uploads images added here, then downloads the ones notes point at that aren't here.
+        async fn sync_images(&self, store: &Store, report: &mut SyncReport) -> Result<()> {
+            for id in store.images_to_upload()? {
+                let Some(bytes) = store.image(&id)? else { continue };
+                let response = self
+                    .http
+                    .put(format!("{}/blobs/{id}", self.base))
+                    .bearer_auth(&self.token)
+                    .header(reqwest::header::CONTENT_TYPE, not_protocol::image_mime(&id))
+                    .body(bytes)
+                    .send()
+                    .await?;
+                checked(response)?;
+                store.image_uploaded(&id)?;
+                report.images_up += 1;
+            }
+            for id in store.missing_images()? {
+                let response = self
+                    .http
+                    .get(format!("{}/blobs/{id}", self.base))
+                    .bearer_auth(&self.token)
+                    .send()
+                    .await?;
+                // Not uploaded yet by the device that added it: next round.
+                if response.status() == StatusCode::NOT_FOUND {
+                    continue;
+                }
+                let bytes = checked(response)?.bytes().await?;
+                store.image_downloaded(&id, &bytes)?;
+                report.images_down += 1;
+            }
+            Ok(())
         }
 
         /// Holds the poke socket open, calling `on_poke` per message, until it closes or fails.

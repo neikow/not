@@ -6,7 +6,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.lysen.not.core.ChecklistMoved
 import dev.lysen.not.core.Folder
+import dev.lysen.not.core.TaskList
 import dev.lysen.not.core.NoteSummary
 import dev.lysen.not.core.NotException
 import kotlinx.coroutines.channels.Channel
@@ -139,6 +141,23 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
 
     fun undo() {
         run { store.undo() }
+    }
+
+    /** Keeps an (already downscaled) image for notes; its id, for [imageMarkup]. */
+    fun addImage(bytes: ByteArray): String? = run { store.addImage(bytes) }
+
+    /** Where a note's checklist can go: the task lists, for the "Make tasks" sheet. */
+    fun taskLists(): List<TaskList> = run { store.lists() }.orEmpty().filter { it.id != INBOX_ID }
+
+    /**
+     * Moves the checklist items the selection touches in [body] (the editor's text) into [listId],
+     * or a new list titled [newList] when null; the note loses those lines. Returns the new body.
+     */
+    fun checklistToTasks(noteId: String, body: String, start: Int, end: Int, listId: String?, newList: String, listTitle: String): ChecklistMoved? {
+        val moved = run { store.checklistToTasks(noteId, body, start.toUInt(), end.toUInt(), listId, newList) } ?: return null
+        val what = if (moved.count == 1u) "1 task" else "${moved.count} tasks"
+        _undoables.trySend(Undoable("$what moved to “$listTitle”"))
+        return moved
     }
 
     fun dismissError() = _state.update { it.copy(error = null) }

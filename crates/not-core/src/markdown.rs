@@ -32,6 +32,49 @@ pub struct Span {
     pub style: Style,
 }
 
+/// An image line: `![alt](not-image:<id>)` alone on its line (spaces around allowed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRef {
+    /// UTF-16 range of the line, without its newline.
+    pub start: u32,
+    pub end: u32,
+    pub id: String,
+}
+
+/// The image lines of a note, outside code fences, in order.
+pub fn images(text: &str) -> Vec<ImageRef> {
+    let mut out = Vec::new();
+    let mut offset = 0u32;
+    let mut in_fence = false;
+    for line in text.split('\n') {
+        let len = line.encode_utf16().count() as u32;
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence && let Some(id) = image_line(trimmed) {
+            out.push(ImageRef {
+                start: offset,
+                end: offset + len,
+                id: id.to_owned(),
+            });
+        }
+        offset += len + 1;
+    }
+    out
+}
+
+/// The image line for `id`, as the editors insert it.
+pub fn image_markup(id: &str) -> String {
+    format!("![]({}{id})", not_protocol::IMAGE_SCHEME)
+}
+
+fn image_line(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("![")?;
+    let (_, rest) = rest.split_once("](")?;
+    let id = rest.strip_suffix(')')?.strip_prefix(not_protocol::IMAGE_SCHEME)?;
+    not_protocol::is_image_id(id).then_some(id)
+}
+
 pub fn spans(text: &str) -> Vec<Span> {
     let mut out = Vec::new();
     let mut offset = 0u32;
@@ -234,6 +277,29 @@ mod tests {
                 ("yes".into(), Italic),
                 ("*".into(), Syntax),
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn image_lines_are_found_outside_code() {
+        let id = format!("{}.jpg", "ab".repeat(32));
+        let text = format!(
+            "Trip\n{}\n  ![view](not-image:{id})  \n```\n![](not-image:{id})\n```\n![](http://x/y.jpg)",
+            image_markup(&id)
+        );
+        let found = images(&text);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].id, id);
+        assert_eq!(found[0].start, 5);
+        assert_eq!(found[0].end, 5 + image_markup(&id).len() as u32);
+        assert!(
+            images(&format!("see ![](not-image:{id})")).is_empty(),
+            "only whole lines"
         );
     }
 }

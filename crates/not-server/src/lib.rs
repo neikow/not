@@ -101,6 +101,12 @@ impl AppState {
             );
             -- Kept in the clear: the owner's apps show the link again. It is a capability URL to
             -- data this server already holds in the clear.
+            -- Images in notes, by content id (sha256.ext); checked against their bytes on upload.
+            CREATE TABLE IF NOT EXISTS blob (
+                id         TEXT PRIMARY KEY,
+                data       BLOB NOT NULL,
+                created_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS share (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 token      TEXT NOT NULL UNIQUE,
@@ -194,6 +200,28 @@ impl AppState {
             tracing::error!(error = %e, "web replica: ack failed");
         }
         let _ = self.pokes.send(seq);
+    }
+
+    // ---- images ----
+
+    /// Keeps an image unless it is there already; false if `bytes` aren't what `id` names.
+    fn put_blob(&self, id: &str, bytes: &[u8]) -> rusqlite::Result<bool> {
+        if not_protocol::image_id(bytes).as_deref() != Some(id) {
+            return Ok(false);
+        }
+        self.db.lock().unwrap().execute(
+            "INSERT OR IGNORE INTO blob (id, data, created_at) VALUES (?1, ?2, ?3)",
+            params![id, bytes, now_millis()],
+        )?;
+        Ok(true)
+    }
+
+    fn blob(&self, id: &str) -> rusqlite::Result<Option<Vec<u8>>> {
+        self.db
+            .lock()
+            .unwrap()
+            .query_row("SELECT data FROM blob WHERE id = ?1", [id], |r| r.get(0))
+            .optional()
     }
 
     // ---- shares ----
@@ -358,6 +386,7 @@ pub fn router(state: AppState) -> Router {
         .route("/devices/{id}", delete(revoke_device))
         .route("/shares", get(list_shares).post(new_share))
         .route("/shares/{id}", delete(delete_share))
+        .route("/blobs/{id}", get(get_blob).put(put_blob))
         .layer(middleware::from_fn_with_state(state.clone(), require_device));
     let api = Router::new()
         .route("/pair", post(pair))
@@ -441,6 +470,40 @@ async fn delete_share(
         StatusCode::NO_CONTENT
     } else {
         StatusCode::NOT_FOUND
+    })
+}
+
+async fn put_blob(
+    State(state): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, AppError> {
+    if !not_protocol::is_image_id(&id) || !state.put_blob(&id, &body)? {
+        return Ok(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    tracing::debug!(%id, bytes = body.len(), "image stored");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_blob(State(state): State<AppState>, UrlPath(id): UrlPath<String>) -> Result<Response, AppError> {
+    Ok(image_response(&state, &id)?)
+}
+
+/// An image's bytes with a long cache lifetime (ids are content hashes, so they never change).
+fn image_response(state: &AppState, id: &str) -> rusqlite::Result<Response> {
+    if !not_protocol::is_image_id(id) {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    Ok(match state.blob(id)? {
+        Some(bytes) => (
+            [
+                (header::CONTENT_TYPE, not_protocol::image_mime(id)),
+                (header::CACHE_CONTROL, "private, max-age=31536000, immutable"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     })
 }
 

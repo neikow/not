@@ -242,3 +242,47 @@ async fn undo_works_while_live_sync_runs() {
     assert_eq!(phone.tasks(INBOX).unwrap().len(), 1, "restored on the phone");
     wait_until(|| mac.tasks(INBOX).unwrap().len() == 1).await;
 }
+
+#[tokio::test]
+async fn note_images_travel_beside_the_doc() {
+    let server = Server::start().await;
+    let mac_client = server.client("Mac").await;
+    let phone_client = server.client("Phone").await;
+    let mac = Store::open_in_memory().unwrap();
+    let phone = Store::open_in_memory().unwrap();
+
+    let png = b"\x89PNG\r\n\x1a\nnot really pixels";
+    let id = mac.add_image(png).unwrap();
+    assert_eq!(mac.add_image(png).unwrap(), id, "same picture, one blob");
+    let note = mac
+        .create_note(
+            None,
+            &format!("Trip\n{}\nview", not_core::markdown::image_markup(&id)),
+        )
+        .unwrap();
+    let report = mac_client.sync(&mac).await.unwrap();
+    assert_eq!((report.images_up, report.image_error), (1, None));
+    assert_eq!(mac_client.sync(&mac).await.unwrap().images_up, 0, "uploaded once");
+
+    assert_eq!(phone.image(&id).unwrap(), None);
+    let report = phone_client.sync(&phone).await.unwrap();
+    assert_eq!(report.images_down, 1);
+    assert_eq!(phone.image(&id).unwrap().as_deref(), Some(&png[..]));
+    assert!(phone.note_body(&note).unwrap().contains(&id));
+
+    // The server checks an upload is what its name says.
+    let wrong = format!("{}.png", "0".repeat(64));
+    use tower::ServiceExt;
+    let request = axum::http::Request::put(format!("/v1/blobs/{wrong}"))
+        .header(
+            "authorization",
+            format!("Bearer {}", server.pair("Curl").await.token),
+        )
+        .body(axum::body::Body::from(png.to_vec()))
+        .unwrap();
+    let response = not_server::router(server.state.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 422);
+}

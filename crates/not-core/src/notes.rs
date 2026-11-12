@@ -13,11 +13,11 @@ use crate::store::{Store, clean_title, now_millis};
 use crate::{Error, Result};
 
 const KIND_FOLDER: &str = "folder";
-const KIND_NOTE: &str = "note";
-const BODY: &str = "body";
+pub(crate) const KIND_NOTE: &str = "note";
+pub(crate) const BODY: &str = "body";
 const PINNED: &str = "pinned";
 const CREATED_AT: &str = "created_at";
-const UPDATED_AT: &str = "updated_at";
+pub(crate) const UPDATED_AT: &str = "updated_at";
 /// On a folder: how its notes sort, a [`NoteSort`] key; absent is latest edit first.
 const ORDER: &str = "order";
 const ORDER_MANUAL: &str = "manual";
@@ -191,7 +191,10 @@ impl Store {
     /// A folder sorted by latest edit switches to manual order first, keeping what was on screen.
     pub fn move_note_before(&self, id: &str, before: Option<&str>) -> Result<()> {
         let id = self.notes_node(id, KIND_NOTE)?;
-        let parent = self.notes.parent(id).ok_or_else(|| Error::NotFound(id.to_string()))?;
+        let parent = self
+            .notes
+            .parent(id)
+            .ok_or_else(|| Error::NotFound(id.to_string()))?;
         let TreeParentId::Node(folder) = parent else {
             return Err(Error::Invalid("only notes in a folder can be reordered".into()));
         };
@@ -218,7 +221,14 @@ impl Store {
 
     /// Sorts a folder's notes by hand (`true`, starting from the order shown) or by latest edit.
     pub fn set_folder_manual_order(&self, id: &str, manual: bool) -> Result<()> {
-        self.set_note_sort(Some(id), if manual { NoteSort::Manual } else { NoteSort::Edited })
+        self.set_note_sort(
+            Some(id),
+            if manual {
+                NoteSort::Manual
+            } else {
+                NoteSort::Edited
+            },
+        )
     }
 
     /// How `folder` (or All Notes, for `None`) sorts its notes. Switching a folder to
@@ -256,7 +266,9 @@ impl Store {
     /// How All Notes sorts.
     pub fn all_notes_sort(&self) -> NoteSort {
         match self.note_sort.get(ALL_NOTES) {
-            Some(loro::ValueOrContainer::Value(v)) => v.as_string().map_or(NoteSort::Edited, |s| NoteSort::from_key(s)),
+            Some(loro::ValueOrContainer::Value(v)) => {
+                v.as_string().map_or(NoteSort::Edited, |s| NoteSort::from_key(s))
+            }
             _ => NoteSort::Edited,
         }
     }
@@ -279,7 +291,10 @@ impl Store {
         let sort_key = |&n: &TreeID| {
             let meta = self.notes.get_meta(n).ok();
             let pinned = meta.as_ref().is_some_and(|m| {
-                matches!(m.get(PINNED), Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true))))
+                matches!(
+                    m.get(PINNED),
+                    Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(true)))
+                )
             });
             let created = meta.as_ref().and_then(|m| meta_i64(m, CREATED_AT)).unwrap_or(0);
             let edited = meta
@@ -414,7 +429,7 @@ impl Store {
         TreeID::try_from(id).map_err(|_| Error::Invalid(format!("bad id {id:?}")))
     }
 
-    fn notes_node(&self, id: &str, expected: &str) -> Result<TreeID> {
+    pub(crate) fn notes_node(&self, id: &str, expected: &str) -> Result<TreeID> {
         let node = self.note_id(id)?;
         if !is_alive(&self.notes, node) {
             return Err(Error::NotFound(id.to_owned()));
@@ -456,7 +471,13 @@ fn push_folders(all: &[Folder], parent: Option<&str>, depth: u32, out: &mut Vec<
 
 /// Title and preview: the first non-empty line and what follows it, without markdown markers.
 pub fn title_and_preview(body: &str) -> (String, String) {
-    let mut lines = body.lines().map(plain).filter(|l| !l.is_empty());
+    // Image lines are markup only: they'd read as noise in a title or preview.
+    let images: Vec<_> = crate::markdown::images(body).into_iter().map(|i| i.id).collect();
+    let mut lines = body
+        .lines()
+        .filter(|l| !images.iter().any(|id| l.contains(id.as_str())))
+        .map(plain)
+        .filter(|l| !l.is_empty());
     let title = lines.next().unwrap_or_default();
     let mut preview = String::new();
     for line in lines {
