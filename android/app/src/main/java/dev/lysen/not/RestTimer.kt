@@ -203,7 +203,7 @@ class RestTimer(private val context: Context) {
         PendingIntent.getActivity(
             context,
             1,
-            MainActivity.openTab(context, Tab.Workouts),
+            MainActivity.openWorkouts(context),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 

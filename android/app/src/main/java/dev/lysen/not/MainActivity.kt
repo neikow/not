@@ -20,6 +20,7 @@ class MainActivity : ComponentActivity() {
     private val habits: HabitsViewModel by viewModels()
     private val notes: NotesViewModel by viewModels()
     private val workouts: WorkoutsViewModel by viewModels()
+    private val budget: BudgetViewModel by viewModels()
     private val requestedTab = MutableStateFlow<Tab?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,7 +28,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
-            NotTheme { NotAppUi(viewModel, habits, notes, workouts, requestedTab, onTabShown = { requestedTab.value = null }) }
+            NotTheme { NotAppUi(viewModel, habits, notes, workouts, budget, requestedTab, onTabShown = { requestedTab.value = null }) }
         }
     }
 
@@ -43,6 +44,10 @@ class MainActivity : ComponentActivity() {
         }
         intent.getStringExtra(EXTRA_TAB)?.let { name ->
             requestedTab.value = Tab.entries.firstOrNull { it.name == name }
+        }
+        intent.getStringExtra(EXTRA_MORE_PAGE)?.let { name ->
+            (application as NotApp).screenMemory.morePage = MorePage.entries.firstOrNull { it.name == name }
+            requestedTab.value = Tab.More
         }
         intent.getStringExtra(EXTRA_NOTE)?.let {
             notes.open(it)
@@ -60,6 +65,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         habits.refreshToday()
         workouts.refreshToday()
+        budget.refreshToday()
         viewModel.syncNow()
     }
 
@@ -91,7 +97,14 @@ class MainActivity : ComponentActivity() {
         // `--ez seedWorkouts true`: sample sessions for screenshots, on an empty device only.
         if (intent.getBooleanExtra("seedWorkouts", false)) {
             workouts.seedDemo()
-            requestedTab.value = Tab.Workouts
+            (application as NotApp).screenMemory.morePage = MorePage.Workouts
+            requestedTab.value = Tab.More
+        }
+        // `--ez seedBudget true`: accounts, limits and a period of spending, on an empty budget only.
+        if (intent.getBooleanExtra("seedBudget", false)) {
+            budget.seedDemo()
+            (application as NotApp).screenMemory.morePage = MorePage.Budget
+            requestedTab.value = Tab.More
         }
         // `--ez seedNotes true`: a checklist made into tasks, and a note in the earlier task-block
         // format; on a device without notes only.
@@ -105,6 +118,8 @@ class MainActivity : ComponentActivity() {
         /** List id to show (or, for quick add, to add to). */
         const val EXTRA_LIST = "dev.lysen.not.LIST"
         const val EXTRA_TAB = "dev.lysen.not.TAB"
+        /** A [MorePage] name: opens More on that page. */
+        const val EXTRA_MORE_PAGE = "dev.lysen.not.MORE_PAGE"
         private const val EXTRA_NOTE = "dev.lysen.not.NOTE"
         /** Folder id for the new note, "" for none. */
         private const val EXTRA_NEW_NOTE = "dev.lysen.not.NEW_NOTE"
@@ -114,6 +129,12 @@ class MainActivity : ComponentActivity() {
 
         fun openTab(context: Context, tab: Tab): Intent =
             Intent(context, MainActivity::class.java).putExtra(EXTRA_TAB, tab.name)
+
+        fun openWorkouts(context: Context): Intent =
+            Intent(context, MainActivity::class.java).putExtra(EXTRA_MORE_PAGE, MorePage.Workouts.name)
+
+        fun openBudget(context: Context): Intent =
+            Intent(context, MainActivity::class.java).putExtra(EXTRA_MORE_PAGE, MorePage.Budget.name)
 
         fun openNote(context: Context, noteId: String): Intent =
             Intent(context, MainActivity::class.java).putExtra(EXTRA_NOTE, noteId)
