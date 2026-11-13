@@ -1,7 +1,12 @@
 # 0014 — The server fetches bank transactions and writes them into the workspace
 
-Status: proposed (2026-11-13). Amends [0003](0003-server-as-relay.md) and builds on
+Status: **rejected** (2026-11-13). Would have amended [0003](0003-server-as-relay.md) and built on
 [0009](0009-server-replica-for-web-and-sharing.md).
+
+**Why rejected:** the owner decided against a bank integration that may end up needing a paid plan,
+and against the extra moving parts (a server secret, a scheduler, consent renewal). Budgeting is
+manual entry plus CSV/OFX import from bank exports instead; see `docs/budgeting.md`. The
+proposal is kept below for reference.
 
 ## Context
 Budgeting needs the transactions from the owner's two banks, Boursobank and Société Générale,
