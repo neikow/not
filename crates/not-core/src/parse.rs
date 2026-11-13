@@ -150,17 +150,17 @@ pub fn parse_task(input: &str, today: Date, lists: &[(String, String)], dismisse
 
 // ---- words ---------------------------------------------------------------------------------
 
-struct Word {
+pub(crate) struct Word {
     /// Byte range in the input, trailing punctuation included.
-    start: usize,
-    end: usize,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
     /// As typed, lowercased.
-    raw: String,
+    pub(crate) raw: String,
     /// Lowercased, accents and trailing punctuation removed, apostrophes straightened.
-    norm: String,
+    pub(crate) norm: String,
 }
 
-fn split_words(input: &str) -> Vec<Word> {
+pub(crate) fn split_words(input: &str) -> Vec<Word> {
     let mut words = Vec::new();
     let mut start = None;
     for (i, c) in input.char_indices().chain([(input.len(), ' ')]) {
@@ -183,7 +183,7 @@ fn split_words(input: &str) -> Vec<Word> {
     words
 }
 
-fn fold(s: &str) -> String {
+pub(crate) fn fold(s: &str) -> String {
     s.chars()
         .map(|c| match c {
             'à' | 'â' | 'ä' => 'a',
@@ -216,7 +216,7 @@ fn number(word: &str) -> Option<i64> {
 }
 
 /// `12`, `12th`, `1st`, `1er` → day of month.
-fn day_number(word: &str) -> Option<i64> {
+pub(crate) fn day_number(word: &str) -> Option<i64> {
     let digits = word.trim_end_matches(|c: char| c.is_ascii_alphabetic());
     let suffix = &word[digits.len()..];
     if digits.is_empty() || digits.len() > 2 || !matches!(suffix, "" | "st" | "nd" | "rd" | "th" | "er" | "e")
@@ -251,7 +251,7 @@ fn list_word(raw: &str, lists: &[(String, String)]) -> Option<String> {
 }
 
 /// Lowercase letters and digits only, accents folded: "Side Projects" → "sideprojects".
-fn squash(s: &str) -> String {
+pub(crate) fn squash(s: &str) -> String {
     fold(&s.to_lowercase())
         .chars()
         .filter(|c| c.is_alphanumeric())
@@ -262,7 +262,7 @@ fn squash(s: &str) -> String {
 
 const DATE_PREPS: [&str; 5] = ["on", "by", "due", "le", "pour"];
 
-fn weekday(word: &str) -> Option<u32> {
+pub(crate) fn weekday(word: &str) -> Option<u32> {
     let w = word.strip_suffix('s').filter(|w| w.len() > 4).unwrap_or(word); // "lundis"
     Some(match w {
         "mon" | "monday" | "lundi" => 0,
@@ -276,7 +276,7 @@ fn weekday(word: &str) -> Option<u32> {
     })
 }
 
-fn month(word: &str) -> Option<i64> {
+pub(crate) fn month(word: &str) -> Option<i64> {
     Some(match word {
         "jan" | "january" | "janv" | "janvier" => 1,
         "feb" | "february" | "fev" | "fevr" | "fevrier" => 2,

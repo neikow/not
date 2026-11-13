@@ -1,6 +1,6 @@
 # Budgeting — design
 
-Status: design agreed 2026-11-13; not built. Entry is fully manual, plus file import. Bank sync was
+Status: design agreed 2026-11-13; core built (`crates/not-core/src/money.rs`, `money_parse.rs`), apps not yet. Entry is fully manual, plus file import. Bank sync was
 considered and rejected ([ADR 0014](adr/0014-bank-sync-on-the-server.md)).
 
 ## Scope (decisions)
@@ -23,11 +23,17 @@ considered and rejected ([ADR 0014](adr/0014-bank-sync-on-the-server.md)).
 
 ## Data model (workspace doc, root containers)
 All of these are `LoroMap`s keyed by id. Each value is a nested map, so fields merge per field
-(last write wins). Deletes are soft (`deleted_at`, per 0007).
+(last write wins). Deletes are soft (`deleted_at`, per 0007). Maps rather than trees, even for the
+ordered accounts and categories: rows point at them by id, and a Loro redo of a tree create
+gives the node a new id. Order is an `order` number (new ones last, a move takes the midpoint).
+Nothing is projected into SQLite; figures are computed from the doc on each call.
+
+The starter categories have fixed ids (`cat-courses`, …) and are created as mergeable maps, so
+two devices seeding offline end up with one set. `seeded` in settings stops it happening again,
+even after the user deletes them all.
 
 - `money_settings`: `period_start_day` (1–31), `currency` ("EUR").
-- `money_accounts`: id → `name, kind (bank|cash|savings), opening_balance, opening_date, order,
-  deleted_at`.
+- `money_accounts`: id → `name, kind (bank|cash|savings), opening_balance, order, deleted_at`.
 - `money_categories`: id → `name, emoji, kind (expense|income), rollover (none|leftover|both),
   limits: map<period_start "YYYY-MM-DD", cents>, order, deleted_at`. A period's limit is the latest
   entry at or before the period's start, so changing a limit doesn't rewrite the past and rollover
@@ -40,31 +46,39 @@ All of these are `LoroMap`s keyed by id. Each value is a nested map, so fields m
   - Ids: manual = random; import = `imp:<account>:<FITID or hash(date, amount, label, n-th
     duplicate)>`, so importing the same file twice adds nothing.
   - `merged_into` hides an imported row that matched a row already entered by hand.
-- `money_recurring`: id → `name, amount (estimate), account, category, schedule (reuses
-  schedule.rs), last_entered_period, deleted_at`.
+- `money_recurring`: id → `name, amount (usual, signed), account, category?, repeat (RRULE subset,
+  as tasks), next_due, deleted_at`. Entering it writes a row dated `next_due` and moves `next_due`
+  on, in one undo step; Skip moves it on with no row.
 
 Size: about 2–3k rows a year. That stays small in one doc, so no separate doc is needed.
 
-## Shorthand parser (`money::parse`)
+## Shorthand parser (`Store::parse_money`, `quick_add_money`)
 ```
 [+|-]amount  [text…]  [#category]  [@account [> @account]]  [date words]  [/ split …]
 12.50 coffee                → −12.50, payee "coffee", category from the payee's last use
 +2400 salaire @sg           → income on SG
-45,80 courses #courses hier → comma decimal, yesterday (reuses parse.rs date words)
-120 carrefour #courses 90 / #shopping 30   → split
+45,80 courses #courses hier → comma decimal, yesterday
+120 carrefour #courses 90 / #shopping   → split; the part without an amount takes the rest
 500 @sg > @bourso           → transfer
 ```
-- No sign means money out. `#` and `@` match by prefix and ignore accents ("#sant" → Santé).
-- Without `@`, the default account is the last one used (per device).
+- No sign means money out, unless the category is an income one. `#` and `@` match by prefix and
+  ignore accents ("#sant" → Santé).
+- Dates look back: "lundi" = the last Monday (today if it is Monday), "lundi dernier" / "last mon"
+  the one before today, "12/11" and "3 nov" the last such day, "le 20" this month or last.
+- Without `@`, the account is that of the last row entered by hand (synced, so the same on every
+  device). Without `#`, the category is the one the payee's latest entry had.
+- The result carries `problem` ("Type an amount", "The parts add up to 110.00, not 120.00", …)
+  for the live preview; Enter is refused until it's `None`.
 
 ## Core computations (pure, tested)
 - `period_of(date, start_day)` → `[start, end)`.
 - `budget(period)` → per category `limit, carried, spent, left`, plus totals. `spent` counts entries
   (splits by their parts) and leaves out transfers, adjustments and merged rows. `carried` follows
-  the rollover mode back through earlier periods.
+  the rollover mode back through earlier periods, starting at the first period with a limit or a
+  row. The header's `left` = Σ (limit + carried) over expense categories − all money out, unsorted
+  and unlimited categories included. Rows dated later in the period count already.
 - `balance(account, date)` = opening + entries + adjustments ± transfers.
-- `due(today)` → recurring templates whose date in the current period has passed and that weren't
-  entered this period.
+- `due_recurring(today)` → templates whose `next_due` is today or earlier.
 - `import_preview(account, file)` → each row marked **new**, **already imported** (same
   `import_ref`), or **matches** an existing manual row. A match needs the same account, the same
   amount (or a transfer leg touching that account) and a date within ±3 days. With several
