@@ -120,9 +120,9 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 
-/** Sessions, latest first; opening one shows its exercises. [onBack] leaves for the More page. */
+/** Sessions, latest first; opening one shows its exercises. */
 @Composable
-fun WorkoutsScreen(viewModel: WorkoutsViewModel, onBack: (() -> Unit)? = null) {
+fun WorkoutsScreen(viewModel: WorkoutsViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val toasts = remember { ToastState() }
     var starting by remember { mutableStateOf(false) }
@@ -157,7 +157,7 @@ fun WorkoutsScreen(viewModel: WorkoutsViewModel, onBack: (() -> Unit)? = null) {
                 holdLabel = if (last != null) "Repeat last workout" else null,
                 onHold = last?.let { { viewModel.repeat(it.id) } },
             ) { if (last != null) starting = true else viewModel.newWorkout() }
-            WorkoutList(state, viewModel, onBack)
+            WorkoutList(state, viewModel)
         }
         ToastHost(
             toasts,
@@ -178,11 +178,9 @@ fun WorkoutsScreen(viewModel: WorkoutsViewModel, onBack: (() -> Unit)? = null) {
 // ---- list ----------------------------------------------------------------------------------------
 
 @Composable
-private fun WorkoutList(state: WorkoutsState, viewModel: WorkoutsViewModel, onBack: (() -> Unit)?) {
-    if (onBack != null) BackHandler(onBack = onBack)
+private fun WorkoutList(state: WorkoutsState, viewModel: WorkoutsViewModel) {
     LargeTitleScreen(
         title = "Workouts",
-        navigation = onBack?.let { back -> { IconButton(R.drawable.ic_arrow_back, "Back", back) } },
         header = { WeekHeader(state) },
     ) {
         if (state.workouts.isEmpty()) {

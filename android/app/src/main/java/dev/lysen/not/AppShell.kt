@@ -46,10 +46,10 @@ enum class Tab(val label: String, val icon: Int, val holdLabel: String? = null) 
     Tasks("Tasks", R.drawable.ic_task_alt, "Show lists"),
     Habits("Habits", R.drawable.ic_repeat),
     Notes("Notes", R.drawable.ic_note, "Show folders"),
-    More("More", R.drawable.ic_apps, "Add an entry"),
+    Workouts("Workouts", R.drawable.ic_fitness, "Start a workout"),
 }
 
-/** Tasks, Habits, Notes and More (Budget, Workouts) under a floating tab bar; Settings opens over them from each one's top-right profile circle. */
+/** Tasks, Habits, Notes and Workouts under a floating tab bar; Settings opens over them from each one's top-right profile circle. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun NotAppUi(
@@ -57,22 +57,18 @@ fun NotAppUi(
     habits: HabitsViewModel,
     notes: NotesViewModel,
     workouts: WorkoutsViewModel,
-    budget: BudgetViewModel,
     requestedTab: StateFlow<Tab?>,
     onTabShown: () -> Unit,
 ) {
     val memory = (LocalContext.current.applicationContext as NotApp).screenMemory
     var tab by rememberSaveable { mutableStateOf(memory.tab) }
     LaunchedEffect(tab) { memory.tab = tab }
-    var morePage by rememberSaveable { mutableStateOf(memory.morePage) }
-    LaunchedEffect(morePage) { memory.morePage = morePage }
     var showsSettings by rememberSaveable { mutableStateOf(false) }
     // Links from widgets and shortcuts switch tabs.
     val requested by requestedTab.collectAsStateWithLifecycle()
     LaunchedEffect(requested) {
         requested?.let {
             tab = it
-            if (it == Tab.More) morePage = memory.morePage
             showsSettings = false
             onTabShown()
         }
@@ -89,7 +85,7 @@ fun NotAppUi(
     if (tab != Tab.Tasks) BackHandler { tab = Tab.Tasks }
 
     // The note editor gets the whole screen, and typing gets the room the bar would take.
-    val showsBar = !(tab == Tab.Notes && editingNote) && !(tab == Tab.More && morePage == MorePage.Workouts && inWorkout) && !WindowInsets.isImeVisible
+    val showsBar = !(tab == Tab.Notes && editingNote) && !(tab == Tab.Workouts && inWorkout) && !WindowInsets.isImeVisible
     val barHeight = if (showsBar) floatingTabBarHeight() else 0.dp
 
     val addAction = remember { AddActionHolder() }
@@ -106,7 +102,7 @@ fun NotAppUi(
                 })
                 Tab.Habits -> HabitsScreen(habits)
                 Tab.Notes -> NotesScreen(notes)
-                Tab.More -> MoreScreen(morePage, { morePage = it }, budget, workouts)
+                Tab.Workouts -> WorkoutsScreen(workouts)
             }
         }
         AnimatedVisibility(

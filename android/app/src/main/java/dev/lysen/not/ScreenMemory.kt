@@ -12,20 +12,13 @@ class ScreenMemory(context: Context) {
     private val prefs = context.getSharedPreferences("screen", Context.MODE_PRIVATE)
 
     var tab: Tab
-        // Workouts was a tab of its own before More.
-        get() = prefs.getString(TAB, null)?.let { name -> if (name == "Workouts") Tab.More else Tab.entries.firstOrNull { it.name == name } } ?: Tab.Tasks
+        get() = prefs.getString(TAB, null)?.let { name -> Tab.entries.firstOrNull { it.name == name } } ?: Tab.Tasks
         set(value) = prefs.edit { putString(TAB, value.name) }
 
     var list: String? by string(LIST)
     var folder: String? by string(FOLDER)
     var note: String? by string(NOTE)
     var workout: String? by string(WORKOUT)
-
-    /** The page open under More; null for More itself. */
-    var morePage: MorePage?
-        get() = prefs.getString(MORE_PAGE, if (prefs.getString(TAB, null) == "Workouts") MorePage.Workouts.name else null)
-            ?.let { name -> MorePage.entries.firstOrNull { it.name == name } }
-        set(value) = prefs.edit { if (value == null) remove(MORE_PAGE) else putString(MORE_PAGE, value.name) }
 
     private fun string(key: String) = object : kotlin.properties.ReadWriteProperty<Any?, String?> {
         override fun getValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>) = prefs.getString(key, null)
@@ -39,6 +32,5 @@ class ScreenMemory(context: Context) {
         const val FOLDER = "folder"
         const val NOTE = "note"
         const val WORKOUT = "workout"
-        const val MORE_PAGE = "more_page"
     }
 }

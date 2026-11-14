@@ -161,7 +161,6 @@ pub struct Store {
     pub(crate) exercise_links: LoroMap,
     task_sort: LoroMap,
     pub(crate) note_sort: LoroMap,
-    pub(crate) money: crate::money::Money,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
     /// This session's local edits; remote changes are never undone.
@@ -212,7 +211,6 @@ impl Store {
         let exercise_links = doc.get_map(EXERCISE_LINKS);
         let task_sort = doc.get_map(TASK_SORT);
         let note_sort = doc.get_map(NOTE_SORT);
-        let money = crate::money::Money::new(&doc);
 
         let tx = db.transaction()?;
         if storage::needs_compaction(&tx, WORKSPACE)? {
@@ -268,7 +266,6 @@ impl Store {
             exercise_links,
             task_sort,
             note_sort,
-            money,
             dirty,
             history,
             listeners: Mutex::default(),

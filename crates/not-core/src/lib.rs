@@ -8,8 +8,6 @@ mod export;
 mod habits;
 mod images;
 pub mod markdown;
-mod money;
-mod money_parse;
 mod notes;
 mod parse;
 mod projection;
@@ -24,11 +22,6 @@ pub use checklist::{Checklist, ChecklistItem, ChecklistMoved, checklist};
 pub use error::{Error, Result};
 pub use habits::{EVERY_DAY, Habit, HabitDay, HabitSummary, Period};
 pub use not_protocol::{IMAGE_SCHEME, PairingLink, ShareInfo, image_mime, is_image_id, share_url};
-pub use money::{
-    Account, AccountKind, Budget, Category, CategoryAmount, CategoryBudget, CategoryKind, MoneySettings, PeriodReport,
-    Recurring, RecurringInput, Rollover, Split, Txn, TxnFilter, TxnInput, TxnKind, TxnSource, period_of,
-};
-pub use money_parse::{MoneyToken, MoneyTokenKind, ParsedMoney};
 pub use notes::{Folder, NoteSort, NoteSummary};
 pub use parse::{ParsedTask, Token, TokenKind, parse_task};
 pub use schedule::{Freq, Repeat, Schedule, due_label};

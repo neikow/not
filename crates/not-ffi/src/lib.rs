@@ -11,8 +11,6 @@ use not_core::{Credentials, LiveSync, Store, SyncClient, SyncStatus};
 
 uniffi::setup_scaffolding!();
 
-mod money;
-
 /// Id of the built-in Inbox list: always first in `lists()`, can't be renamed or deleted.
 #[uniffi::export]
 pub fn inbox_id() -> String {

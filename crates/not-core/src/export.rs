@@ -14,8 +14,7 @@ const BACKUP_MAGIC: &[u8] = b"not-backup-1\n";
 impl Store {
     /// Everything as indented JSON: lists with their tasks (completed and archived ones too),
     /// habits with every day's check-ins up to `today`, folders and notes with their markdown, and
-    /// workouts with their sets as typed, and budgeting (accounts, categories with their limit this
-    /// period, every transaction, recurring templates).
+    /// workouts with their sets as typed.
     pub fn export_json(&self, today: Date) -> Result<String> {
         let lists = self
             .lists()?
@@ -102,58 +101,6 @@ impl Store {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let money = {
-            let cents = |c: i64| {
-                format!(
-                    "{}{}.{:02}",
-                    if c < 0 { "-" } else { "" },
-                    c.abs() / 100,
-                    c.abs() % 100
-                )
-            };
-            let budget = self.budget(&today.to_string())?;
-            let accounts: Vec<Value> = self
-                .accounts(&today.to_string())?
-                .into_iter()
-                .map(|a| {
-                    json!({ "id": a.id, "name": a.name, "kind": format!("{:?}", a.kind).to_lowercase(),
-                    "opening_balance": cents(a.opening_balance), "balance": cents(a.balance) })
-                })
-                .collect();
-            let categories: Vec<Value> = budget
-                .expenses
-                .iter()
-                .chain(&budget.income)
-                .map(|c| {
-                    json!({ "id": c.category.id, "name": c.category.name, "emoji": c.category.emoji,
-                    "kind": format!("{:?}", c.category.kind).to_lowercase(),
-                    "rollover": format!("{:?}", c.category.rollover).to_lowercase(),
-                    "limit": (c.limit != 0).then(|| cents(c.limit)) })
-                })
-                .collect();
-            let transactions: Vec<Value> = self
-                .transactions(&crate::TxnFilter::default())?
-                .into_iter()
-                .map(|t| json!({ "id": t.id, "kind": format!("{:?}", t.kind).to_lowercase(), "date": t.date,
-                    "account": t.account, "to_account": t.to_account, "amount": cents(t.amount),
-                    "payee": t.payee, "label": t.label, "note": t.note, "category": t.category,
-                    "splits": t.splits.iter().map(|p| json!({ "category": p.category, "amount": cents(p.amount) }))
-                        .collect::<Vec<_>>() }))
-                .collect();
-            let recurring: Vec<Value> = self
-                .recurring()
-                .into_iter()
-                .map(|r| {
-                    json!({ "id": r.id, "name": r.name, "amount": cents(r.amount), "account": r.account,
-                    "category": r.category, "repeat": r.repeat, "next_due": r.next_due })
-                })
-                .collect();
-            let settings = self.money_settings();
-            json!({ "currency": settings.currency, "period_start_day": settings.period_start_day,
-                "accounts": accounts, "categories": categories, "transactions": transactions,
-                "recurring": recurring })
-        };
-
         let out = json!({
             "format": "not-export",
             "version": 1,
@@ -163,7 +110,6 @@ impl Store {
             "folders": folders,
             "notes": notes,
             "workouts": workouts,
-            "money": money,
         });
         serde_json::to_string_pretty(&out).map_err(|e| Error::Invalid(format!("export: {e}")))
     }
