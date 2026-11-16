@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -70,6 +71,8 @@ import dev.lysen.not.widget.HabitsWidgetReceiver
 import dev.lysen.not.widget.NoteWidgetReceiver
 import dev.lysen.not.widget.NotesWidgetReceiver
 import dev.lysen.not.widget.TasksWidgetReceiver
+import dev.lysen.not.widget.asLook
+import dev.lysen.not.widget.asPreferences
 import kotlinx.coroutines.launch
 
 /** What Settings holds, one page each. */
@@ -78,7 +81,7 @@ private enum class SettingsPage(val title: String, val icon: Int) {
     Reminders("Reminders", R.drawable.ic_schedule),
     Archive("Archive", R.drawable.ic_history),
     Backup("Export and backup", R.drawable.ic_copy),
-    Widgets("Widgets and shortcuts", R.drawable.ic_add_task),
+    Widgets("Widgets", R.drawable.ic_add_task),
     Workouts("Workouts", R.drawable.ic_fitness),
     About("About", R.drawable.ic_note),
 }
@@ -153,7 +156,7 @@ private fun summary(page: SettingsPage, state: UiState): String = when (page) {
         else -> "$n tasks done over a day ago"
     }
     SettingsPage.Backup -> "Everything as JSON, or a backup file to restore"
-    SettingsPage.Widgets -> "Home screen widgets and quick add"
+    SettingsPage.Widgets -> "Look, home screen widgets, quick add"
     SettingsPage.Workouts -> "Rest timer, import from text"
     SettingsPage.About -> "Version ${BuildConfig.VERSION_NAME}, credits"
 }
@@ -180,6 +183,7 @@ private fun CategoryRow(page: SettingsPage, detail: String, onClick: () -> Unit)
 private fun WidgetsPage() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    WidgetLookDefaults()
     Section("Home screen", padded = false) {
         ShortcutRow(R.drawable.ic_task_alt, "Tasks widget", "Open tasks of a list, with checkboxes and quick add") {
             scope.launch { Shortcuts.requestWidget(context, TasksWidgetReceiver::class.java) }
@@ -187,6 +191,10 @@ private fun WidgetsPage() {
         Divider(Modifier.padding(start = 56.dp))
         ShortcutRow(R.drawable.ic_repeat, "Habits widget", "Today's habits; tap one to check in") {
             scope.launch { Shortcuts.requestWidget(context, HabitsWidgetReceiver::class.java) }
+        }
+        Divider(Modifier.padding(start = 56.dp))
+        ShortcutRow(R.drawable.ic_timer, "Timed habit widget", "One timed habit with its ring and a button to switch it") {
+            scope.launch { Shortcuts.requestWidget(context, dev.lysen.not.widget.TimedWidgetReceiver::class.java) }
         }
         Divider(Modifier.padding(start = 56.dp))
         ShortcutRow(R.drawable.ic_today, "Up next widget", "The next task due, to tick off at a glance") {
@@ -702,4 +710,45 @@ private fun syncStatus(state: SyncState?): String = when (state) {
     SyncState.Synced -> "up to date"
     is SyncState.Offline -> "offline: ${state.reason}"
     SyncState.Unauthorized -> "rejected by the server; unpair, then pair again"
+}
+
+/**
+ * How every widget looks unless its own setup says otherwise, with a live preview of one of them.
+ * Changes apply to the placed widgets straight away.
+ */
+@Composable
+private fun WidgetLookDefaults() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val look by dev.lysen.not.widget.WidgetLooks.defaults(context).collectAsState()
+    var previewing by remember { mutableStateOf(dev.lysen.not.widget.WidgetKind.Habits) }
+    val current = look ?: dev.lysen.not.widget.WidgetLook()
+    Section("Look of all widgets") {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            dev.lysen.not.widget.WidgetPreview(
+                previewing,
+                glanceId = null,
+                size = previewing.defaultSize,
+                state = androidx.datastore.preferences.core.emptyPreferences(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            dev.lysen.not.widget.ChoiceRow(
+                "Preview",
+                listOf(dev.lysen.not.widget.WidgetKind.Habits, dev.lysen.not.widget.WidgetKind.Timed, dev.lysen.not.widget.WidgetKind.Tasks, dev.lysen.not.widget.WidgetKind.Notes, dev.lysen.not.widget.WidgetKind.Next)
+                    .map { it.name to it.title },
+                previewing.name,
+            ) { previewing = dev.lysen.not.widget.WidgetKind.valueOf(it) }
+            val prefs = current.asPreferences()
+            dev.lysen.not.widget.LookRows(
+                current = { key -> prefs[key] },
+                withDefault = false,
+                onChange = { key, value ->
+                    val next = prefs.toMutablePreferences().apply { if (value != null) this[key] = value }.toPreferences().asLook()
+                    dev.lysen.not.widget.WidgetLooks.save(context, next)
+                    scope.launch { dev.lysen.not.widget.WidgetKind.updateAll(context) }
+                },
+            )
+            Text("Each widget can change these in its own setup: long-press it on the home screen.", style = Not.type.caption, color = Not.colors.inkMuted)
+        }
+    }
 }

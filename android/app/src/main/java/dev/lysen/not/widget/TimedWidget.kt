@@ -88,7 +88,7 @@ class TimedWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as NotApp
-        provideContent {
+        provideContent { WidgetLookProvider {
             val version by app.changes.collectAsState()
             val habitId = currentState(TIMED_KEY)
             val today = LocalDate.now()
@@ -103,7 +103,7 @@ class TimedWidget : GlanceAppWidget() {
                 }
             }
             TimedContent(summary)
-        }
+        } }
     }
 }
 
@@ -127,19 +127,6 @@ class SwitchTimedHabit : ActionCallback {
     }
 }
 
-/** Picks the timed habit a widget shows. */
-class TimedWidgetConfigActivity : PickerConfigActivity() {
-    override val dialogTitle = "Show in widget"
-    override val widget = TimedWidget()
-
-    override fun options(store: NotStore) =
-        store.habitsNow(dev.lysen.not.today()).filter { it.habit.timed != null }.map { PickerOption(it.habit.id, it.habit.title) }
-
-    override fun save(prefs: MutablePreferences, choice: String) {
-        prefs[TIMED_KEY] = choice
-    }
-}
-
 @Composable
 private fun TimedContent(summary: HabitSummary?) {
     val context = LocalContext.current
@@ -153,6 +140,9 @@ private fun TimedContent(summary: HabitSummary?) {
         val now = nowMs()
         val live = summary.timedLive(now, now)!!
         val secured = live.secured(now)
+        val prefs = currentState<androidx.datastore.preferences.core.Preferences>()
+        val showsLeft = TimedOptions.showsLeft(prefs, live.atMostOff)
+        val showDetail = TimedOptions.detail.isOn(prefs)
         val size = LocalSize.current
         val compact = size.height < 150.dp
         // The ring fills the widget's height (less the card's padding), up to 40% of its width.
@@ -177,11 +167,11 @@ private fun TimedContent(summary: HabitSummary?) {
                     }
                 } else {
                     Image(
-                        ImageProvider(ringBitmap(context, live, (ring.value * 3).toInt())),
+                        ImageProvider(ringBitmap(LocalWidgetLook.current.palette(context), live, (ring.value * 3).toInt(), showsLeft)),
                         contentDescription = null,
                         modifier = GlanceModifier.fillMaxSize(),
                     )
-                    RingCenter(rule, live, compact = ring < 80.dp)
+                    RingCenter(rule, live, compact = ring < 80.dp, showsLeft = showsLeft)
                 }
             }
             Spacer(GlanceModifier.width(14.dp))
@@ -190,34 +180,34 @@ private fun TimedContent(summary: HabitSummary?) {
                     Text(
                         summary.habit.title,
                         maxLines = 1,
-                        style = TextStyle(color = WidgetColors.ink, fontSize = 16.sp, fontWeight = FontWeight.Bold),
+                        style = TextStyle(color = WidgetColors.ink, fontSize = 16.wsp, fontWeight = FontWeight.Bold),
                     )
                     if (secured) {
                         Text(
                             if (live.atMostOff) "Goal safe for today" else "Goal met today",
                             maxLines = 1,
-                            style = TextStyle(color = WidgetColors.accentInk, fontSize = 14.sp, fontWeight = FontWeight.Bold),
+                            style = TextStyle(color = WidgetColors.accentInk, fontSize = 14.wsp, fontWeight = FontWeight.Bold),
                         )
                         Text(
                             if (live.atMostOff) "Only ${durationText(live.countedMs)} ${stateName(rule, false).lowercase()}" else "${durationText(live.countedMs)} today",
                             maxLines = 1,
-                            style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.sp),
+                            style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.wsp),
                         )
-                        if (!compact) {
+                        if (!compact && showDetail) {
                             Text(
                                 if (summary.streak > 1u) "${summary.streak}-day streak" else "Well done",
                                 maxLines = 1,
-                                style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.sp),
+                                style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.wsp),
                             )
                         }
                     } else {
                         Text(
                             headline(rule, live),
                             maxLines = 1,
-                            style = TextStyle(color = if (live.on == rule.usualOn) WidgetColors.inkMuted else WidgetColors.accentInk, fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                            style = TextStyle(color = if (live.on == rule.usualOn) WidgetColors.inkMuted else WidgetColors.accentInk, fontSize = 14.wsp, fontWeight = FontWeight.Medium),
                         )
-                        detail(rule, live, now)?.let {
-                            Text(it, maxLines = if (compact) 1 else 2, style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.sp))
+                        detail(rule, live, now)?.takeIf { showDetail }?.let {
+                            Text(it, maxLines = if (compact) 1 else 2, style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.wsp))
                         }
                     }
                 }
@@ -251,7 +241,7 @@ private fun SwitchButton(summary: HabitSummary, rule: TimedRule, live: TimedLive
             modifier = GlanceModifier.size(18.dp),
         )
         Spacer(GlanceModifier.width(6.dp))
-        Text(switchLabel(rule, live.on), style = TextStyle(color = fg, fontSize = 15.sp, fontWeight = FontWeight.Bold))
+        Text(switchLabel(rule, live.on), style = TextStyle(color = fg, fontSize = 15.wsp, fontWeight = FontWeight.Bold))
     }
 }
 
@@ -260,28 +250,32 @@ private fun SwitchButton(summary: HabitSummary, rule: TimedRule, live: TimedLive
  * on adding up) it's a system chronometer that ticks by itself; otherwise plain text.
  */
 @Composable
-private fun RingCenter(rule: TimedRule, live: TimedLive, compact: Boolean) {
+private fun RingCenter(rule: TimedRule, live: TimedLive, compact: Boolean, showsLeft: Boolean) {
     val counts = live.tracked && live.on != rule.atMostOff
     val size = if (compact) 12f else 15f
     if (!counts) {
         Text(
-            centerText(live),
+            centerText(live, showsLeft),
             maxLines = 1,
-            style = TextStyle(color = WidgetColors.ink, fontSize = size.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center),
+            style = TextStyle(color = WidgetColors.ink, fontSize = size.wsp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center),
         )
         return
     }
     val context = LocalContext.current
+    val look = LocalWidgetLook.current
+    val scale = look.textSize.scale
     val elapsed = android.os.SystemClock.elapsedRealtime()
     val views = android.widget.RemoteViews(context.packageName, R.layout.widget_chronometer).apply {
-        if (live.atMostOff) {
-            // Counts the allowance down (past zero it shows how far over).
+        if (showsLeft) {
+            // Counts what's left down (past zero, how far over).
             setChronometer(R.id.widget_chronometer, elapsed + live.leftMs, null, true)
             setChronometerCountDown(R.id.widget_chronometer, true)
         } else {
             setChronometer(R.id.widget_chronometer, elapsed - live.countedMs, null, true)
         }
-        setTextViewTextSize(R.id.widget_chronometer, android.util.TypedValue.COMPLEX_UNIT_SP, size - 1f)
+        setTextViewTextSize(R.id.widget_chronometer, android.util.TypedValue.COMPLEX_UNIT_SP, (size - 1f) * scale)
+        // RemoteViews can't follow the look's theme on its own: color it like the rest.
+        setTextColor(R.id.widget_chronometer, look.palette(context).ink.toArgb())
     }
     AndroidRemoteViews(views)
 }
@@ -303,18 +297,17 @@ private fun detail(rule: TimedRule, live: TimedLive, now: Long): String? {
     }
 }
 
-/** At most: allowance left. At least: time so far. */
-private fun centerText(live: TimedLive): String = when {
+/** Time left (allowance or to go), or time so far. */
+private fun centerText(live: TimedLive, showsLeft: Boolean): String = when {
     !live.tracked -> "–"
-    live.atMostOff && live.leftMs < 0 -> "-${durationText(-live.leftMs)}"
-    live.atMostOff -> durationText(live.leftMs)
-    else -> durationText(live.countedMs)
+    !showsLeft -> durationText(live.countedMs)
+    live.leftMs < 0 -> "-${durationText(-live.leftMs)}"
+    else -> durationText(live.leftMs)
 }
 
 /** The app's ring, drawn: a faint track and a mint arc (amber when an allowance runs low, red when over). */
-private fun ringBitmap(context: Context, live: TimedLive, px: Int): Bitmap {
-    val night = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
-    val colors: NotColors = if (night) DarkColors else LightColors
+/** [showsLeft]: the arc is what's left (of the allowance, or to go) rather than what's done. */
+private fun ringBitmap(colors: NotColors, live: TimedLive, px: Int, showsLeft: Boolean): Bitmap {
     val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
     val canvas = android.graphics.Canvas(bitmap)
     val stroke = px * 0.09f
@@ -324,14 +317,16 @@ private fun ringBitmap(context: Context, live: TimedLive, px: Int): Bitmap {
         strokeWidth = stroke
         strokeCap = Paint.Cap.ROUND
     }
+    val left = if (live.goalMs > 0) (live.leftMs.toFloat() / live.goalMs).coerceIn(0f, 1f) else 0f
+    val fraction = if (showsLeft) left else 1f - left
     paint.color = colors.sunken.toArgb()
     canvas.drawArc(rect, 0f, 360f, false, paint)
     paint.color = when {
         live.atMostOff && live.leftMs < 0 -> colors.danger.toArgb()
-        live.atMostOff && live.ringFraction < 0.25f -> 0xFFE29A2D.toInt()
+        live.atMostOff && left < 0.25f -> 0xFFE29A2D.toInt()
         else -> colors.accent.toArgb()
     }
-    val sweep = if (live.atMostOff && live.leftMs < 0) 360f else 360f * live.ringFraction
+    val sweep = if (live.atMostOff && live.leftMs < 0) 360f else 360f * fraction
     if (sweep > 0f) canvas.drawArc(rect, -90f, sweep, false, paint)
     return bitmap
 }

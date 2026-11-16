@@ -8,6 +8,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceId
+import androidx.glance.currentState
 import androidx.glance.GlanceModifier
 import androidx.glance.LocalContext
 import androidx.glance.action.actionParametersOf
@@ -45,19 +46,25 @@ import dev.lysen.not.today
 class NextWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as NotApp
-        provideContent {
+        provideContent { WidgetLookProvider {
             val version by app.changes.collectAsState()
-            val next = remember(version) { load(app) }
+            val days = NextOptions.days(currentState<androidx.datastore.preferences.core.Preferences>())
+            val next = remember(version, days) { load(app, days) }
             NextContent(next)
-        }
+        } }
     }
 
     private class Next(val task: TaskItem, val more: Int, val today: Boolean)
 
-    private fun load(app: NotApp): Next? = try {
+    /** [days]: how many days past today an upcoming task may start; null for any. */
+    private fun load(app: NotApp, days: Int?): Next? = try {
         fun top(view: String) = app.store.viewOutline(view, today()).open.filter { it.depth == 0u }.map { it.task }
         val due = top(TODAY_ID)
-        val pick = due.firstOrNull() ?: top(UPCOMING_ID).firstOrNull()
+        val horizon = days?.let { java.time.LocalDate.now().plusDays(it.toLong()).toString() }
+        val pick = due.firstOrNull() ?: top(UPCOMING_ID).firstOrNull { t ->
+            val at = t.start ?: t.deadline
+            horizon == null || (at != null && at <= horizon)
+        }
         pick?.let { task -> Next(task, more = (due.size - 1).coerceAtLeast(0), today = due.isNotEmpty()) }
     } catch (e: NotException) {
         logLoadFailure("next", e)
@@ -70,7 +77,7 @@ class NextWidget : GlanceAppWidget() {
         val open = actionStartActivity(MainActivity.openList(context, if (next?.today == false) UPCOMING_ID else TODAY_ID))
         WidgetSurface {
             if (next == null) {
-                WidgetEmpty(R.drawable.ic_check, "All clear", "Nothing dated is left.", open)
+                WidgetEmpty(R.drawable.ic_check, "All clear", "Nothing coming up.", open)
                 return@WidgetSurface
             }
             // Check on the left, three short lines beside it: fits a 2×1 cell.
@@ -88,19 +95,19 @@ class NextWidget : GlanceAppWidget() {
                     Text(
                         if (next.today) "Up next" else "Coming up",
                         maxLines = 1,
-                        style = TextStyle(color = WidgetColors.accentInk, fontSize = 11.sp, fontWeight = FontWeight.Medium),
+                        style = TextStyle(color = WidgetColors.accentInk, fontSize = 11.wsp, fontWeight = FontWeight.Medium),
                     )
                     Text(
                         next.task.title,
                         maxLines = 1,
-                        style = TextStyle(color = WidgetColors.ink, fontSize = 15.sp, fontWeight = FontWeight.Medium),
+                        style = TextStyle(color = WidgetColors.ink, fontSize = 15.wsp, fontWeight = FontWeight.Medium),
                     )
                     val meta = listOfNotNull(
                         scheduleLabel(next.task.start ?: next.task.deadline, next.task.time, null),
                         next.task.tags.firstOrNull()?.let { "#$it" },
                         next.more.takeIf { it > 0 }?.let { "+$it today" },
                     ).joinToString(" · ")
-                    Text(meta, maxLines = 1, style = TextStyle(color = WidgetColors.inkMuted, fontSize = 12.sp))
+                    Text(meta, maxLines = 1, style = TextStyle(color = WidgetColors.inkMuted, fontSize = 12.wsp))
                 }
             }
         }

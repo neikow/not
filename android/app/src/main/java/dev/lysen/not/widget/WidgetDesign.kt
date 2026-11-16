@@ -42,17 +42,18 @@ import dev.lysen.not.ui.NotColors
  * (widgets can't read the in-app theme, and wallpaper colors would clash with the brand).
  */
 object WidgetColors {
-    private fun pick(of: NotColors.() -> Color): ColorProvider = ColorProvider(day = LightColors.of(), night = DarkColors.of())
-
-    val surface = pick { surface }
-    val sunken = pick { sunken }
-    val ink = pick { ink }
-    val inkMuted = pick { inkMuted }
-    val inkFaint = pick { inkFaint }
-    val accent = pick { accent }
-    val onAccent = pick { onAccent }
-    val accentInk = pick { accentInk }
-    val accentSoft = pick { accentSoft }
+    // Read through the widget's look: its theme can pin light or dark.
+    val surface: ColorProvider @Composable get() = pick({ surface }, LocalWidgetLook.current.background.alpha)
+    val sunken: ColorProvider @Composable get() = pick({ sunken })
+    val ink: ColorProvider @Composable get() = pick({ ink })
+    val inkMuted: ColorProvider @Composable get() = pick({ inkMuted })
+    // Over the wallpaper (translucent or clear), faint text would vanish: it reads as muted.
+    val inkFaint: ColorProvider
+        @Composable get() = if (LocalWidgetLook.current.background == WidgetBackground.Solid) pick({ inkFaint }) else pick({ inkMuted })
+    val accent: ColorProvider @Composable get() = pick({ accent })
+    val onAccent: ColorProvider @Composable get() = pick({ onAccent })
+    val accentInk: ColorProvider @Composable get() = pick({ accentInk })
+    val accentSoft: ColorProvider @Composable get() = pick({ accentSoft })
 }
 
 /** The widget's card: brand surface, the launcher's corner radius, room around the content. */
@@ -64,7 +65,7 @@ fun WidgetSurface(content: @Composable ColumnScope.() -> Unit) {
             .appWidgetBackground()
             .background(WidgetColors.surface)
             .cornerRadius(android.R.dimen.system_app_widget_background_radius)
-            .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 4.dp),
+            .padding(start = 10.wdp, end = 10.wdp, top = 8.wdp, bottom = 4.wdp),
         content = content,
     )
 }
@@ -75,8 +76,9 @@ fun WidgetSurface(content: @Composable ColumnScope.() -> Unit) {
  */
 @Composable
 fun WidgetHeader(title: String, open: Action?, detail: String? = null, detailAccent: Boolean = false, add: Action? = null, addLabel: String? = null) {
+    if (!LocalWidgetLook.current.header) return
     Row(
-        GlanceModifier.fillMaxWidth().height(48.dp).padding(start = 6.dp, end = 2.dp),
+        GlanceModifier.fillMaxWidth().height(48.wdp).padding(start = 6.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
@@ -86,7 +88,7 @@ fun WidgetHeader(title: String, open: Action?, detail: String? = null, detailAcc
             Text(
                 title,
                 maxLines = 1,
-                style = TextStyle(color = WidgetColors.ink, fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                style = TextStyle(color = WidgetColors.ink, fontSize = 18.wsp, fontWeight = FontWeight.Bold),
             )
             if (detail != null) {
                 Spacer(GlanceModifier.width(8.dp))
@@ -95,7 +97,7 @@ fun WidgetHeader(title: String, open: Action?, detail: String? = null, detailAcc
                     maxLines = 1,
                     style = TextStyle(
                         color = if (detailAccent) WidgetColors.accentInk else WidgetColors.inkFaint,
-                        fontSize = 14.sp,
+                        fontSize = 14.wsp,
                         fontWeight = FontWeight.Medium,
                     ),
                 )
@@ -164,12 +166,12 @@ fun WidgetEmpty(icon: Int, title: String, hint: String? = null, open: Action? = 
             )
         }
         Spacer(GlanceModifier.height(8.dp))
-        Text(title, style = TextStyle(color = WidgetColors.ink, fontSize = 15.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center))
+        Text(title, style = TextStyle(color = WidgetColors.ink, fontSize = 15.wsp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center))
         if (hint != null) {
             Text(
                 hint,
                 maxLines = 2,
-                style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.sp, textAlign = TextAlign.Center),
+                style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.wsp, textAlign = TextAlign.Center),
                 modifier = GlanceModifier.padding(horizontal = 8.dp),
             )
         }
@@ -179,4 +181,22 @@ fun WidgetEmpty(icon: Int, title: String, hint: String? = null, open: Action? = 
 /** A widget fell back to its empty state because the store failed; leave a trace for `adb logcat -s NotWidget`. */
 fun logLoadFailure(widget: String, e: Exception) {
     android.util.Log.w("NotWidget", "$widget widget: load failed, showing fallback", e)
+}
+
+/** Set in the state of previews (setup and Settings), which render outside a launcher. */
+val PREVIEW_KEY = androidx.datastore.preferences.core.stringPreferencesKey("preview")
+
+/**
+ * A scrolling list of rows. In previews it's a plain column of the first few: Glance lists need
+ * the launcher's adapter, so they'd show up empty outside one.
+ */
+@Composable
+fun <T> WidgetItems(items: List<T>, id: (T) -> Long, row: @Composable (T) -> Unit) {
+    if (androidx.glance.currentState<androidx.datastore.preferences.core.Preferences>()[PREVIEW_KEY] != null) {
+        Column(GlanceModifier.fillMaxSize()) { items.take(8).forEach { row(it) } }
+    } else {
+        androidx.glance.appwidget.lazy.LazyColumn(GlanceModifier.fillMaxSize()) {
+            items(items.size, itemId = { id(items[it]) }) { row(items[it]) }
+        }
+    }
 }

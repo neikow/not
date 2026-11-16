@@ -69,12 +69,14 @@ private val LINE = ActionParameters.Key<Int>("line")
 class NotesWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as NotApp
-        provideContent {
+        provideContent { WidgetLookProvider {
             val folderId = currentState(FOLDER_KEY)?.takeIf { it.isNotEmpty() }
             val version by app.changes.collectAsState()
-            val content = remember(folderId, version) { NotesContent.load(app.store, folderId) }
-            NotesWidgetContent(content)
-        }
+            val prefs = currentState<androidx.datastore.preferences.core.Preferences>()
+            val limit = NotesOptions.limit(prefs)
+            val content = remember(folderId, version, limit) { NotesContent.load(app.store, folderId, limit) }
+            NotesWidgetContent(content, previews = NotesOptions.previews.isOn(prefs))
+        } }
     }
 }
 
@@ -84,11 +86,11 @@ class NotesWidgetReceiver : GlanceAppWidgetReceiver() {
 
 private data class NotesContent(val folderId: String?, val title: String, val notes: List<NoteSummary>) {
     companion object {
-        fun load(store: NotStore, folderId: String?): NotesContent =
+        fun load(store: NotStore, folderId: String?, limit: Int): NotesContent =
             try {
                 // The folder may have been deleted on another device: fall back to all notes.
                 val folder = folderId?.let { id -> store.folders().firstOrNull { it.id == id } }
-                NotesContent(folder?.id, folder?.title ?: "Notes", store.notes(folder?.id).take(30))
+                NotesContent(folder?.id, folder?.title ?: "Notes", store.notes(folder?.id).take(limit))
             } catch (e: NotException) {
                 logLoadFailure("notes", e)
                 NotesContent(null, "Notes", emptyList())
@@ -97,7 +99,7 @@ private data class NotesContent(val folderId: String?, val title: String, val no
 }
 
 @Composable
-private fun NotesWidgetContent(content: NotesContent) {
+private fun NotesWidgetContent(content: NotesContent, previews: Boolean) {
     val context = LocalContext.current
     val open = actionStartActivity(MainActivity.openTab(context, Tab.Notes))
     WidgetSurface {
@@ -110,24 +112,22 @@ private fun NotesWidgetContent(content: NotesContent) {
         if (content.notes.isEmpty()) {
             WidgetEmpty(R.drawable.ic_note, "No notes yet", "Tap + to write one.", open)
         } else {
-            LazyColumn(GlanceModifier.fillMaxSize()) {
-                items(content.notes, itemId = { it.id.hashCode().toLong() }) { NoteCard(it) }
-            }
+            WidgetItems(content.notes, { it.id.hashCode().toLong() }) { NoteCard(it, previews) }
         }
     }
 }
 
 /** A soft card: title (with a pin when pinned) over a two-line preview. */
 @Composable
-private fun NoteCard(note: NoteSummary) {
+private fun NoteCard(note: NoteSummary, previews: Boolean) {
     val context = LocalContext.current
-    Column(GlanceModifier.fillMaxWidth().padding(bottom = 6.dp)) {
+    Column(GlanceModifier.fillMaxWidth().padding(bottom = 6.wdp)) {
         Column(
             GlanceModifier
                 .fillMaxWidth()
                 .background(WidgetColors.sunken)
                 .cornerRadius(14.dp)
-                .padding(horizontal = 12.dp, vertical = 9.dp)
+                .padding(horizontal = 12.dp, vertical = 9.wdp)
                 .clickable(actionStartActivity(MainActivity.openNote(context, note.id))),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -143,30 +143,17 @@ private fun NoteCard(note: NoteSummary) {
                 Text(
                     note.title.ifEmpty { "New note" },
                     maxLines = 1,
-                    style = TextStyle(color = WidgetColors.ink, fontSize = 15.sp, fontWeight = FontWeight.Medium),
+                    style = TextStyle(color = WidgetColors.ink, fontSize = 15.wsp, fontWeight = FontWeight.Medium),
                 )
             }
-            if (note.preview.isNotEmpty()) {
+            if (previews && note.preview.isNotEmpty()) {
                 Text(
                     note.preview,
                     maxLines = 2,
-                    style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.sp),
+                    style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.wsp),
                 )
             }
         }
-    }
-}
-
-/** Picks the folder a notes widget shows. Optional; defaults to all notes. */
-class NotesWidgetConfigActivity : PickerConfigActivity() {
-    override val dialogTitle = "Show notes from"
-    override val widget = NotesWidget()
-
-    override fun options(store: NotStore) =
-        listOf(PickerOption("", "All notes")) + store.folders().map { PickerOption(it.id, it.title, it.depth.toInt()) }
-
-    override fun save(prefs: MutablePreferences, choice: String) {
-        prefs[FOLDER_KEY] = choice
     }
 }
 
@@ -176,12 +163,12 @@ class NotesWidgetConfigActivity : PickerConfigActivity() {
 class NoteWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as NotApp
-        provideContent {
+        provideContent { WidgetLookProvider {
             val noteId = currentState(NOTE_KEY)
             val version by app.changes.collectAsState()
             val content = remember(noteId, version) { NoteContent.load(app.store, noteId) }
             NoteWidgetContent(content)
-        }
+        } }
     }
 }
 
@@ -269,11 +256,7 @@ private fun NoteWidgetContent(content: NoteContent) {
             content.id == null -> WidgetEmpty(R.drawable.ic_note, "No note picked", "Long-press the widget to pick one.")
             content.missing -> WidgetEmpty(R.drawable.ic_note, "Note deleted", "Long-press the widget to pick another.")
             content.lines.isEmpty() -> WidgetEmpty(R.drawable.ic_note, "Nothing else here", "Tap to write more.", open)
-            else -> LazyColumn(GlanceModifier.fillMaxSize()) {
-                items(content.lines, itemId = { it.index.toLong() }) { line ->
-                    NoteLineView(content.id, line, open!!)
-                }
-            }
+            else -> WidgetItems(content.lines, { it.index.toLong() }) { line -> NoteLineView(content.id, line, open!!) }
         }
     }
 }
@@ -281,7 +264,7 @@ private fun NoteWidgetContent(content: NoteContent) {
 /** Text lines sit 6dp in, in line with the title; checklist marks sit in the same column as a box's. */
 @Composable
 private fun NoteLineView(noteId: String, line: NoteLine, open: Action) {
-    val text = TextStyle(color = WidgetColors.ink, fontSize = 14.sp)
+    val text = TextStyle(color = WidgetColors.ink, fontSize = 14.wsp)
     when (line) {
         is NoteLine.Check -> Row(
             GlanceModifier.fillMaxWidth().padding(start = (line.depth * 20).dp),
@@ -304,7 +287,7 @@ private fun NoteLineView(noteId: String, line: NoteLine, open: Action) {
         }
         is NoteLine.Heading -> Text(
             line.text,
-            style = text.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold),
+            style = text.copy(fontSize = 16.wsp, fontWeight = FontWeight.Bold),
             modifier = GlanceModifier.fillMaxWidth().padding(start = 6.dp, top = 6.dp, bottom = 2.dp).clickable(open),
         )
         is NoteLine.Bullet -> Row(
@@ -314,7 +297,7 @@ private fun NoteLineView(noteId: String, line: NoteLine, open: Action) {
             // Dot centred where a box would be (36dp column), rows as tall as checklist rows, so lists line up.
             Text(
                 "•",
-                style = text.copy(color = WidgetColors.accentInk, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center),
+                style = text.copy(color = WidgetColors.accentInk, fontSize = 20.wsp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center),
                 modifier = GlanceModifier.width(36.dp),
             )
             Spacer(GlanceModifier.width(4.dp))
@@ -329,14 +312,3 @@ private fun NoteLineView(noteId: String, line: NoteLine, open: Action) {
     }
 }
 
-/** Picks the note a note widget shows. Required when placing it. */
-class NoteWidgetConfigActivity : PickerConfigActivity() {
-    override val dialogTitle = "Show note"
-    override val widget = NoteWidget()
-
-    override fun options(store: NotStore) = store.notes(null).map { PickerOption(it.id, it.title.ifEmpty { "New note" }) }
-
-    override fun save(prefs: MutablePreferences, choice: String) {
-        prefs[NOTE_KEY] = choice
-    }
-}

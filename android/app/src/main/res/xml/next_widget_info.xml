@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Small: one task. Reads Today, then Upcoming; nothing to configure. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="dev.lysen.not.widget.WidgetSetupActivity"
+    android:widgetFeatures="reconfigurable|configuration_optional"
     android:description="@string/widget_next_description"
     android:initialLayout="@layout/glance_default_loading_layout"
     android:minWidth="110dp"

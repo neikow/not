@@ -64,13 +64,12 @@
             android:taskAffinity=""
             android:theme="@style/Theme.Not.Translucent"
             android:windowSoftInputMode="stateAlwaysVisible" />
-
+        <!-- Setup for every widget: what it shows, content options, look, with a live preview. -->
         <activity
-            android:name=".widget.WidgetConfigActivity"
+            android:name=".widget.WidgetSetupActivity"
             android:excludeFromRecents="true"
             android:exported="true"
-            android:taskAffinity=""
-            android:theme="@style/Theme.Not.Translucent">
+            android:taskAffinity="">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
             </intent-filter>
@@ -118,38 +117,6 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
-
-        <activity
-            android:name=".widget.NotesWidgetConfigActivity"
-            android:excludeFromRecents="true"
-            android:exported="true"
-            android:taskAffinity=""
-            android:theme="@style/Theme.Not.Translucent">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
-            </intent-filter>
-        </activity>
-        <activity
-            android:name=".widget.NoteWidgetConfigActivity"
-            android:excludeFromRecents="true"
-            android:exported="true"
-            android:taskAffinity=""
-            android:theme="@style/Theme.Not.Translucent">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
-            </intent-filter>
-        </activity>
-
-        <activity
-            android:name=".widget.TimedWidgetConfigActivity"
-            android:excludeFromRecents="true"
-            android:exported="true"
-            android:taskAffinity=""
-            android:theme="@style/Theme.Not.Translucent">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
-            </intent-filter>
-        </activity>
         <receiver
             android:name=".widget.TimedWidgetReceiver"
             android:exported="true"

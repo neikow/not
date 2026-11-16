@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
+import androidx.glance.currentState
 import androidx.glance.GlanceModifier
 import androidx.glance.Image
 import androidx.glance.ImageProvider
@@ -63,7 +64,7 @@ private val HABIT_ID = ActionParameters.Key<String>("habit_id")
 class HabitsWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as NotApp
-        provideContent {
+        provideContent { WidgetLookProvider {
             val version by app.changes.collectAsState()
             val today = LocalDate.now()
             // All habits; the widget lists the ones due today.
@@ -75,8 +76,14 @@ class HabitsWidget : GlanceAppWidget() {
                     emptyList()
                 }
             }
-            HabitsWidgetContent(all.filter { it.onToday }, hasAny = all.isNotEmpty())
-        }
+            val prefs = currentState<androidx.datastore.preferences.core.Preferences>()
+            // The habits picked in setup (all when none), due today; done ones unless hidden.
+            val picked = prefs[HabitsOptions.ids].orEmpty()
+            val hideDone = HabitsOptions.hideDone.of(prefs) == "hide"
+            val shown = all.filter { (picked.isEmpty() || it.habit.id in picked) && it.onToday && !(hideDone && it.doneToday) }
+            val due = all.filter { (picked.isEmpty() || it.habit.id in picked) && it.onToday }
+            HabitsWidgetContent(shown, left = due.count { !it.doneToday }, anyDue = due.isNotEmpty(), hasAny = all.isNotEmpty(), streaks = HabitsOptions.streaks.isOn(prefs))
+        } }
     }
 }
 
@@ -97,38 +104,37 @@ class ToggleHabit : ActionCallback {
 }
 
 @Composable
-private fun HabitsWidgetContent(habits: List<HabitSummary>, hasAny: Boolean) {
+private fun HabitsWidgetContent(habits: List<HabitSummary>, left: Int, anyDue: Boolean, hasAny: Boolean, streaks: Boolean) {
     val context = LocalContext.current
     val open = actionStartActivity(MainActivity.openTab(context, Tab.Habits))
-    val left = habits.count { !it.doneToday }
     WidgetSurface {
         WidgetHeader(
             title = "Habits",
             open = open,
             detail = when {
-                habits.isEmpty() -> null
+                !anyDue -> null
                 left == 0 -> "All done"
                 else -> "$left left"
             },
-            detailAccent = habits.isNotEmpty() && left == 0,
+            detailAccent = anyDue && left == 0,
         )
         if (habits.isEmpty()) {
-            if (hasAny) {
+            if (anyDue) {
+                WidgetEmpty(R.drawable.ic_check, "All done for today", null, open)
+            } else if (hasAny) {
                 WidgetEmpty(R.drawable.ic_check, "Nothing due today", "Enjoy the day off.", open)
             } else {
                 WidgetEmpty(R.drawable.ic_repeat, "No habits yet", "Tap to add one in the app.", open)
             }
         } else {
-            LazyColumn(GlanceModifier.fillMaxSize()) {
-                items(habits, itemId = { it.habit.id.hashCode().toLong() }) { HabitRow(it) }
-            }
+            WidgetItems(habits, { it.habit.id.hashCode().toLong() }) { HabitRow(it, streaks) }
         }
     }
 }
 
 /** The whole row checks in: habits are tapped many times a day, so the target is big. */
 @Composable
-private fun HabitRow(summary: HabitSummary) {
+private fun HabitRow(summary: HabitSummary, streaks: Boolean) {
     val habit = summary.habit
     val rule = habit.timed
     val done = summary.doneToday
@@ -137,12 +143,12 @@ private fun HabitRow(summary: HabitSummary) {
     Row(
         GlanceModifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp)
+            .padding(vertical = 2.wdp)
             .clickable(actionRunCallback<ToggleHabit>(actionParametersOf(HABIT_ID to habit.id))),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Ring like the app's: faint when untouched, mint once started, a mint disc with a check when done.
-        Box(GlanceModifier.size(40.dp), contentAlignment = Alignment.Center) {
+        Box(GlanceModifier.size(40.wdp), contentAlignment = Alignment.Center) {
             Image(
                 ImageProvider(if (done) R.drawable.widget_ring_done else R.drawable.widget_ring),
                 contentDescription = if (done) "Done" else "Check in",
@@ -159,7 +165,7 @@ private fun HabitRow(summary: HabitSummary) {
             } else if (started && rule == null) {
                 Text(
                     summary.count.toString(),
-                    style = TextStyle(color = WidgetColors.accentInk, fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                    style = TextStyle(color = WidgetColors.accentInk, fontSize = 12.wsp, fontWeight = FontWeight.Bold),
                 )
             }
         }
@@ -168,7 +174,7 @@ private fun HabitRow(summary: HabitSummary) {
             Text(
                 habit.title,
                 maxLines = 1,
-                style = TextStyle(color = if (done) WidgetColors.inkMuted else WidgetColors.ink, fontSize = 15.sp),
+                style = TextStyle(color = if (done) WidgetColors.inkMuted else WidgetColors.ink, fontSize = 15.wsp),
             )
             val details = listOfNotNull(
                 when {
@@ -180,13 +186,13 @@ private fun HabitRow(summary: HabitSummary) {
                     habit.goal > 1u -> "${summary.count} of ${habit.goal}"
                     else -> null
                 },
-                if (summary.streak > 0u) "${streakText(summary.streak, habit.period)} streak" else null,
+                if (streaks && summary.streak > 0u) "${streakText(summary.streak, habit.period)} streak" else null,
             )
             if (details.isNotEmpty()) {
                 Text(
                     details.joinToString(" · "),
                     maxLines = 1,
-                    style = TextStyle(color = WidgetColors.inkMuted, fontSize = 12.sp),
+                    style = TextStyle(color = WidgetColors.inkMuted, fontSize = 12.wsp),
                 )
             }
         }
