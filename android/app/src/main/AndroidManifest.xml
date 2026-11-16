@@ -64,6 +64,27 @@
             android:taskAffinity=""
             android:theme="@style/Theme.Not.Translucent"
             android:windowSoftInputMode="stateAlwaysVisible" />
+        <!-- "Share → not" from any app: text and links become tasks or notes, pictures notes. -->
+        <activity
+            android:name=".ShareActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/share_label"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Not.Translucent"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
         <!-- Setup for every widget: what it shows, content options, look, with a live preview. -->
         <activity
             android:name=".widget.WidgetSetupActivity"
