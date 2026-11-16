@@ -153,14 +153,18 @@ private fun TimedContent(summary: HabitSummary?) {
         val now = nowMs()
         val live = summary.timedLive(now, now)!!
         val secured = live.secured(now)
-        val compact = LocalSize.current.height < 150.dp
-        val ring = if (compact) 56.dp else 84.dp
+        val size = LocalSize.current
+        val compact = size.height < 150.dp
+        // The ring fills the widget's height (less the card's padding), up to 40% of its width.
+        val ring = minOf(size.height - 28.dp, size.width * 0.4f, 120.dp).coerceAtLeast(52.dp)
 
+        // Ring on the left, everything else stacked beside it, centered: no dead space between
+        // the text and the button, whatever the widget's size.
         Row(
-            GlanceModifier.fillMaxWidth().padding(start = 6.dp, end = 4.dp, top = 6.dp).clickable(open),
+            GlanceModifier.fillMaxSize().padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(GlanceModifier.size(ring), contentAlignment = Alignment.Center) {
+            Box(GlanceModifier.size(ring).clickable(open), contentAlignment = Alignment.Center) {
                 if (secured) {
                     // Done for the day: a solid mint disc with a check, like a ticked habit.
                     Box(GlanceModifier.fillMaxSize().cornerRadius(ring / 2).background(WidgetColors.accent), contentAlignment = Alignment.Center) {
@@ -168,7 +172,7 @@ private fun TimedContent(summary: HabitSummary?) {
                             ImageProvider(R.drawable.ic_check),
                             contentDescription = "Goal met",
                             colorFilter = ColorFilter.tint(WidgetColors.onAccent),
-                            modifier = GlanceModifier.size(ring * 0.55f),
+                            modifier = GlanceModifier.size(ring * 0.5f),
                         )
                     }
                 } else {
@@ -177,68 +181,77 @@ private fun TimedContent(summary: HabitSummary?) {
                         contentDescription = null,
                         modifier = GlanceModifier.fillMaxSize(),
                     )
-                    RingCenter(rule, live, compact)
+                    RingCenter(rule, live, compact = ring < 80.dp)
                 }
             }
-            Spacer(GlanceModifier.width(12.dp))
-            Column(GlanceModifier.defaultWeight()) {
-                Text(
-                    summary.habit.title,
-                    maxLines = 1,
-                    style = TextStyle(color = WidgetColors.ink, fontSize = 17.sp, fontWeight = FontWeight.Bold),
-                )
-                if (secured) {
+            Spacer(GlanceModifier.width(14.dp))
+            Column(GlanceModifier.defaultWeight(), verticalAlignment = Alignment.CenterVertically) {
+                Column(GlanceModifier.fillMaxWidth().clickable(open)) {
                     Text(
-                        if (live.atMostOff) "Goal safe for today" else "Goal met today",
+                        summary.habit.title,
                         maxLines = 1,
-                        style = TextStyle(color = WidgetColors.accentInk, fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                        style = TextStyle(color = WidgetColors.ink, fontSize = 16.sp, fontWeight = FontWeight.Bold),
                     )
-                    Text(
-                        listOfNotNull(
+                    if (secured) {
+                        Text(
+                            if (live.atMostOff) "Goal safe for today" else "Goal met today",
+                            maxLines = 1,
+                            style = TextStyle(color = WidgetColors.accentInk, fontSize = 14.sp, fontWeight = FontWeight.Bold),
+                        )
+                        Text(
                             if (live.atMostOff) "Only ${durationText(live.countedMs)} ${stateName(rule, false).lowercase()}" else "${durationText(live.countedMs)} today",
-                            if (summary.streak > 1u) "🔥 ${summary.streak}-day streak" else "Well done",
-                        ).joinToString(" · "),
-                        maxLines = 2,
-                        style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.sp),
-                    )
-                } else {
-                    Text(
-                        headline(rule, live),
-                        maxLines = 1,
-                        style = TextStyle(color = if (live.on == rule.usualOn) WidgetColors.inkMuted else WidgetColors.accentInk, fontSize = 14.sp, fontWeight = FontWeight.Medium),
-                    )
-                    detail(rule, live, now)?.let {
-                        Text(it, maxLines = 2, style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.sp))
+                            maxLines = 1,
+                            style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.sp),
+                        )
+                        if (!compact) {
+                            Text(
+                                if (summary.streak > 1u) "${summary.streak}-day streak" else "Well done",
+                                maxLines = 1,
+                                style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.sp),
+                            )
+                        }
+                    } else {
+                        Text(
+                            headline(rule, live),
+                            maxLines = 1,
+                            style = TextStyle(color = if (live.on == rule.usualOn) WidgetColors.inkMuted else WidgetColors.accentInk, fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                        )
+                        detail(rule, live, now)?.let {
+                            Text(it, maxLines = if (compact) 1 else 2, style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.sp))
+                        }
                     }
                 }
+                Spacer(GlanceModifier.height(if (compact) 6.dp else 10.dp))
+                SwitchButton(summary, rule, live, secured, compact)
             }
         }
-        Spacer(GlanceModifier.defaultWeight())
-        // The one thing to do: a full-width button, the usual state's action in mint. Once the
-        // day is won it steps back.
-        val goingUsual = live.tracked && live.on != rule.usualOn
-        val loud = !secured && (goingUsual || !live.tracked)
-        Row(
-            GlanceModifier
-                .fillMaxWidth()
-                .height(if (compact) 40.dp else 48.dp)
-                .cornerRadius(24.dp)
-                .background(if (loud) WidgetColors.accent else WidgetColors.sunken)
-                .clickable(actionRunCallback<SwitchTimedHabit>(actionParametersOf(SWITCH_ID to summary.habit.id, SWITCH_ON to !live.on))),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            val fg = if (loud) WidgetColors.onAccent else WidgetColors.ink
-            Image(
-                ImageProvider(if (live.on) R.drawable.ic_pause else R.drawable.ic_play),
-                contentDescription = null,
-                colorFilter = ColorFilter.tint(fg),
-                modifier = GlanceModifier.size(20.dp),
-            )
-            Spacer(GlanceModifier.width(8.dp))
-            Text(switchLabel(rule, live.on), style = TextStyle(color = fg, fontSize = 15.sp, fontWeight = FontWeight.Bold))
-        }
-        Spacer(GlanceModifier.height(6.dp))
+    }
+}
+
+/** The one thing to do, under the text: the usual state's action in mint; quiet once the day is won. */
+@Composable
+private fun SwitchButton(summary: HabitSummary, rule: TimedRule, live: TimedLive, secured: Boolean, compact: Boolean) {
+    val goingUsual = live.tracked && live.on != rule.usualOn
+    val loud = !secured && (goingUsual || !live.tracked)
+    val fg = if (loud) WidgetColors.onAccent else WidgetColors.ink
+    Row(
+        GlanceModifier
+            .fillMaxWidth()
+            .height(if (compact) 36.dp else 42.dp)
+            .cornerRadius(21.dp)
+            .background(if (loud) WidgetColors.accent else WidgetColors.sunken)
+            .clickable(actionRunCallback<SwitchTimedHabit>(actionParametersOf(SWITCH_ID to summary.habit.id, SWITCH_ON to !live.on))),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Image(
+            ImageProvider(if (live.on) R.drawable.ic_pause else R.drawable.ic_play),
+            contentDescription = null,
+            colorFilter = ColorFilter.tint(fg),
+            modifier = GlanceModifier.size(18.dp),
+        )
+        Spacer(GlanceModifier.width(6.dp))
+        Text(switchLabel(rule, live.on), style = TextStyle(color = fg, fontSize = 15.sp, fontWeight = FontWeight.Bold))
     }
 }
 
@@ -273,9 +286,9 @@ private fun RingCenter(rule: TimedRule, live: TimedLive, compact: Boolean) {
     AndroidRemoteViews(views)
 }
 
-/** "Paused since 14:20", "On since 07:00", "Not started". */
+/** "Paused at 14:20", "On at 07:00", "Not started": short enough for a 3-wide widget. */
 private fun headline(rule: TimedRule, live: TimedLive): String =
-    if (!live.tracked) "Not started" else "${stateName(rule, live.on)} since ${clockText(live.since!!)}"
+    if (!live.tracked) "Not started" else "${stateName(rule, live.on)} at ${clockText(live.since!!)}"
 
 /** What the running stretch leads to, as a clock time so it stays true: "Allowance runs out at 16:05". */
 private fun detail(rule: TimedRule, live: TimedLive, now: Long): String? {
@@ -283,9 +296,9 @@ private fun detail(rule: TimedRule, live: TimedLive, now: Long): String? {
     val counts = live.on != rule.atMostOff
     return when {
         live.atMostOff && live.leftMs <= 0 -> "Over the ${durationText(live.goalMs)} allowance today"
-        live.atMostOff && counts -> "Allowance runs out at ${clockText(now + live.leftMs)}"
+        live.atMostOff && counts -> "Runs out at ${clockText(now + live.leftMs)}"
         live.atMostOff -> "Allowance left today"
-        counts -> "Goal reached at ${clockText(now + live.leftMs)}"
+        counts -> "Goal at ${clockText(now + live.leftMs)}"
         else -> "of ${durationText(live.goalMs)} today"
     }
 }
