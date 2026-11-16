@@ -17,6 +17,7 @@ commands:
                 server's public URL is known (argument or NOT_PUBLIC_URL)
   devices       list paired devices
   revoke <id>   unpair a device
+  compact       fold the sync log into one snapshot (also done automatically)
 
 web:
   /             your lists and notes in a browser; sign in with a pairing code
@@ -38,6 +39,7 @@ async fn main() -> ExitCode {
         ["pair", url] => pair(&db_path, Some(url.to_string())),
         ["devices"] => devices(&db_path),
         ["revoke", id] => revoke(&db_path, id),
+        ["compact"] => compact(&db_path),
         ["-h" | "--help" | "help"] => {
             println!("{USAGE}");
             Ok(())
@@ -101,6 +103,20 @@ fn pair(db_path: &str, public_url: Option<String>) -> CliResult {
             .quiet_zone(true)
             .build();
         println!("\nOr scan with the Android app (Sync → Scan QR code):\n\n{qr}\n{link}");
+    }
+    Ok(())
+}
+
+/// Folds the log into a snapshot now (the server also does it by itself as the log grows).
+fn compact(db_path: &str) -> CliResult {
+    match AppState::open(db_path)?.compact()? {
+        Some(c) => println!(
+            "Compacted {} log rows ({} KB) into one snapshot ({} KB).",
+            c.rows,
+            c.bytes_before / 1024,
+            c.bytes_after / 1024
+        ),
+        None => println!("Nothing to compact."),
     }
     Ok(())
 }

@@ -290,3 +290,40 @@ async fn note_images_travel_beside_the_doc() {
         .unwrap();
     assert_eq!(response.status(), 422);
 }
+
+#[tokio::test]
+async fn compacting_the_log_keeps_every_device_whole() {
+    let server = Server::start().await;
+    let phone_client = server.client("Phone").await;
+    let mac_client = server.client("Mac").await;
+    let phone = Store::open_in_memory().unwrap();
+    let mac = Store::open_in_memory().unwrap();
+
+    // Many small pushes; the Mac syncs halfway through, then sleeps.
+    for i in 0..30 {
+        phone.add_task(INBOX, &format!("task {i}"), day()).unwrap();
+        phone_client.sync(&phone).await.unwrap();
+        if i == 14 {
+            mac_client.sync(&mac).await.unwrap();
+        }
+    }
+    let before = server.state.compact().unwrap().expect("something to compact");
+    assert_eq!(before.rows, 30);
+    assert!(server.state.compact().unwrap().is_none(), "already one row");
+
+    // A device behind the snapshot, one that never synced, and the one that pushed it all.
+    mac_client.sync(&mac).await.unwrap();
+    let laptop = Store::open_in_memory().unwrap();
+    server.client("Laptop").await.sync(&laptop).await.unwrap();
+    phone_client.sync(&phone).await.unwrap();
+    for s in [&phone, &mac, &laptop] {
+        assert_eq!(s.all_tasks().unwrap().len(), 30);
+    }
+
+    // Life goes on: edits after the snapshot flow as before, both ways.
+    mac.add_task(INBOX, "after", day()).unwrap();
+    mac_client.sync(&mac).await.unwrap();
+    phone_client.sync(&phone).await.unwrap();
+    assert_eq!(phone.all_tasks().unwrap().len(), 31);
+    assert_eq!(before.seq, 30, "the snapshot kept the last row's seq");
+}

@@ -135,6 +135,13 @@ impl Store {
         serde_json::to_string_pretty(&out).map_err(|e| Error::Invalid(format!("export: {e}")))
     }
 
+    /// The whole workspace with its history as a Loro snapshot: what the server compacts its log
+    /// to. Importing it anywhere is a merge, like any update.
+    pub fn snapshot(&self) -> Result<Vec<u8>> {
+        let _inner = self.lock();
+        Ok(self.doc.export(ExportMode::Snapshot)?)
+    }
+
     /// The whole workspace, history included, as one file. [`Store::restore_backup`] merges it into
     /// any replica, e.g. a fresh device after the server was lost.
     pub fn backup(&self) -> Result<Vec<u8>> {

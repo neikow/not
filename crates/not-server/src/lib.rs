@@ -26,6 +26,10 @@ mod web;
 
 /// What the server's own replica pushes as: never a paired device's id, so every device pulls it.
 const REPLICA_PUSHER: &str = "web";
+/// Pusher of a compacted log row: no device, so every device pulls it.
+const COMPACTED_PUSHER: &str = "compacted";
+/// Workspace log rows past which a push sets off a compaction.
+pub const COMPACT_AFTER_ROWS: i64 = 2_000;
 
 const DEFAULT_PULL_LIMIT: u32 = 500;
 const MAX_PULL_LIMIT: u32 = 5_000;
@@ -43,6 +47,17 @@ const LAST_SEEN_GRANULARITY_MS: i64 = 60_000;
 /// The paired device a request is authenticated as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DeviceId(i64);
+
+/// What a compaction did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compacted {
+    /// Log rows folded into one.
+    pub rows: u64,
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+    /// The seq the snapshot row kept.
+    pub seq: Seq,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -164,6 +179,67 @@ impl AppState {
                 return Ok(());
             }
         }
+    }
+
+    /// Replaces the workspace's log, up to what the replica has merged, with one snapshot row
+    /// taking the last of those rows' place (and seq). Devices behind it import the snapshot,
+    /// which merges like any update; devices past it never see it. Returns `None` when there's
+    /// nothing to compact or no replica.
+    pub fn compact(&self) -> Result<Option<Compacted>, Box<dyn std::error::Error>> {
+        let Some(store) = self.replica(true) else {
+            return Ok(None);
+        };
+        let cursor = store.pull_cursor()?;
+        let snapshot = store.snapshot()?;
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let (rows, bytes, last): (u64, u64, Option<Seq>) = tx.query_row(
+            "SELECT count(*), coalesce(sum(length(data)), 0), max(seq) FROM update_log WHERE doc = ?1 AND seq <= ?2",
+            params![not_core::WORKSPACE, cursor],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let Some(last) = last.filter(|_| rows > 1) else {
+            return Ok(None);
+        };
+        tx.execute(
+            "DELETE FROM update_log WHERE doc = ?1 AND seq < ?2",
+            params![not_core::WORKSPACE, last],
+        )?;
+        tx.execute(
+            "UPDATE update_log SET data = ?1, device = ?2 WHERE seq = ?3",
+            params![snapshot, COMPACTED_PUSHER, last],
+        )?;
+        tx.commit()?;
+        let report = Compacted {
+            rows,
+            bytes_before: bytes,
+            bytes_after: snapshot.len() as u64,
+            seq: last,
+        };
+        tracing::info!(?report, "compacted the log");
+        Ok(Some(report))
+    }
+
+    /// Compacts in the background once the workspace log has grown past [COMPACT_AFTER_ROWS].
+    fn compact_if_long(&self) {
+        let rows: i64 = {
+            let db = self.db.lock().unwrap();
+            db.query_row(
+                "SELECT count(*) FROM update_log WHERE doc = ?1",
+                [not_core::WORKSPACE],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+        };
+        if rows <= COMPACT_AFTER_ROWS {
+            return;
+        }
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = state.compact() {
+                tracing::error!(error = %e, "compaction failed");
+            }
+        });
     }
 
     /// Appends what the replica changed (a web edit) to the log, and pokes the devices.
@@ -540,6 +616,7 @@ async fn push(
         tracing::debug!(device = device.0, count = request.updates.len(), seq, "push");
         // No listeners is fine.
         let _ = state.pokes.send(seq);
+        state.compact_if_long();
     }
     Ok(Json(PushResponse { seq }))
 }
