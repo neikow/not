@@ -1,0 +1,90 @@
+# Tests every push and pull request. A push to main that passes also builds a signed APK and
+# publishes it as a GitHub release, which Obtainium picks up (see AGENTS.md, "Releases").
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Never cancel a main run halfway through publishing a release.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+
+  android:
+    name: Android (unit tests, APK)
+    needs: rust
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # publish the release
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Rust core and Kotlin bindings
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" ./scripts/build-android.sh
+
+      - name: Unit tests
+        working-directory: android
+        run: ./gradlew testDebugUnitTest
+
+      - name: Build signed release APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.NOT_KEYSTORE_BASE64 }}
+          NOT_KEYSTORE_PASSWORD: ${{ secrets.NOT_KEYSTORE_PASSWORD }}
+          NOT_KEY_ALIAS: ${{ secrets.NOT_KEY_ALIAS }}
+          NOT_KEY_PASSWORD: ${{ secrets.NOT_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "::error::NOT_KEYSTORE_BASE64 secret is missing"; exit 1; }
+          export NOT_KEYSTORE="$RUNNER_TEMP/release.jks"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$NOT_KEYSTORE"
+          ./gradlew assembleRelease \
+            -PversionCode=${{ github.run_number }} -PversionName=0.1.${{ github.run_number }}
+          "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner" verify \
+            app/build/outputs/apk/release/app-release.apk
+          mv app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/not-0.1.${{ github.run_number }}.apk"
+          rm "$NOT_KEYSTORE"
+
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=0.1.${{ github.run_number }}
+          gh release create "v$version" "$RUNNER_TEMP/not-$version.apk" \
+            --target "$GITHUB_SHA" --title "not $version" \
+            --notes "$(git log -1 --format='%s%n%n%b' "$GITHUB_SHA")"

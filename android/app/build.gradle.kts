@@ -13,8 +13,33 @@ android {
         applicationId = "dev.lysen.not"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI passes -PversionCode=<run number> -PversionName=0.1.<run number> so every release
+        // installs over the last one; local builds stay at 1.
+        versionCode = (findProperty("versionCode") as String?)?.toInt() ?: 1
+        versionName = (findProperty("versionName") as String?) ?: "0.1.0"
+    }
+
+    // Release signing comes from the environment (CI secrets, or a local keystore):
+    // NOT_KEYSTORE (path), NOT_KEYSTORE_PASSWORD, NOT_KEY_ALIAS, NOT_KEY_PASSWORD.
+    // Without NOT_KEYSTORE, release builds are left unsigned.
+    val keystore = System.getenv("NOT_KEYSTORE")
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("NOT_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("NOT_KEY_ALIAS")
+                keyPassword = System.getenv("NOT_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // R8 would need keep rules for JNA/uniffi; the app is small enough without it.
+            isMinifyEnabled = false
+            if (keystore != null) signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     buildFeatures {

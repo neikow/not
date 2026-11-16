@@ -314,3 +314,258 @@ async fn note_pages_show_checklists() {
     );
     assert!(!html.contains("not-tasks:"), "no markup shows");
 }
+
+/// A phone paired with the server, and a signed-in browser's session cookie.
+async fn phone_and_browser(state: &AppState, base: &str) -> (SyncClient, Store, String) {
+    let code = state.create_pairing_code().unwrap();
+    let client = SyncClient::from_credentials(&SyncClient::pair(base, &code.code, "Phone").await.unwrap());
+    let phone = Store::open_in_memory().unwrap();
+    let code = state.create_pairing_code().unwrap().code;
+    let response = not_server::router(state.clone())
+        .oneshot(post("/login", &format!("code={code}&name=Browser"), None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let cookie = response.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    (client, phone, cookie)
+}
+
+/// The web pages date things by the browser's offset cookie; without one, UTC.
+fn utc_today() -> not_core::date::Date {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        / 86_400;
+    not_core::date::Date::from_ymd(1970, 1, 1).unwrap().add_days(days)
+}
+
+#[tokio::test]
+async fn signed_out_browsers_only_see_the_login_page() {
+    let state = AppState::in_memory().unwrap();
+    for path in ["/", "/l/today", "/l/inbox", "/notes", "/n/1@2"] {
+        let (status, location, _) = send(&state, get(path, None)).await;
+        assert_eq!(
+            (status, location.as_deref()),
+            (StatusCode::SEE_OTHER, Some("/login")),
+            "GET {path}"
+        );
+    }
+    for path in ["/l/inbox/add", "/t/1@2/toggle"] {
+        let (status, location, _) = send(&state, post(path, "text=x", None)).await;
+        assert_eq!(
+            (status, location.as_deref()),
+            (StatusCode::SEE_OTHER, Some("/login")),
+            "POST {path}"
+        );
+    }
+    // A forged or stale cookie is no better than none.
+    let (_, location, _) = send(&state, get("/notes", Some("not_session=forged"))).await;
+    assert_eq!(location.as_deref(), Some("/login"));
+    // Images don't even admit they exist.
+    let id = format!("{}.png", "a".repeat(64));
+    let (status, _, _) = send(&state, get(&format!("/img/{id}"), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _, html) = send(&state, get("/login", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"<form method="post" action="/login""#));
+    assert!(!html.contains("didn't work"));
+    let (_, _, html) = send(&state, get("/login?failed=1", None)).await;
+    assert!(html.contains("didn't work"));
+
+    let response = not_server::router(state.clone())
+        .oneshot(get("/style.css", None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/css")
+    );
+}
+
+#[tokio::test]
+async fn logging_out_revokes_the_browser() {
+    let (state, base) = start().await;
+    let (_, _, cookie) = phone_and_browser(&state, &base).await;
+    let (status, location, _) = send(&state, get("/", Some(&cookie))).await;
+    assert_eq!(
+        (status, location.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/l/today"))
+    );
+
+    let response = not_server::router(state.clone())
+        .oneshot(post("/logout", "", Some(&cookie)))
+        .await
+        .unwrap();
+    assert_eq!(response.headers()[header::LOCATION], "/login");
+    assert!(
+        response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0"),
+        "the cookie is cleared"
+    );
+    assert!(
+        !state.devices().unwrap().iter().any(|d| d.name == "Browser"),
+        "and the session can't be replayed"
+    );
+    let (_, location, _) = send(&state, get("/l/today", Some(&cookie))).await;
+    assert_eq!(location.as_deref(), Some("/login"));
+}
+
+#[tokio::test]
+async fn task_rows_show_dates_tags_progress_and_completed_ones() {
+    use not_core::Schedule;
+
+    let (state, base) = start().await;
+    let (client, phone, cookie) = phone_and_browser(&state, &base).await;
+    let today = utc_today();
+    let tags = ["home".to_owned()];
+    let soon = Schedule {
+        start: Some(today),
+        time: Some(7 * 60),
+        ..Schedule::default()
+    };
+    phone
+        .add_task_with("#home", "Bins", &soon, 1, &tags, today)
+        .unwrap();
+    let by = Schedule {
+        deadline: Some(today.add_days(3)),
+        ..Schedule::default()
+    };
+    phone.add_task_with("#home", "Tax", &by, 3, &tags, today).unwrap();
+    let party = phone.add_task("#home", "Party", today).unwrap();
+    phone.set_notes(&party, "\nBring cake\nand candles").unwrap();
+    let cake = phone.add_task(&party, "Cake", today).unwrap();
+    phone.add_task(&party, "Candles", today).unwrap();
+    phone.set_completed(&cake, true, today).unwrap();
+    let old = phone.add_task("#home", "Old", today).unwrap();
+    phone.set_completed(&old, true, today).unwrap();
+    let parked = Schedule {
+        someday: true,
+        ..Schedule::default()
+    };
+    phone
+        .add_task_with(not_core::SOMEDAY_VIEW, "Paint", &parked, 0, &[], today)
+        .unwrap();
+    client.sync(&phone).await.unwrap();
+
+    let (status, _, html) = send(&state, get("/l/%23home", Some(&cookie))).await;
+    assert_eq!(status, StatusCode::OK, "a tag is a page without saving a view");
+    assert!(html.contains("<h1>#home</h1>"), "{html}");
+    let row = |title: &str| -> String {
+        let at = html
+            .find(&format!(r#"<span class="title">{title}</span>"#))
+            .expect(title);
+        let start = html[..at].rfind("<li").unwrap();
+        let end = at + html[at..].find("</li>").unwrap();
+        html[start..end].to_owned()
+    };
+    assert!(row("Bins").contains("Today 7:00 · #home") && row("Bins").contains(r#"class=" p1""#));
+    let due = format!(
+        "Due {} · #home",
+        not_core::due_label(today.add_days(3), None, today)
+    );
+    assert!(
+        row("Tax").contains(&due) && row("Tax").contains(" p3"),
+        "{}",
+        row("Tax")
+    );
+    assert!(row("Party").contains("1/2 · #home"), "{}", row("Party"));
+    assert!(
+        row("Party").contains(r#"<span class="meta">Bring cake</span>"#),
+        "the first line of the notes"
+    );
+    assert!(row("Candles").contains("--depth:1"), "subtasks indented");
+    let completed = &html[html.find("<details").expect("a completed section")..];
+    assert!(completed.contains(">Old<") && completed.contains(r#"class="done"#));
+    assert!(row("Old").contains("Reopen Old"));
+
+    let (_, _, html) = send(&state, get("/l/someday", Some(&cookie))).await;
+    assert!(html.contains(">Paint<") && html.contains("Someday"), "{html}");
+
+    let (_, _, html) = send(&state, get("/l/%23empty", Some(&cookie))).await;
+    assert!(html.contains("Nothing here."));
+    let (status, _, _) = send(&state, get("/l/no-such-view", Some(&cookie))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn notes_list_by_folder_and_render_as_escaped_markdown() {
+    let (state, base) = start().await;
+    let (client, phone, cookie) = phone_and_browser(&state, &base).await;
+    let png = b"\x89PNG\r\n\x1a\npixels";
+    let image = phone.add_image(png).unwrap();
+    let trips = phone.create_folder(None, "Trips").unwrap();
+    phone.create_folder(None, "Empty folder").unwrap();
+    let lisbon = phone
+        .create_note(
+            Some(&trips),
+            &format!(
+                "# Lisbon <3\nSome <script>alert(1)</script> text\n\n## Do\n- tram 28\n* pastéis\n- [x] book\n### Eat\nafter list\n{}\nend",
+                not_core::markdown::image_markup(&image)
+            ),
+        )
+        .unwrap();
+    let pinned = phone.create_note(None, "Shopping\nmilk").unwrap();
+    phone.set_note_pinned(&pinned, true).unwrap();
+    phone.create_note(None, "").unwrap();
+    client.sync(&phone).await.unwrap();
+
+    let (status, _, html) = send(&state, get("/notes", Some(&cookie))).await;
+    assert_eq!(status, StatusCode::OK);
+    let trips_at = html.find("<h2>Trips</h2>").expect("a folder heading");
+    assert!(
+        html.find("Shopping").unwrap() < trips_at,
+        "notes outside folders first"
+    );
+    assert!(html[trips_at..].contains("Lisbon &lt;3"));
+    assert!(html.contains("📌 Shopping"), "pinned");
+    assert!(html.contains("Untitled"), "an empty note");
+    assert!(
+        !html.contains("Empty folder"),
+        "folders without notes are left out"
+    );
+
+    let (status, _, html) = send(&state, get(&format!("/n/{lisbon}"), Some(&cookie))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("<title>Lisbon &lt;3 · not</title>"));
+    let article = &html[html.find("<article").unwrap()..html.find("</article>").unwrap()];
+    for part in [
+        "<h1>Lisbon &lt;3</h1>",
+        "<p>Some &lt;script&gt;alert(1)&lt;/script&gt; text</p>",
+        "<br><h2>Do</h2><ul><li>tram 28</li><li>pastéis</li><li>☑ book</li></ul><h3>Eat</h3>",
+        &format!(r#"<p>after list</p><img src="/img/{image}" alt="" loading="lazy"><p>end</p>"#),
+    ] {
+        assert!(article.contains(part), "{part}\nin\n{article}");
+    }
+    assert!(!article.contains("not-image:"), "no markup shows");
+
+    // The image the note points at, once the phone uploaded it.
+    let response = not_server::router(state.clone())
+        .oneshot(get(&format!("/img/{image}"), Some(&cookie)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], &png[..]);
+    let missing = format!("{}.png", "b".repeat(64));
+    let (status, _, _) = send(&state, get(&format!("/img/{missing}"), Some(&cookie))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = send(&state, get("/img/..%2Fetc%2Fpasswd", Some(&cookie))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _, _) = send(&state, get("/n/999@1", Some(&cookie))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

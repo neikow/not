@@ -1,0 +1,254 @@
+//! The surface the apps call: strings in and out, errors mapped, change callbacks, a real file.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use not_ffi::{NotError, NotStore, StoreObserver, SyncState, TokenKind};
+
+/// Sunday 8 November 2026.
+const TODAY: &str = "2026-11-08";
+
+/// A fresh database file, removed when dropped.
+struct TempDb(std::path::PathBuf);
+
+impl TempDb {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("not-ffi-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> String {
+        self.0.join("not.db").to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for TempDb {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[derive(Default)]
+struct Counter(AtomicUsize);
+
+impl StoreObserver for Counter {
+    fn on_change(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+    fn on_sync_state(&self, _: SyncState) {}
+}
+
+#[test]
+fn quick_add_fields_cross_as_strings_and_survive_reopening() {
+    let db = TempDb::new("reopen");
+    let id = {
+        let store = NotStore::new(db.path()).unwrap();
+        let id = store
+            .quick_add(
+                not_ffi::inbox_id(),
+                "Milk tomorrow 9am #groceries !1 by fri".into(),
+                TODAY.into(),
+                None,
+                vec![],
+            )
+            .unwrap();
+        let t = store.task_by_id(id.clone()).unwrap();
+        assert_eq!(t.title, "Milk");
+        assert_eq!(t.start.as_deref(), Some("2026-11-09"));
+        assert_eq!(t.time, Some(9 * 60));
+        assert_eq!(t.deadline.as_deref(), Some("2026-11-13"));
+        assert_eq!(t.priority, 3, "!1 is the highest");
+        assert_eq!(t.tags, ["groceries"]);
+        id
+    };
+    let store = NotStore::new(db.path()).unwrap();
+    assert_eq!(store.task_by_id(id).unwrap().title, "Milk", "kept on disk");
+}
+
+#[test]
+fn observers_hear_every_change() {
+    let db = TempDb::new("observer");
+    let store = NotStore::new(db.path()).unwrap();
+    let counter = Arc::new(Counter::default());
+    store.set_observer(counter.clone());
+    let id = store
+        .add_task(not_ffi::inbox_id(), "a".into(), TODAY.into())
+        .unwrap();
+    let after_add = counter.0.load(Ordering::SeqCst);
+    assert!(after_add >= 1);
+    store.rename(id, "b".into()).unwrap();
+    assert!(counter.0.load(Ordering::SeqCst) > after_add);
+}
+
+#[test]
+fn bad_input_is_an_invalid_error_and_missing_ids_not_found() {
+    let db = TempDb::new("errors");
+    let store = NotStore::new(db.path()).unwrap();
+    let id = store
+        .add_task(not_ffi::inbox_id(), "a".into(), TODAY.into())
+        .unwrap();
+
+    let invalid = |r: Result<(), NotError>| matches!(r, Err(NotError::Invalid { .. }));
+    assert!(invalid(
+        store
+            .add_task(not_ffi::inbox_id(), "x".into(), "8/11/2026".into())
+            .map(|_| ())
+    ));
+    assert!(invalid(store.set_schedule(
+        id.clone(),
+        Some("2026-02-30".into()),
+        None,
+        None,
+        false,
+        None
+    )));
+    assert!(invalid(store.set_schedule(
+        id.clone(),
+        Some(TODAY.into()),
+        None,
+        None,
+        false,
+        Some("FREQ=SOMETIMES".into())
+    )));
+    assert!(invalid(store.rename(id.clone(), "   ".into())));
+    assert!(matches!(
+        store.task_by_id("999@1".into()),
+        Err(NotError::NotFound { .. })
+    ));
+    assert!(matches!(
+        not_ffi::due_label("soon".into(), None, TODAY.into()),
+        Err(NotError::Invalid { .. })
+    ));
+}
+
+#[test]
+fn schedules_and_repeats_round_trip() {
+    let db = TempDb::new("schedule");
+    let store = NotStore::new(db.path()).unwrap();
+    let id = store
+        .add_task(not_ffi::inbox_id(), "Bins".into(), TODAY.into())
+        .unwrap();
+    store
+        .set_schedule(
+            id.clone(),
+            Some("2026-11-09".into()),
+            Some(7 * 60),
+            None,
+            false,
+            Some("FREQ=WEEKLY;BYDAY=MO".into()),
+        )
+        .unwrap();
+    let t = store.task_by_id(id.clone()).unwrap();
+    assert_eq!(t.repeat.as_deref(), Some("FREQ=WEEKLY;BYDAY=MO"));
+    assert!(not_ffi::repeat_label(t.repeat.unwrap()).is_some());
+    assert_eq!(
+        not_ffi::due_label("2026-11-09".into(), t.time, TODAY.into()).unwrap(),
+        "Tomorrow 7:00"
+    );
+
+    // Completing a repeat moves it on rather than finishing it.
+    store
+        .set_completed(id.clone(), true, "2026-11-09".into())
+        .unwrap();
+    let t = store.task_by_id(id).unwrap();
+    assert_eq!(t.start.as_deref(), Some("2026-11-16"));
+    assert_eq!(t.completed_at, None);
+}
+
+#[test]
+fn parsed_tokens_use_utf16_offsets() {
+    let db = TempDb::new("tokens");
+    let store = NotStore::new(db.path()).unwrap();
+    let input = "Café 🎉 tomorrow";
+    let parsed = store
+        .parse_task(input.into(), TODAY.into(), None, vec![])
+        .unwrap();
+    assert_eq!(parsed.title, "Café 🎉");
+    let token = parsed.tokens.iter().find(|t| t.kind == TokenKind::Date).unwrap();
+    let utf16: Vec<u16> = input.encode_utf16().collect();
+    assert_eq!(
+        String::from_utf16(&utf16[token.start as usize..token.end as usize]).unwrap(),
+        "tomorrow",
+        "the emoji counts as two units, as in Kotlin and NSString"
+    );
+    assert_eq!(parsed.start.as_deref(), Some("2026-11-09"));
+
+    // Dismissing a token keeps its text in the title.
+    let kept = store
+        .parse_task(input.into(), TODAY.into(), None, vec![token.text.clone()])
+        .unwrap();
+    assert_eq!(kept.title, input);
+    assert_eq!(kept.start, None);
+}
+
+#[test]
+fn outlines_carry_depth_and_subtask_progress() {
+    let db = TempDb::new("outline");
+    let store = NotStore::new(db.path()).unwrap();
+    let trip = store
+        .add_task(not_ffi::inbox_id(), "Trip".into(), TODAY.into())
+        .unwrap();
+    let passport = store
+        .add_task(trip.clone(), "Passport".into(), TODAY.into())
+        .unwrap();
+    store
+        .add_task(trip.clone(), "Tickets".into(), TODAY.into())
+        .unwrap();
+    store.set_completed(passport, true, TODAY.into()).unwrap();
+
+    let outline = store.view_outline(not_ffi::inbox_id(), TODAY.into()).unwrap();
+    let rows: Vec<_> = outline
+        .open
+        .iter()
+        .map(|r| (r.task.title.as_str(), r.depth, r.done))
+        .collect();
+    assert_eq!(rows[0], ("Trip", 0, false));
+    assert!(rows.contains(&("Tickets", 1, false)));
+    assert_eq!((outline.open[0].subtasks, outline.open[0].subtasks_done), (2, 1));
+}
+
+#[test]
+fn backups_restore_into_another_store() {
+    let a = TempDb::new("backup-a");
+    let b = TempDb::new("backup-b");
+    let from = NotStore::new(a.path()).unwrap();
+    from.add_task(not_ffi::inbox_id(), "kept".into(), TODAY.into())
+        .unwrap();
+    let note = from.create_note(None, "Note\nbody".into()).unwrap();
+
+    let to = NotStore::new(b.path()).unwrap();
+    to.restore_backup(from.backup().unwrap()).unwrap();
+    assert_eq!(to.search_tasks("kept".into(), 5).unwrap().len(), 1);
+    assert_eq!(to.note_body(note).unwrap(), "Note\nbody");
+    assert!(matches!(
+        to.restore_backup(b"junk".to_vec()),
+        Err(NotError::Invalid { .. })
+    ));
+    let json = to.export_json(TODAY.into()).unwrap();
+    assert!(json.contains("\"kept\""));
+}
+
+#[test]
+fn undo_and_redo_cross_the_boundary() {
+    let db = TempDb::new("undo");
+    let store = NotStore::new(db.path()).unwrap();
+    assert!(!store.can_undo());
+    let id = store
+        .add_task(not_ffi::inbox_id(), "oops".into(), TODAY.into())
+        .unwrap();
+    store.delete_item(id.clone()).unwrap();
+    assert!(store.can_undo());
+    assert!(store.undo().unwrap());
+    assert_eq!(store.task_by_id(id.clone()).unwrap().title, "oops");
+    assert!(store.can_redo());
+    assert!(store.redo().unwrap());
+    assert!(
+        store
+            .view_outline(not_ffi::inbox_id(), TODAY.into())
+            .unwrap()
+            .open
+            .is_empty()
+    );
+}

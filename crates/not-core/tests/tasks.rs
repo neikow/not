@@ -588,6 +588,59 @@ fn export_and_backup_carry_everything() {
     assert!(fresh.restore_backup(b"hello").is_err());
 }
 
+#[test]
+fn export_carries_habits_notes_and_workouts() {
+    let s = Store::open_in_memory().unwrap();
+    let run = s.create_habit("Run", 1, 0b0010101).unwrap();
+    s.update_habit(&run, "Run", 2, 0b0010101, not_core::Period::Week)
+        .unwrap();
+    s.log_habit(&run, "2026-11-02", 1).unwrap();
+    s.log_habit(&run, "2026-11-05", 2).unwrap();
+    s.log_habit(&run, "2026-11-06", 1).unwrap();
+    s.log_habit(&run, "2026-11-06", -1).unwrap();
+    s.log_habit(&run, "2026-11-20", 1).unwrap(); // after `today`: not exported
+
+    let trips = s.create_folder(None, "Trips").unwrap();
+    let note = s.create_note(Some(&trips), "Lisbon\n- [ ] tram 28").unwrap();
+    s.set_note_pinned(&note, true).unwrap();
+
+    let w = s.create_workout("2026-11-07", "Push").unwrap();
+    s.add_exercise(&w, "Bench press", "60kg x 8 x 3").unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&s.export_json(today()).unwrap()).unwrap();
+    assert_eq!(json["format"], "not-export");
+    assert_eq!(json["exported_on"], "2026-11-08");
+
+    let habit = &json["habits"][0];
+    assert_eq!(habit["title"], "Run");
+    assert_eq!(habit["goal"], 2);
+    assert_eq!(habit["period"], "week");
+    assert_eq!(habit["weekdays"], 0b1111111, "a weekly goal counts on any day");
+    assert_eq!(
+        habit["check_ins"],
+        serde_json::json!([
+            { "date": "2026-11-02", "count": 1 },
+            { "date": "2026-11-05", "count": 2 },
+        ]),
+        "days with no check-ins left (an undone one too), future days left out"
+    );
+
+    assert_eq!(json["folders"][0]["title"], "Trips");
+    let exported = &json["notes"][0];
+    assert_eq!(exported["folder_id"], trips.as_str());
+    assert_eq!(exported["title"], "Lisbon");
+    assert_eq!(exported["pinned"], true);
+    assert_eq!(exported["markdown"], "Lisbon\n- [ ] tram 28");
+
+    let workout = &json["workouts"][0];
+    assert_eq!(workout["date"], "2026-11-07");
+    assert_eq!(workout["title"], "Push");
+    assert_eq!(
+        workout["exercises"],
+        serde_json::json!([{ "name": "Bench press", "sets": "60kg x 8 x 3" }])
+    );
+}
+
 // ---- migration -------------------------------------------------------------------------------------
 
 /// A backup from before ADR 0014: Inbox "inbox task" (Inbox sorted by priority); list Groceries
