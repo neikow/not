@@ -156,11 +156,11 @@ private struct NoteEditor: View {
             MarkdownEditor(
                 text: $text,
                 focusRequests: model.editorFocusRequests,
-                taskLists: model.lists,
-                onMakeTasks: { range, listID, title in
+                taskTags: model.tags.map(\.name),
+                onMakeTasks: { range, tag in
                     let end = range.location + range.length
                     // The text stays as it is; the body was saved with the tasks.
-                    if model.checklistToTasks(note.id, text, start: range.location, end: end, listID: listID, newList: listID == nil ? title : "") {
+                    if model.checklistToTasks(note.id, text, start: range.location, end: end, tag: tag) {
                         saved = text
                     }
                 },

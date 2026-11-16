@@ -58,7 +58,7 @@ private struct ArchiveSettings: View {
                         }
                         Spacer()
                         Button("Put Back") { model.restore(task) }
-                            .help("Reopen it in \(model.listTitle(task.listId))")
+                            .help("Reopen it")
                         Button(role: .destructive) { model.delete(id: task.id) } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless)
                             .help("Delete")
@@ -77,9 +77,10 @@ private struct ArchiveSettings: View {
     }
 
     private func detail(_ task: TaskItem) -> String {
-        guard let at = task.completedAt else { return model.listTitle(task.listId) }
+        let tags = task.tags.map { "#" + $0 }.joined(separator: " ")
+        guard let at = task.completedAt else { return tags }
         let date = Date(timeIntervalSince1970: TimeInterval(at) / 1000)
-        return "\(model.listTitle(task.listId)) · \(date.formatted(.relative(presentation: .named)))"
+        return [tags, date.formatted(.relative(presentation: .named))].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }
 

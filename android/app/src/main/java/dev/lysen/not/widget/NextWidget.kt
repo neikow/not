@@ -52,15 +52,13 @@ class NextWidget : GlanceAppWidget() {
         }
     }
 
-    private class Next(val task: TaskItem, val listTitle: String, val more: Int, val today: Boolean)
+    private class Next(val task: TaskItem, val more: Int, val today: Boolean)
 
     private fun load(app: NotApp): Next? = try {
-        val due = app.store.dueTasks(today())
-        val pick = due.firstOrNull() ?: app.store.upcomingTasks(today()).firstOrNull()
-        pick?.let { task ->
-            val title = app.store.lists().firstOrNull { it.id == task.listId }?.title ?: "Inbox"
-            Next(task, title, more = (due.size - 1).coerceAtLeast(0), today = due.isNotEmpty())
-        }
+        fun top(view: String) = app.store.viewOutline(view, today()).open.filter { it.depth == 0u }.map { it.task }
+        val due = top(TODAY_ID)
+        val pick = due.firstOrNull() ?: top(UPCOMING_ID).firstOrNull()
+        pick?.let { task -> Next(task, more = (due.size - 1).coerceAtLeast(0), today = due.isNotEmpty()) }
     } catch (e: NotException) {
         logLoadFailure("next", e)
         null
@@ -98,8 +96,8 @@ class NextWidget : GlanceAppWidget() {
                         style = TextStyle(color = WidgetColors.ink, fontSize = 15.sp, fontWeight = FontWeight.Medium),
                     )
                     val meta = listOfNotNull(
-                        scheduleLabel(next.task.due, next.task.dueTime, null),
-                        next.listTitle,
+                        scheduleLabel(next.task.start ?: next.task.deadline, next.task.time, null),
+                        next.task.tags.firstOrNull()?.let { "#$it" },
                         next.more.takeIf { it > 0 }?.let { "+$it today" },
                     ).joinToString(" · ")
                     Text(meta, maxLines = 1, style = TextStyle(color = WidgetColors.inkMuted, fontSize = 12.sp))

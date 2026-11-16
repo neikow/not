@@ -5,6 +5,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,7 +45,8 @@ import dev.lysen.not.ui.Text
 import dev.lysen.not.ui.pressable
 import kotlinx.coroutines.delay
 
-/** Everything about one task: title, notes, subtasks, list, delete. Edits save as you go. */
+/** Everything about one task: title, notes, dates, tags, subtasks, delete. Edits save as you go. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, onDismiss: () -> Unit) {
     var title by remember(task.id) { mutableStateOf(task.title) }
@@ -93,9 +96,16 @@ fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, o
                 minLines = 2,
                 modifier = Modifier.fillMaxWidth().padding(start = 48.dp, top = 4.dp, bottom = 12.dp),
             )
-            Row(Modifier.padding(start = 48.dp, bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                Modifier.padding(start = 48.dp, bottom = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 SchedulePill(task, viewModel)
+                DeadlinePill(task, viewModel)
                 PriorityPill(task, viewModel)
+                TagsPill(task, state, viewModel)
+                PlacePill(task)
             }
 
             // Subtasks sit in a soft card, like a checklist inside the task.
@@ -108,7 +118,7 @@ fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, o
                     .padding(vertical = 6.dp),
             ) {
                 Text("Subtasks", style = Not.type.label, color = colors.inkMuted, modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 2.dp))
-                state.subtasks(of = task.id).forEach { subtask ->
+                state.openSubtasks.forEach { subtask ->
                     val done = subtask.completedAt != null
                     Row(Modifier.padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         RoundCheck(done, { viewModel.toggle(subtask) }, size = 20.dp)
@@ -129,7 +139,7 @@ fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, o
                         { subtaskDraft = it },
                         "Add subtask",
                         onDone = {
-                            if (subtaskDraft.isNotBlank()) viewModel.addTask(subtaskDraft, parentId = task.id)
+                            if (subtaskDraft.isNotBlank()) viewModel.addSubtask(subtaskDraft, parentId = task.id)
                             subtaskDraft = ""
                         },
                         modifier = Modifier.weight(1f),
@@ -142,7 +152,6 @@ fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, o
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (task.parentId == null) MoveToList(task, state, viewModel)
                 Spacer(Modifier.weight(1f))
                 Button("Delete", {
                     close()
@@ -153,25 +162,85 @@ fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, o
     }
 }
 
-/** When the task is due: tap to change it in words ("fri 9am", "every mon"), or pick a quick one. */
+/** When the task is planned for: tap to change it in words ("fri 9am", "every mon", "someday"). */
 @Composable
 private fun SchedulePill(task: TaskItem, viewModel: TasksViewModel) {
     var editing by remember { mutableStateOf(false) }
-    val label = scheduleLabel(task.due, task.dueTime, task.repeat)
-    val colors = Not.colors
-    val today = today()
-    val tint = when {
-        task.due == null -> colors.inkMuted
-        task.due!! < today -> colors.danger
-        else -> colors.accentInk
+    val label = when {
+        task.someday -> "Someday"
+        else -> scheduleLabel(task.start, task.time, task.repeat.takeIf { task.start != null })
     }
+    val colors = Not.colors
     Chip(
-        if (task.repeat != null) R.drawable.ic_repeat else R.drawable.ic_calendar,
-        label ?: "Add date",
-        tint = tint,
+        when {
+            task.someday -> R.drawable.ic_someday
+            task.repeat != null && task.start != null -> R.drawable.ic_repeat
+            else -> R.drawable.ic_calendar
+        },
+        label ?: "When",
+        tint = if (task.start == null && !task.someday) colors.inkMuted else colors.accentInk,
         onClick = { editing = true },
     )
     if (editing) ScheduleDialog(task, viewModel, onDismiss = { editing = false })
+}
+
+/** The day it must be done by: accent on the day, red after. */
+@Composable
+private fun DeadlinePill(task: TaskItem, viewModel: TasksViewModel) {
+    var editing by remember { mutableStateOf(false) }
+    val colors = Not.colors
+    val deadline = task.deadline
+    val today = today()
+    Chip(
+        R.drawable.ic_deadline,
+        deadline?.let { "Due " + (scheduleLabel(it, null, task.repeat.takeIf { task.start == null }) ?: it) } ?: "Deadline",
+        tint = when {
+            deadline == null -> colors.inkMuted
+            deadline < today -> colors.danger
+            else -> colors.accentInk
+        },
+        onClick = { editing = true },
+    )
+    if (editing) {
+        val chips = listOf("Today" to "today", "Tomorrow" to "tomorrow", "Friday" to "fri", "End of month" to "end of month")
+        WordsDialog("Deadline", "fri, 12 dec, end of month…", chips, canClear = deadline != null, onPick = { viewModel.setDeadline(task, it) }, onDismiss = { editing = false })
+    }
+}
+
+@Composable
+private fun TagsPill(task: TaskItem, state: UiState, viewModel: TasksViewModel) {
+    var editing by remember { mutableStateOf(false) }
+    Chip(
+        R.drawable.ic_tag,
+        if (task.tags.isEmpty()) "Tags" else task.tags.joinToString(" ") { "#$it" },
+        tint = if (task.tags.isEmpty()) Not.colors.inkMuted else null,
+        onClick = { editing = true },
+    )
+    if (editing) TagsDialog(task.tags, state, onSave = { viewModel.setTags(task.id, it) }, onDismiss = { editing = false })
+}
+
+/** A plain field for a date in words, with a few quick picks. */
+@Composable
+private fun WordsDialog(title: String, placeholder: String, chips: List<Pair<String, String>>, canClear: Boolean, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    var text by remember { mutableStateOf("") }
+    fun pick(words: String) {
+        onPick(words)
+        onDismiss()
+    }
+    CardDialog(
+        title = title,
+        onDismiss = onDismiss,
+        buttons = {
+            if (canClear) Button("Clear", { pick("") }, kind = ButtonKind.Quiet)
+            Button("Cancel", onDismiss, kind = ButtonKind.Quiet)
+            Button("Save", { pick(text) }, enabled = text.isNotBlank())
+        },
+    ) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for ((label, words) in chips) Chip(R.drawable.ic_calendar, label, onClick = { pick(words) })
+        }
+        Field(text, { text = it }, placeholder, filled = true, onDone = { if (text.isNotBlank()) pick(text) }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
+    }
 }
 
 @Composable
@@ -191,19 +260,19 @@ private fun ScheduleDialog(task: TaskItem, viewModel: TasksViewModel, onDismiss:
         title = "When",
         onDismiss = onDismiss,
         buttons = {
-            if (task.due != null) Button("Clear", { pick("") }, kind = ButtonKind.Quiet)
+            if (task.start != null || task.someday || task.deadline != null) Button("Clear", { pick("") }, kind = ButtonKind.Quiet)
             Button("Cancel", onDismiss, kind = ButtonKind.Quiet)
             Button("Save", ::save, enabled = !draft.isBlank)
         },
     ) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            for ((label, words) in listOf("Today" to "today", "Tomorrow" to "tomorrow", "This weekend" to "this weekend", "Next week" to "next week")) {
+            for ((label, words) in listOf("Today" to "today", "This evening" to "tonight", "Tomorrow" to "tomorrow", "This weekend" to "this weekend", "Next week" to "next week", "Someday" to "someday")) {
                 Chip(R.drawable.ic_calendar, label, onClick = { pick(words) })
             }
         }
         TaskDraftField(
             draft,
-            "fri 9am, every mon, 12 dec…",
+            "fri 9am, every last fri, in 2 hours…",
             onSubmit = ::save,
             modifier = Modifier
                 .fillMaxWidth()
@@ -213,7 +282,7 @@ private fun ScheduleDialog(task: TaskItem, viewModel: TasksViewModel, onDismiss:
                 .padding(horizontal = 16.dp, vertical = 8.dp)
                 .focusRequester(focus),
         )
-        TokenChips(draft, emptyList(), Modifier.padding(top = 8.dp))
+        TokenChips(draft, Modifier.padding(top = 8.dp))
     }
 }
 
@@ -234,41 +303,6 @@ private fun PriorityPill(task: TaskItem, viewModel: TasksViewModel) {
                     viewModel.setPriority(task.id, p)
                     open = false
                 })
-            }
-        }
-    }
-}
-
-@Composable
-private fun MoveToList(task: TaskItem, state: UiState, viewModel: TasksViewModel) {
-    var open by remember { mutableStateOf(false) }
-    val current = state.lists.firstOrNull { it.id == task.listId }?.title ?: "Inbox"
-    Box {
-        Row(
-            Modifier
-                .clip(CircleShape)
-                .background(Not.colors.sunken)
-                .pressable({ open = true })
-                .heightIn(min = 44.dp)
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Icon(if (task.listId == INBOX_ID) R.drawable.ic_inbox else R.drawable.ic_list, null, tint = Not.colors.inkMuted, size = 18.dp)
-            Text(current, style = Not.type.label, maxLines = 1)
-            Icon(R.drawable.ic_expand_more, "Move to list", tint = Not.colors.inkFaint, size = 18.dp)
-        }
-        Menu(open, onDismiss = { open = false }) {
-            state.lists.forEach { list ->
-                MenuItem(
-                    list.title,
-                    icon = if (list.id == INBOX_ID) R.drawable.ic_inbox else R.drawable.ic_list,
-                    enabled = list.id != task.listId,
-                    onClick = {
-                        viewModel.move(task, list.id)
-                        open = false
-                    },
-                )
             }
         }
     }

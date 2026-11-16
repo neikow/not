@@ -11,22 +11,46 @@ use not_core::{Credentials, LiveSync, Store, SyncClient, SyncStatus};
 
 uniffi::setup_scaffolding!();
 
-/// Id of the built-in Inbox list: always first in `lists()`, can't be renamed or deleted.
+/// Built-in views (ADR 0014). Inbox: untagged tasks.
 #[uniffi::export]
 pub fn inbox_id() -> String {
     not_core::INBOX.into()
 }
 
-/// "Today", "Tomorrow 9:00", "Fri", "12 Nov" for a due date (`YYYY-MM-DD`) seen on `today`.
+/// Tasks starting or due on or before today.
+#[uniffi::export]
+pub fn today_view_id() -> String {
+    not_core::TODAY.into()
+}
+
+/// Tasks starting or due after today; always by date.
+#[uniffi::export]
+pub fn upcoming_view_id() -> String {
+    not_core::UPCOMING.into()
+}
+
+#[uniffi::export]
+pub fn someday_view_id() -> String {
+    not_core::SOMEDAY_VIEW.into()
+}
+
+/// "Today", "Tomorrow 9:00", "Fri", "12 Nov" for a date (`YYYY-MM-DD`) seen on `today`.
 #[uniffi::export]
 pub fn due_label(due: String, due_time: Option<u32>, today: String) -> Result<String, NotError> {
     Ok(not_core::due_label(date(&due)?, due_time, date(&today)?))
 }
 
-/// "Daily", "Every 2 weeks on Mon" for a task's `repeat` rule; `None` if it isn't one this app reads.
+/// "Daily", "Every 2 weeks on Mon", "Monthly on the last Fri", "Every 3 days after done" for a
+/// task's `repeat` rule; `None` if it isn't one this app reads.
 #[uniffi::export]
 pub fn repeat_label(rule: String) -> Option<String> {
     not_core::Repeat::parse_rrule(&rule).ok().map(|r| r.label())
+}
+
+/// A tag as stored: lowercase, no `#`, spaces as `-`. Empty when nothing is left.
+#[uniffi::export]
+pub fn normalize_tag(tag: String) -> String {
+    not_core::normalize_tag(&tag)
 }
 
 fn date(s: &str) -> Result<not_core::date::Date, NotError> {
@@ -34,24 +58,31 @@ fn date(s: &str) -> Result<not_core::date::Date, NotError> {
 }
 
 fn schedule(
-    due: Option<String>,
-    due_time: Option<u32>,
+    start: Option<String>,
+    time: Option<u32>,
+    deadline: Option<String>,
+    someday: bool,
     repeat: Option<String>,
 ) -> Result<not_core::Schedule, NotError> {
     Ok(not_core::Schedule {
-        due: due.as_deref().map(date).transpose()?,
-        time: due_time,
+        start: start.as_deref().map(date).transpose()?,
+        time,
+        deadline: deadline.as_deref().map(date).transpose()?,
+        someday,
         repeat: repeat.as_deref().map(not_core::Repeat::parse_rrule).transpose()?,
     })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum TokenKind {
+    /// The start date.
     Date,
+    Deadline,
     Time,
     Repeat,
+    Someday,
     Priority,
-    List,
+    Tag,
 }
 
 /// A recognised piece of quick-add input. Offsets are UTF-16 code units.
@@ -68,11 +99,13 @@ pub struct ParsedToken {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ParsedTask {
     pub title: String,
-    pub due: Option<String>,
-    pub due_time: Option<u32>,
+    pub start: Option<String>,
+    pub time: Option<u32>,
+    pub deadline: Option<String>,
+    pub someday: bool,
     pub repeat: Option<String>,
     pub priority: u8,
-    pub list_id: Option<String>,
+    pub tags: Vec<String>,
     pub tokens: Vec<ParsedToken>,
 }
 
@@ -170,7 +203,7 @@ pub struct NoteChecklist {
     pub count: u32,
     /// Titles in order, for the picker's preview.
     pub titles: Vec<String>,
-    /// For a new list: the nearest heading above the items, else the note's title.
+    /// For a new tag: the nearest heading above the items, else the note's title.
     pub suggested_title: String,
 }
 
@@ -185,10 +218,11 @@ pub fn note_checklist(body: String, start: u32, end: u32) -> Option<NoteChecklis
     })
 }
 
-/// What making tasks of a checklist did: `count` new tasks in `list_id`; the note is unchanged.
+/// What making tasks of a checklist did: `count` new tasks tagged `tag` (`None`: in the Inbox);
+/// the note is unchanged.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ChecklistMoved {
-    pub list_id: String,
+    pub tag: Option<String>,
     pub count: u32,
 }
 
@@ -237,16 +271,53 @@ impl From<not_core::Error> for NotError {
     }
 }
 
+/// A view: built in (Inbox, Today, Upcoming, Someday) or a saved smart list.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct TaskList {
+pub struct TaskView {
     pub id: String,
     pub title: String,
+    /// The filter; empty for built-in views. See `check_query`.
+    pub query: String,
+    pub built_in: bool,
+    pub sort: TaskSort,
     /// Open top-level tasks, for badges.
     pub open_count: u32,
-    pub sort: TaskSort,
 }
 
-/// How a list orders its open tasks; ties keep the manual order.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TagInfo {
+    pub name: String,
+    /// Open tasks carrying it.
+    pub open_count: u32,
+}
+
+/// Where `snooze` puts tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Snooze {
+    /// Three hours from now, or tomorrow 9:00 late in the evening.
+    LaterToday,
+    /// Today 19:00 (tomorrow once past).
+    ThisEvening,
+    /// Tomorrow, keeping the time.
+    Tomorrow,
+    /// The coming Saturday.
+    Weekend,
+    NextWeek,
+}
+
+impl From<Snooze> for not_core::Snooze {
+    fn from(s: Snooze) -> Self {
+        match s {
+            Snooze::LaterToday => Self::LaterToday,
+            Snooze::ThisEvening => Self::ThisEvening,
+            Snooze::Tomorrow => Self::Tomorrow,
+            Snooze::Weekend => Self::Weekend,
+            Snooze::NextWeek => Self::NextWeek,
+        }
+    }
+}
+
+/// How a view orders its open tasks; ties keep the manual order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum TaskSort {
     /// Drag order; new tasks go first.
@@ -281,21 +352,25 @@ impl From<TaskSort> for not_core::TaskSort {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct TaskItem {
     pub id: String,
-    pub list_id: String,
     pub parent_id: Option<String>,
     pub title: String,
     /// Markdown.
     pub notes: String,
     /// Unix millis.
     pub completed_at: Option<i64>,
-    /// `YYYY-MM-DD`; see `due_label`.
-    pub due: Option<String>,
-    /// Minutes after midnight.
-    pub due_time: Option<u32>,
+    /// Start date `YYYY-MM-DD` (when it's planned; hidden from views before); see `due_label`.
+    pub start: Option<String>,
+    /// Minutes after midnight, on the start date.
+    pub time: Option<u32>,
+    /// `YYYY-MM-DD`.
+    pub deadline: Option<String>,
+    pub someday: bool,
     /// 0 = none, 1 = low, 2 = medium, 3 = high.
     pub priority: u8,
     /// Repeat rule; see `repeat_label`.
     pub repeat: Option<String>,
+    /// Its own tags (subtasks also show in their parent's tag views).
+    pub tags: Vec<String>,
 }
 
 /// A task in display order with its nesting depth.
@@ -305,9 +380,12 @@ pub struct OutlineRow {
     pub depth: u32,
     /// The task or one of its ancestors is completed.
     pub done: bool,
+    /// Direct subtasks, and how many of those are completed.
+    pub subtasks: u32,
+    pub subtasks_done: u32,
 }
 
-/// A list as shown: open tasks with all their subtasks, then completed ones (latest first).
+/// A view as shown: open tasks with all their subtasks, then completed ones (latest first).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct Outline {
     pub open: Vec<OutlineRow>,
@@ -673,39 +751,50 @@ impl NotStore {
 
     // ---- commands ----
 
-    pub fn create_list(&self, title: String) -> Result<String, NotError> {
-        Ok(self.store.create_list(&title)?)
-    }
-
-    /// `parent_id` is a list (the task goes first), or a task for a subtask (it goes last).
-    pub fn add_task(&self, parent_id: String, title: String) -> Result<String, NotError> {
-        Ok(self.store.add_task(&parent_id, &title)?)
+    /// Adds a subtask (last) when `target` is a task, else a task (first) in view `target`, with
+    /// what that view gives new tasks (its tags, priority, Today's date…).
+    pub fn add_task(&self, target: String, title: String, today: String) -> Result<String, NotError> {
+        Ok(self.store.add_task(&target, &title, date(&today)?)?)
     }
 
     pub fn rename(&self, id: String, title: String) -> Result<(), NotError> {
         Ok(self.store.rename(&id, &title)?)
     }
 
-    /// Completing a repeating task moves it to its next due date after `today` (`YYYY-MM-DD`).
+    /// Completing a repeating task moves it to its next date after `today` (`YYYY-MM-DD`).
     pub fn set_completed(&self, id: String, completed: bool, today: String) -> Result<(), NotError> {
         Ok(self.store.set_completed(&id, completed, date(&today)?)?)
     }
 
-    /// Adds a task from quick-add input: "Buy milk tomorrow 9am #groceries !1". A `#list` overrides
-    /// `parent_id`. Texts in `dismissed` (from `ParsedToken.text`) stay in the title. Without a date
-    /// in the input the task is due on `default_due`, if given (adding from Today).
+    /// Adds a task from quick-add input ("Buy milk tomorrow 9am #groceries !1 by fri") to
+    /// `target` as `add_task` does; typed tags add to the view's. Texts in `dismissed` (from
+    /// `ParsedToken.text`) stay in the title. `minute` (minutes after midnight, now) lets "in 2
+    /// hours" work.
     pub fn quick_add(
         &self,
-        parent_id: String,
+        target: String,
         input: String,
         today: String,
+        minute: Option<u32>,
         dismissed: Vec<String>,
-        default_due: Option<String>,
     ) -> Result<String, NotError> {
-        let default_due = default_due.as_deref().map(date).transpose()?;
         Ok(self
             .store
-            .quick_add(&parent_id, &input, date(&today)?, &dismissed, default_due)?)
+            .quick_add_at(&target, &input, date(&today)?, minute, &dismissed)?)
+    }
+
+    /// A task per line of pasted `text` (list markers dropped, indented lines as subtasks, `[x]`
+    /// lines completed), each parsed like quick add. One undo step. Returns the top-level ids.
+    pub fn quick_add_lines(
+        &self,
+        target: String,
+        text: String,
+        today: String,
+        minute: Option<u32>,
+    ) -> Result<Vec<String>, NotError> {
+        Ok(self
+            .store
+            .quick_add_lines(&target, &text, date(&today)?, minute)?)
     }
 
     /// What `quick_add` would make of `input`, for live highlighting.
@@ -713,16 +802,19 @@ impl NotStore {
         &self,
         input: String,
         today: String,
+        minute: Option<u32>,
         dismissed: Vec<String>,
     ) -> Result<ParsedTask, NotError> {
-        let p = self.store.parse_task(&input, date(&today)?, &dismissed)?;
+        let p = not_core::parse_task_at(&input, date(&today)?, minute, &dismissed);
         Ok(ParsedTask {
             title: p.title,
-            due: p.schedule.due.map(|d| d.to_string()),
-            due_time: p.schedule.time,
+            start: p.schedule.start.map(|d| d.to_string()),
+            time: p.schedule.time,
+            deadline: p.schedule.deadline.map(|d| d.to_string()),
+            someday: p.schedule.someday,
             repeat: p.schedule.repeat.map(|r| r.to_rrule()),
             priority: p.priority,
-            list_id: p.list_id,
+            tags: p.tags,
             tokens: p
                 .tokens
                 .into_iter()
@@ -731,10 +823,12 @@ impl NotStore {
                     end: t.end,
                     kind: match t.kind {
                         not_core::TokenKind::Date => TokenKind::Date,
+                        not_core::TokenKind::Deadline => TokenKind::Deadline,
                         not_core::TokenKind::Time => TokenKind::Time,
                         not_core::TokenKind::Repeat => TokenKind::Repeat,
+                        not_core::TokenKind::Someday => TokenKind::Someday,
                         not_core::TokenKind::Priority => TokenKind::Priority,
-                        not_core::TokenKind::List => TokenKind::List,
+                        not_core::TokenKind::Tag => TokenKind::Tag,
                     },
                     text: t.text,
                 })
@@ -742,15 +836,45 @@ impl NotStore {
         })
     }
 
-    /// No `due` clears the time and repeat too.
+    /// Start date (with `time`), deadline, Someday and repeat. A time needs a start date, a
+    /// repeat a start date or deadline; a start date ends Someday.
     pub fn set_schedule(
         &self,
         id: String,
-        due: Option<String>,
-        due_time: Option<u32>,
+        start: Option<String>,
+        time: Option<u32>,
+        deadline: Option<String>,
+        someday: bool,
         repeat: Option<String>,
     ) -> Result<(), NotError> {
-        Ok(self.store.set_schedule(&id, &schedule(due, due_time, repeat)?)?)
+        Ok(self
+            .store
+            .set_schedule(&id, &schedule(start, time, deadline, someday, repeat)?)?)
+    }
+
+    /// Sets the start date of several tasks in one undo step, keeping times and deadlines
+    /// ("Move to today" for what slipped). `None` clears it.
+    pub fn reschedule(&self, ids: Vec<String>, start: Option<String>) -> Result<(), NotError> {
+        let start = start.as_deref().map(date).transpose()?;
+        Ok(self.store.reschedule(&ids, start)?)
+    }
+
+    /// Puts tasks off to a snooze point, from `today` at `minute` (minutes after midnight). One
+    /// undo step. Returns the new start date.
+    pub fn snooze(
+        &self,
+        ids: Vec<String>,
+        to: Snooze,
+        today: String,
+        minute: u32,
+    ) -> Result<String, NotError> {
+        let s = self.store.snooze(&ids, to.into(), date(&today)?, minute)?;
+        Ok(s.start.map(|d| d.to_string()).unwrap_or_default())
+    }
+
+    /// "Still relevant" in the weekly review: the task counts as looked at now.
+    pub fn keep_task(&self, id: String) -> Result<(), NotError> {
+        Ok(self.store.keep_task(&id)?)
     }
 
     /// 0 = none … 3 = high.
@@ -758,50 +882,105 @@ impl NotStore {
         Ok(self.store.set_priority(&id, priority)?)
     }
 
+    /// Replaces a task's own tags (normalised).
+    pub fn set_tags(&self, id: String, tags: Vec<String>) -> Result<(), NotError> {
+        Ok(self.store.set_tags(&id, &tags)?)
+    }
+
     pub fn set_notes(&self, id: String, notes: String) -> Result<(), NotError> {
         Ok(self.store.set_notes(&id, &notes)?)
     }
 
-    pub fn move_task(&self, id: String, parent_id: String, index: u32) -> Result<(), NotError> {
-        Ok(self.store.move_task(&id, &parent_id, index as usize)?)
-    }
-
-    /// Moves a task under `parent_id` right before its child `before_id`, or to the end.
-    /// How a list (or the Inbox) sorts its open tasks. Dragging a task in a sorted list switches it
-    /// back to manual, starting from the order shown.
-    pub fn set_list_sort(&self, list_id: String, sort: TaskSort) -> Result<(), NotError> {
-        Ok(self.store.set_list_sort(&list_id, sort.into())?)
-    }
-
+    /// Moves a task under `parent_id` (a task; `None` for top level) right before its child
+    /// `before_id`, or to the end. For reordering subtasks; top-level order is `move_in_view`.
     pub fn move_task_before(
         &self,
         id: String,
-        parent_id: String,
+        parent_id: Option<String>,
         before_id: Option<String>,
     ) -> Result<(), NotError> {
         Ok(self
             .store
-            .move_task_before(&id, &parent_id, before_id.as_deref())?)
+            .move_task_before(&id, parent_id.as_deref(), before_id.as_deref())?)
     }
 
-    /// Makes the task a subtask of the open task above it. False if there is none.
-    pub fn indent_task(&self, id: String) -> Result<bool, NotError> {
-        Ok(self.store.indent_task(&id)?)
+    /// Moves a task shown at the top level of `view` right before `before_id` (also shown there),
+    /// or last. Each view keeps its own order; a sorted view switches to manual.
+    pub fn move_in_view(
+        &self,
+        view: String,
+        id: String,
+        before_id: Option<String>,
+        today: String,
+    ) -> Result<(), NotError> {
+        Ok(self
+            .store
+            .move_in_view(&view, &id, before_id.as_deref(), date(&today)?)?)
     }
 
-    /// Makes a subtask a sibling of its parent, right after it. False for top-level tasks.
-    pub fn outdent_task(&self, id: String) -> Result<bool, NotError> {
-        Ok(self.store.outdent_task(&id)?)
+    /// Makes the task a subtask of the open task shown above it in `view`. False if there is none.
+    pub fn indent_in_view(&self, view: String, id: String, today: String) -> Result<bool, NotError> {
+        Ok(self.store.indent_in_view(&view, &id, date(&today)?)?)
     }
 
-    /// Moves a list to `index` among the other lists (the Inbox stays first).
-    pub fn move_list(&self, id: String, index: u32) -> Result<(), NotError> {
-        Ok(self.store.move_list(&id, index as usize)?)
+    /// Makes a subtask a sibling of its parent, right after it (in `view` too), keeping the tags it
+    /// had through it. False for top-level tasks.
+    pub fn outdent_in_view(&self, view: String, id: String) -> Result<bool, NotError> {
+        Ok(self.store.outdent_in_view(&view, &id)?)
     }
 
-    /// Deletes a list or task and everything under it. Undoable.
+    /// Deletes a task and its subtasks. Undoable.
     pub fn delete_item(&self, id: String) -> Result<(), NotError> {
         Ok(self.store.delete(&id)?)
+    }
+
+    // ---- views and tags ----
+
+    /// Saves a smart list. The query must be valid (`check_query`).
+    pub fn create_view(&self, title: String, query: String) -> Result<String, NotError> {
+        Ok(self.store.create_view(&title, &query)?)
+    }
+
+    pub fn update_view(&self, id: String, title: String, query: String) -> Result<(), NotError> {
+        Ok(self.store.update_view(&id, &title, &query)?)
+    }
+
+    /// Deletes a saved view (not its tasks). Undoable.
+    pub fn delete_view(&self, id: String) -> Result<(), NotError> {
+        Ok(self.store.delete_view(&id)?)
+    }
+
+    /// Moves a saved view to `index` among saved views.
+    pub fn move_view(&self, id: String, index: u32) -> Result<(), NotError> {
+        Ok(self.store.move_view(&id, index as usize)?)
+    }
+
+    /// How a view sorts its open tasks (Upcoming is always by date).
+    pub fn set_view_sort(&self, id: String, sort: TaskSort) -> Result<(), NotError> {
+        Ok(self.store.set_view_sort(&id, sort.into())?)
+    }
+
+    /// `None` if `query` is a valid filter, else what's wrong with it.
+    pub fn check_query(&self, query: String) -> Option<String> {
+        self.store.check_query(&query).err().map(|e| match e {
+            not_core::Error::Invalid(m) => m,
+            other => other.to_string(),
+        })
+    }
+
+    /// How many open tasks `query` would show, for previewing a view being edited.
+    pub fn count_query(&self, query: String, today: String) -> Result<u32, NotError> {
+        Ok(self.store.count_query(&query, date(&today)?)?)
+    }
+
+    /// Renames a tag on every task and in saved views. One undo step.
+    pub fn rename_tag(&self, old: String, new: String) -> Result<(), NotError> {
+        Ok(self.store.rename_tag(&old, &new)?)
+    }
+
+    /// Takes a tag off every task. One undo step.
+    pub fn delete_tag(&self, tag: String) -> Result<(), NotError> {
+        Ok(self.store.delete_tag(&tag)?)
     }
 
     // ---- habits ----
@@ -894,22 +1073,21 @@ impl NotStore {
     }
 
     /// Makes tasks of the checklist items the selection touches in `body` (what the editor shows,
-    /// saved first), in `list_id` or a new list titled `new_list` (empty: the suggested title)
-    /// when `list_id` is `None`. The note's lines stay as they are; one undo step.
+    /// saved first), tagged `tag` (empty: from the suggested title), or untagged (Inbox) when
+    /// `None`. The note's lines stay as they are; one undo step.
     pub fn checklist_to_tasks(
         &self,
         note_id: String,
         body: String,
         start: u32,
         end: u32,
-        list_id: Option<String>,
-        new_list: String,
+        tag: Option<String>,
     ) -> Result<ChecklistMoved, NotError> {
         let m = self
             .store
-            .checklist_to_tasks(&note_id, &body, start, end, list_id.as_deref(), &new_list)?;
+            .checklist_to_tasks(&note_id, &body, start, end, tag.as_deref())?;
         Ok(ChecklistMoved {
-            list_id: m.list_id,
+            tag: m.tag,
             count: m.count,
         })
     }
@@ -1151,34 +1329,75 @@ impl NotStore {
 
     // ---- queries ----
 
-    pub fn lists(&self) -> Result<Vec<TaskList>, NotError> {
+    /// Built-in views, then saved ones in order.
+    pub fn views(&self, today: String) -> Result<Vec<TaskView>, NotError> {
         Ok(self
             .store
-            .lists()?
+            .views(date(&today)?)?
             .into_iter()
-            .map(|l| TaskList {
-                id: l.id,
-                title: l.title,
-                open_count: l.open_count,
-                sort: l.sort.into(),
+            .map(|v| TaskView {
+                id: v.id,
+                title: v.title,
+                query: v.query,
+                built_in: v.built_in,
+                sort: v.sort.into(),
+                open_count: v.open_count,
             })
             .collect())
     }
 
-    pub fn tasks(&self, list_id: String) -> Result<Vec<TaskItem>, NotError> {
+    /// Every tag in use, by name.
+    pub fn tags(&self) -> Result<Vec<TagInfo>, NotError> {
         Ok(self
             .store
-            .tasks(&list_id)?
+            .tags()?
+            .into_iter()
+            .map(|t| TagInfo {
+                name: t.name,
+                open_count: t.open_count,
+            })
+            .collect())
+    }
+
+    pub fn task_by_id(&self, id: String) -> Result<TaskItem, NotError> {
+        Ok(self.store.task_by_id(&id)?.into())
+    }
+
+    /// A task's direct subtasks, in order.
+    pub fn subtasks(&self, id: String) -> Result<Vec<TaskItem>, NotError> {
+        Ok(self
+            .store
+            .subtasks(&id)?
             .into_iter()
             .map(TaskItem::from)
             .collect())
     }
 
-    /// Open tasks due on or before `today` from every list, overdue first.
-    pub fn due_tasks(&self, today: String) -> Result<Vec<TaskItem>, NotError> {
+    /// Open tasks with a start date and time, soonest first: what reminders are set for.
+    pub fn timed_tasks(&self) -> Result<Vec<TaskItem>, NotError> {
         Ok(self
             .store
-            .due_tasks(date(&today)?)?
+            .timed_tasks()?
+            .into_iter()
+            .map(TaskItem::from)
+            .collect())
+    }
+
+    /// Completed top-level tasks, latest first, at most `limit`.
+    pub fn logbook(&self, limit: u32) -> Result<Vec<TaskItem>, NotError> {
+        Ok(self
+            .store
+            .logbook(limit)?
+            .into_iter()
+            .map(TaskItem::from)
+            .collect())
+    }
+
+    /// Open undated tasks nobody has touched for `days`, oldest first (for the weekly review).
+    pub fn stale_tasks(&self, days: u32) -> Result<Vec<TaskItem>, NotError> {
+        Ok(self
+            .store
+            .stale_tasks(now_millis(), days)?
             .into_iter()
             .map(TaskItem::from)
             .collect())
@@ -1189,16 +1408,6 @@ impl NotStore {
         Ok(self
             .store
             .search_tasks(&query, limit)?
-            .into_iter()
-            .map(TaskItem::from)
-            .collect())
-    }
-
-    /// Open tasks due after `today` from every list, soonest first.
-    pub fn upcoming_tasks(&self, today: String) -> Result<Vec<TaskItem>, NotError> {
-        Ok(self
-            .store
-            .upcoming_tasks(date(&today)?)?
             .into_iter()
             .map(TaskItem::from)
             .collect())
@@ -1219,14 +1428,17 @@ impl NotStore {
         Ok(self.store.clear_archive(now_millis())?)
     }
 
-    pub fn outline(&self, list_id: String) -> Result<Outline, NotError> {
-        let outline = self.store.outline(&list_id)?;
+    /// A view's tasks as shown (`view` may also be a `#tag` query, to browse a tag).
+    pub fn view_outline(&self, view: String, today: String) -> Result<Outline, NotError> {
+        let outline = self.store.view_outline(&view, date(&today)?)?;
         let rows = |rows: Vec<not_core::OutlineRow>| {
             rows.into_iter()
                 .map(|r| OutlineRow {
                     task: r.task.into(),
                     depth: r.depth,
                     done: r.done,
+                    subtasks: r.subtasks,
+                    subtasks_done: r.subtasks_done,
                 })
                 .collect()
         };
@@ -1238,7 +1450,7 @@ impl NotStore {
 
     // ---- export ----
 
-    /// Everything as readable JSON: lists and tasks, habits and check-ins, notes, workouts.
+    /// Everything as readable JSON: tasks and views, habits and check-ins, notes, workouts.
     pub fn export_json(&self, today: String) -> Result<String, NotError> {
         Ok(self.store.export_json(date(&today)?)?)
     }
@@ -1431,15 +1643,17 @@ impl From<not_core::Task> for TaskItem {
     fn from(t: not_core::Task) -> Self {
         Self {
             id: t.id,
-            list_id: t.list_id,
             parent_id: t.parent_id,
             title: t.title,
             notes: t.notes,
             completed_at: t.completed_at,
-            due: t.due,
-            due_time: t.due_time,
+            start: t.start,
+            time: t.time,
+            deadline: t.deadline,
+            someday: t.someday,
             priority: t.priority,
             repeat: t.repeat,
+            tags: t.tags,
         }
     }
 }

@@ -7,11 +7,13 @@
 
 use loro::{TreeID, TreeParentId};
 
+use crate::date::Date;
 use crate::markdown::{TaskSource, task_blocks};
 use crate::notes::{BODY, KIND_NOTE, UPDATED_AT};
-use crate::projection::{COMPLETED_AT, KIND, KIND_LIST, KIND_TASK, TITLE};
-use crate::store::{OutlineRow, Store, create_task_node, now_millis};
-use crate::{Error, INBOX, Result};
+use crate::parse::normalize_tag;
+use crate::projection::{COMPLETED_AT, KIND, KIND_TASK, TITLE};
+use crate::store::{OutlineRow, Store, Task, create_task_node, now_millis, push_subtree, write_tags};
+use crate::{Error, Result};
 
 const LINK_OPEN: &str = "<!--task:";
 const LINK_CLOSE: &str = "-->";
@@ -60,14 +62,15 @@ pub struct ChecklistItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checklist {
     pub items: Vec<ChecklistItem>,
-    /// For a new list: the nearest heading above the items, else the note's title.
+    /// For a new tag: the nearest heading above the items, else the note's title.
     pub suggested_title: String,
 }
 
 /// What [`Store::checklist_to_tasks`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChecklistMoved {
-    pub list_id: String,
+    /// The tag the tasks got; `None` when they went to the Inbox.
+    pub tag: Option<String>,
     pub count: u32,
 }
 
@@ -157,42 +160,29 @@ fn suggested_title(lines: &[&str], first_item: usize) -> String {
 
 impl Store {
     /// Makes tasks of the checklist items `start..end` touches in `body` (what the editor shows
-    /// for note `note_id`, saved first), in list `list_id` ([`crate::INBOX`] works too) or a new
-    /// list titled `new_list` when `list_id` is `None`. They keep their order and go first in the
-    /// list. The note keeps its lines as they are. One undo step.
+    /// for note `note_id`, saved first), tagged `tag` (normalised; empty means a tag from
+    /// [`Checklist::suggested_title`]) or untagged, in the Inbox, when `None`. They keep their
+    /// order and go first. The note keeps its lines as they are. One undo step.
     pub fn checklist_to_tasks(
         &self,
         note_id: &str,
         body: &str,
         start: u32,
         end: u32,
-        list_id: Option<&str>,
-        new_list: &str,
+        tag: Option<&str>,
     ) -> Result<ChecklistMoved> {
         let checklist = checklist(body, start, end)
             .ok_or_else(|| Error::Invalid("no checklist items selected".into()))?;
         let note = self.notes_node(note_id, KIND_NOTE)?;
-        let target = match list_id {
-            Some(id) => Some(self.container(id)?),
-            None => None,
-        };
-        let new_title = match new_list.trim() {
-            "" => checklist.suggested_title.clone(),
-            t => t.to_owned(),
-        };
+        let tag = tag.map(|t| match normalize_tag(t) {
+            t if t.is_empty() => normalize_tag(&checklist.suggested_title),
+            t => t,
+        });
+        let tags: Vec<String> = tag.iter().filter(|t| !t.is_empty()).cloned().collect();
         self.transact(|| {
             self.write_note_body(note, body)?;
             let tree = &self.tasks;
-            let (parent, list_id) = match target {
-                Some(parent) => (parent, list_id.unwrap_or_default().to_owned()),
-                None => {
-                    let id = tree.create(TreeParentId::Root)?;
-                    let meta = tree.get_meta(id)?;
-                    meta.insert(KIND, KIND_LIST)?;
-                    meta.insert(TITLE, new_title.as_str())?;
-                    (TreeParentId::Node(id), id.to_string())
-                }
-            };
+            let parent = TreeParentId::Root;
             let now = now_millis();
             // The task made for each open level, and the top-level one before.
             let mut levels: Vec<TreeID> = Vec::new();
@@ -213,13 +203,16 @@ impl Store {
                 let meta = tree.get_meta(id)?;
                 meta.insert(KIND, KIND_TASK)?;
                 meta.insert(TITLE, item.title.as_str())?;
+                if item.depth == 0 {
+                    write_tags(&meta, &tags)?;
+                }
                 if item.done {
                     meta.insert(COMPLETED_AT, now)?;
                 }
                 levels.push(id);
             }
             Ok(ChecklistMoved {
-                list_id,
+                tag: tags.first().cloned(),
                 count: checklist.items.len() as u32,
             })
         })
@@ -279,47 +272,35 @@ impl Store {
         Ok(updated)
     }
 
-    /// The rows a task block of an earlier version showed: a whole list (open, then completed in
-    /// the last day), or picked tasks with their subtrees; depths count from the block.
+    /// The rows a task block of an earlier version showed: a whole list (now a saved view with its
+    /// id: open, then completed in the last day), or picked tasks with their subtrees.
     fn block_rows(&self, source: &TaskSource) -> Result<Vec<OutlineRow>> {
         match source {
             TaskSource::List(id) => {
-                let exists = id == INBOX || self.lists()?.iter().any(|l| l.id == *id);
-                if !exists {
-                    return Ok(Vec::new());
+                let today = Date::from_ymd(1970, 1, 1)
+                    .expect("valid")
+                    .add_days(now_millis() / 86_400_000);
+                match self.view_outline(id, today) {
+                    Ok(outline) => Ok([outline.open, outline.completed].concat()),
+                    Err(Error::NotFound(_)) => Ok(Vec::new()),
+                    Err(e) => Err(e),
                 }
-                let outline = self.outline(id)?;
-                Ok([outline.open, outline.completed].concat())
             }
             TaskSource::Tasks(ids) => {
-                let mut lists: Vec<String> = Vec::new();
-                for task in ids.iter().filter_map(|id| self.task_by_id(id).ok()) {
-                    if !lists.contains(&task.list_id) {
-                        lists.push(task.list_id);
+                let all = self.all_tasks()?;
+                let mut children: std::collections::HashMap<Option<String>, Vec<Task>> = Default::default();
+                for task in &all {
+                    if task.parent_id.is_some() {
+                        children
+                            .entry(task.parent_id.clone())
+                            .or_default()
+                            .push(task.clone());
                     }
                 }
                 let mut rows = Vec::new();
-                for list in lists {
-                    let outline = self.outline(&list)?;
-                    for section in [outline.open, outline.completed] {
-                        let mut taking: Option<u32> = None;
-                        for row in section {
-                            if let Some(depth) = taking {
-                                if row.depth > depth {
-                                    rows.push(OutlineRow {
-                                        depth: row.depth - depth,
-                                        ..row
-                                    });
-                                    continue;
-                                }
-                                taking = None;
-                            }
-                            if ids.contains(&row.task.id) {
-                                taking = Some(row.depth);
-                                rows.push(OutlineRow { depth: 0, ..row });
-                            }
-                        }
-                    }
+                for task in ids.iter().filter_map(|id| all.iter().find(|t| t.id == *id)) {
+                    let done = task.completed_at.is_some();
+                    push_subtree(&mut rows, &mut children, task.clone(), 0, done);
                 }
                 Ok(rows)
             }

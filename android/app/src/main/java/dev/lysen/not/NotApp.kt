@@ -63,6 +63,9 @@ class NotApp : Application() {
 
     val reminders: Reminders by lazy { Reminders(this) }
 
+    /** Saved places and the tasks to remind about there (this phone only). */
+    val places: Places by lazy { Places(this) }
+
     /** Where the app was left, to reopen there. */
     val screenMemory: ScreenMemory by lazy { ScreenMemory(this) }
 

@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.TextFieldBuffer
 import androidx.compose.foundation.text.input.TextFieldLineLimits
@@ -53,7 +54,6 @@ import dev.lysen.not.core.NotException
 import dev.lysen.not.core.NotStore
 import dev.lysen.not.core.ParsedTask
 import dev.lysen.not.core.ParsedToken
-import dev.lysen.not.core.TaskList
 import dev.lysen.not.core.TokenKind
 import dev.lysen.not.core.dueLabel
 import dev.lysen.not.core.repeatLabel
@@ -101,8 +101,19 @@ fun priorityName(priority: UByte): String = when (priority.toInt()) {
  * words the user tapped away to keep as plain text.
  */
 @Stable
-class TaskDraft(private val store: NotStore) {
+class TaskDraft(private val store: NotStore, private val onPasteLines: ((String) -> Unit)?) {
     val input = TextFieldState()
+
+    /** Takes pasted text with several lines out of the field, for [onPasteLines]. */
+    internal val pasteCatcher = InputTransformation {
+        val lines = onPasteLines ?: return@InputTransformation
+        val text = asCharSequence().toString()
+        if (text.trim().contains('\n')) {
+            val pasted = text
+            revertAllChanges()
+            lines(pasted)
+        }
+    }
     var dismissed by mutableStateOf(emptyList<String>())
         private set
 
@@ -112,7 +123,7 @@ class TaskDraft(private val store: NotStore) {
             null
         } else {
             try {
-                store.parseTask(text, today(), dismissed)
+                store.parseTask(text, today(), nowMinute(), dismissed)
             } catch (_: NotException) {
                 null
             }
@@ -133,9 +144,9 @@ class TaskDraft(private val store: NotStore) {
 }
 
 @Composable
-fun rememberTaskDraft(): TaskDraft {
+fun rememberTaskDraft(onPasteLines: ((String) -> Unit)? = null): TaskDraft {
     val app = LocalContext.current.applicationContext as NotApp
-    return remember { TaskDraft(app.store) }
+    return remember { TaskDraft(app.store, onPasteLines) }
 }
 
 /** Tints what the parser recognised, so the user sees which words become dates and tags. */
@@ -163,6 +174,7 @@ fun TaskDraftField(
     val highlight = remember(draft, colors) { TokenHighlight(draft, colors) }
     BasicTextField(
         state = draft.input,
+        inputTransformation = draft.pasteCatcher,
         lineLimits = TextFieldLineLimits.SingleLine,
         textStyle = style.merge(color = colors.ink),
         cursorBrush = SolidColor(colors.accentInk),
@@ -185,34 +197,36 @@ fun TaskDraftField(
 
 /** What the draft will set, one chip per recognised word; ✕ keeps that word as text instead. */
 @Composable
-fun TokenChips(draft: TaskDraft, lists: List<TaskList>, modifier: Modifier = Modifier) {
+fun TokenChips(draft: TaskDraft, modifier: Modifier = Modifier) {
     val parsed = draft.parsed ?: return
     if (parsed.tokens.isEmpty()) return
     Row(modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         for (token in parsed.tokens) {
-            val (icon, label) = tokenLabel(token, parsed, lists)
+            val (icon, label) = tokenLabel(token, parsed)
             val tint = if (token.kind == TokenKind.PRIORITY) Not.colors.priority(parsed.priority) else null
             Chip(icon, label, tint = tint, onRemove = { draft.dismiss(token) })
         }
     }
 }
 
-private fun tokenLabel(token: ParsedToken, parsed: ParsedTask, lists: List<TaskList>): Pair<Int, String> = when (token.kind) {
-    TokenKind.DATE -> R.drawable.ic_calendar to (scheduleLabel(parsed.due, null, null) ?: token.text)
-    TokenKind.TIME -> R.drawable.ic_schedule to (parsed.dueTime?.let(::clockLabel) ?: token.text)
+private fun tokenLabel(token: ParsedToken, parsed: ParsedTask): Pair<Int, String> = when (token.kind) {
+    TokenKind.DATE -> R.drawable.ic_calendar to (scheduleLabel(parsed.start, null, null) ?: token.text)
+    TokenKind.DEADLINE -> R.drawable.ic_deadline to ("Due " + (scheduleLabel(parsed.deadline, null, null) ?: token.text))
+    TokenKind.TIME -> R.drawable.ic_schedule to (parsed.time?.let(::clockLabel) ?: token.text)
     TokenKind.REPEAT -> R.drawable.ic_repeat to (parsed.repeat?.let(::repeatLabel) ?: token.text)
+    TokenKind.SOMEDAY -> R.drawable.ic_someday to "Someday"
     TokenKind.PRIORITY -> R.drawable.ic_flag to "${priorityName(parsed.priority)} priority"
-    TokenKind.LIST -> R.drawable.ic_list to (lists.firstOrNull { it.id == parsed.listId }?.title ?: token.text)
+    TokenKind.TAG -> R.drawable.ic_tag to token.text.trimStart('#').lowercase()
 }
 
 @Composable
-fun Chip(icon: Int, label: String, modifier: Modifier = Modifier, tint: Color? = null, onClick: (() -> Unit)? = null, onRemove: (() -> Unit)? = null) {
+fun Chip(icon: Int, label: String, modifier: Modifier = Modifier, tint: Color? = null, background: Color? = null, onClick: (() -> Unit)? = null, onRemove: (() -> Unit)? = null) {
     val colors = Not.colors
     val ink = tint ?: colors.accentInk
     Row(
         modifier
             .clip(CircleShape)
-            .background(colors.accentSoft)
+            .background(background ?: colors.accentSoft)
             .then(if (onClick != null) Modifier.pressable(onClick, pressedScale = 0.96f) else Modifier)
             .heightIn(min = 32.dp)
             .padding(start = 10.dp, end = if (onRemove != null) 4.dp else 12.dp),
@@ -231,12 +245,13 @@ fun Chip(icon: Int, label: String, modifier: Modifier = Modifier, tint: Color? =
 
 /**
  * The floating "new task" card above the keyboard. Words like "tomorrow 9am", "every mon",
- * "#groceries" and "!1" light up as they're recognised and show as chips underneath.
+ * "#groceries" and "!1" light up as they're recognised and show as chips underneath. Pasting several
+ * lines hands them to [onPaste] (a task each) instead of squashing them into one title.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun TaskComposer(placeholder: String, lists: List<TaskList>, onAdd: (TaskDraft) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
-    val draft = rememberTaskDraft()
+fun TaskComposer(placeholder: String, onAdd: (TaskDraft) -> Unit, onPaste: (String) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    val draft = rememberTaskDraft(onPasteLines = onPaste)
     val colors = Not.colors
     val focus = remember { FocusRequester() }
     val imeVisible = WindowInsets.isImeVisible
@@ -281,6 +296,6 @@ fun TaskComposer(placeholder: String, lists: List<TaskList>, onAdd: (TaskDraft) 
                 ) { Icon(R.drawable.ic_arrow_up, "Add", tint = if (ready) colors.onAccent else colors.inkFaint, size = 20.dp) }
             },
         )
-        TokenChips(draft, lists, Modifier.padding(start = 40.dp, top = 6.dp, bottom = 2.dp))
+        TokenChips(draft, Modifier.padding(start = 40.dp, top = 6.dp, bottom = 2.dp))
     }
 }

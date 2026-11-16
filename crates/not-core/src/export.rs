@@ -5,41 +5,43 @@ use loro::ExportMode;
 use serde_json::{Value, json};
 
 use crate::date::Date;
-use crate::store::{INBOX, Store};
+use crate::store::Store;
 use crate::{Error, Period, Result};
 
 /// Marks a backup file, so a random file isn't fed to Loro.
 const BACKUP_MAGIC: &[u8] = b"not-backup-1\n";
 
 impl Store {
-    /// Everything as indented JSON: lists with their tasks (completed and archived ones too),
+    /// Everything as indented JSON: tasks (completed and archived ones too) and saved views,
     /// habits with every day's check-ins up to `today`, folders and notes with their markdown, and
     /// workouts with their sets as typed.
     pub fn export_json(&self, today: Date) -> Result<String> {
-        let lists = self
-            .lists()?
+        let tasks: Vec<Value> = self
+            .all_tasks()?
             .into_iter()
-            .map(|list| {
-                let tasks: Vec<Value> = self
-                    .tasks(&list.id)?
-                    .into_iter()
-                    .map(|t| {
-                        json!({
-                            "id": t.id,
-                            "parent_id": t.parent_id,
-                            "title": t.title,
-                            "notes": t.notes,
-                            "due": t.due,
-                            "due_time": t.due_time.map(|m| format!("{:02}:{:02}", m / 60, m % 60)),
-                            "repeat": t.repeat,
-                            "priority": t.priority,
-                            "completed_at": t.completed_at,
-                        })
-                    })
-                    .collect();
-                Ok(json!({ "id": list.id, "title": list.title, "inbox": list.id == INBOX, "tasks": tasks }))
+            .map(|t| {
+                json!({
+                    "id": t.id,
+                    "parent_id": t.parent_id,
+                    "title": t.title,
+                    "notes": t.notes,
+                    "tags": t.tags,
+                    "start": t.start,
+                    "time": t.time.map(|m| format!("{:02}:{:02}", m / 60, m % 60)),
+                    "deadline": t.deadline,
+                    "someday": t.someday,
+                    "repeat": t.repeat,
+                    "priority": t.priority,
+                    "completed_at": t.completed_at,
+                })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
+        let views: Vec<Value> = self
+            .views(today)?
+            .into_iter()
+            .filter(|v| !v.built_in)
+            .map(|v| json!({ "id": v.id, "title": v.title, "query": v.query }))
+            .collect();
 
         let habits = self
             .habits(&today.to_string())?
@@ -105,7 +107,8 @@ impl Store {
             "format": "not-export",
             "version": 1,
             "exported_on": today.to_string(),
-            "lists": lists,
+            "tasks": tasks,
+            "views": views,
             "habits": habits,
             "folders": folders,
             "notes": notes,

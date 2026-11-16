@@ -8,7 +8,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.lysen.not.core.ChecklistMoved
 import dev.lysen.not.core.Folder
-import dev.lysen.not.core.TaskList
 import dev.lysen.not.core.NoteSummary
 import dev.lysen.not.core.NotException
 import kotlinx.coroutines.channels.Channel
@@ -149,18 +148,18 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
     /** Keeps an (already downscaled) image for notes; its id, for [imageMarkup]. */
     fun addImage(bytes: ByteArray): String? = run { store.addImage(bytes) }
 
-    /** Where a note's checklist can go: the task lists, for the "Make tasks" sheet. */
-    fun taskLists(): List<TaskList> = run { store.lists() }.orEmpty().filter { it.id != INBOX_ID }
+    /** Tags tasks already carry, for the "Make tasks" sheet. */
+    fun taskTags(): List<String> = run { store.tags() }.orEmpty().map { it.name }
 
     /**
      * Makes tasks of the checklist items the selection touches in [body] (the editor's text, saved
-     * with it), in [listId] or a new list titled [newList] when null. The note keeps its lines as
-     * they are; the tasks are a copy.
+     * with it), tagged [tag], or untagged (the Inbox) when null. The note keeps its lines as they
+     * are; the tasks are a copy.
      */
-    fun checklistToTasks(noteId: String, body: String, start: Int, end: Int, listId: String?, newList: String, listTitle: String): ChecklistMoved? {
-        val moved = run { store.checklistToTasks(noteId, body, start.toUInt(), end.toUInt(), listId, newList) } ?: return null
+    fun checklistToTasks(noteId: String, body: String, start: Int, end: Int, tag: String?): ChecklistMoved? {
+        val moved = run { store.checklistToTasks(noteId, body, start.toUInt(), end.toUInt(), tag) } ?: return null
         val what = if (moved.count == 1u) "1 task" else "${moved.count} tasks"
-        _undoables.trySend(Undoable("$what added to “$listTitle”"))
+        _undoables.trySend(Undoable(moved.tag?.let { "$what tagged #$it" } ?: "$what added to the Inbox"))
         return moved
     }
 
@@ -170,10 +169,10 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
         run {
             val body = "Groceries\n- [ ] Milk\n  - [x] Oat\n- [ ] Eggs\nfor the weekend"
             val note = store.createNote(null, body)
-            store.checklistToTasks(note, body, 0u, body.length.toUInt(), null, "")
-            // The earlier format: a whole list shown as one block line.
-            val errands = store.createList("Errands")
-            store.addTask(errands, "Post office")
+            store.checklistToTasks(note, body, 0u, body.length.toUInt(), "")
+            // The earlier format: a whole list (now a smart list) shown as one block line.
+            val errands = store.createView("Errands", "#errands")
+            store.addTask(errands, "Post office", today())
             store.createNote(null, "Errands\nbefore\n![](not-tasks:list:$errands)\nafter")
         }
         reload()

@@ -1,11 +1,11 @@
-//! Quick-add parsing: pulls a due date, time, repeat rule, priority and list out of a task title,
-//! in English or French. `Buy milk tomorrow 9am #groceries !1` → "Buy milk", due tomorrow 9:00,
-//! in Groceries, high priority.
+//! Quick-add parsing: pulls a start date, time, deadline, repeat rule, Someday, priority and tags
+//! out of a task title, in English or French. `Buy milk tomorrow 9am #groceries !1` → "Buy milk",
+//! starting tomorrow 9:00, tagged groceries, high priority; `Report by fri` → deadline Friday.
 //!
 //! The parser is word based and forgiving: anything it doesn't recognise stays in the title, and
-//! each kind is taken once (the first match wins), so "Call Tom about friday" only loses "friday"
-//! when it is the first date. The apps highlight [`Token`]s as the user types and let them dismiss
-//! one, which passes its text back in `dismissed` to keep it as plain title text.
+//! each kind but tags is taken once (the first match wins), so "Call Tom about friday" only loses
+//! "friday" when it is the first date. The apps highlight [`Token`]s as the user types and let them
+//! dismiss one, which passes its text back in `dismissed` to keep it as plain title text.
 
 use crate::date::Date;
 use crate::schedule::{Freq, Repeat, Schedule, WEEKDAYS, WEEKEND};
@@ -16,18 +16,21 @@ pub struct ParsedTask {
     pub schedule: Schedule,
     /// 0 = none, 1 = low, 2 = medium, 3 = high.
     pub priority: u8,
-    /// Id of the list a `#tag` named.
-    pub list_id: Option<String>,
+    /// Normalised (see [`normalize_tag`]), in the order typed, without repeats.
+    pub tags: Vec<String>,
     pub tokens: Vec<Token>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
+    /// The start date.
     Date,
+    Deadline,
     Time,
     Repeat,
+    Someday,
     Priority,
-    List,
+    Tag,
 }
 
 /// A recognised piece of the input. Offsets are UTF-16 code units, like the apps' text APIs.
@@ -40,34 +43,70 @@ pub struct Token {
     pub text: String,
 }
 
-/// Parses `input` relative to `today`. `lists` are `(id, title)` pairs for `#list` matching.
-pub fn parse_task(input: &str, today: Date, lists: &[(String, String)], dismissed: &[String]) -> ParsedTask {
+/// A tag as stored: lowercase, no `#`, whitespace runs as `-`, only letters, digits, `-` and `_`.
+/// Empty when nothing is left.
+pub fn normalize_tag(tag: &str) -> String {
+    let lower = tag.trim().trim_start_matches('#').to_lowercase();
+    let mut out = String::new();
+    for word in lower.split_whitespace() {
+        if !out.is_empty() {
+            out.push('-');
+        }
+        out.extend(
+            word.chars()
+                .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_')),
+        );
+    }
+    out.trim_matches('-').to_owned()
+}
+
+/// Parses `input` relative to `today`.
+pub fn parse_task(input: &str, today: Date, dismissed: &[String]) -> ParsedTask {
+    parse_task_at(input, today, None, dismissed)
+}
+
+/// [`parse_task`] knowing the time of day (minutes after midnight), which "in 2 hours" needs.
+pub fn parse_task_at(input: &str, today: Date, minute: Option<u32>, dismissed: &[String]) -> ParsedTask {
     let words = split_words(input);
     let mut found: Vec<(usize, usize, TokenKind)> = Vec::new(); // word ranges
     let mut date = None;
+    let mut deadline = None;
     let mut time = None;
     let mut repeat = None;
+    let mut someday = false;
     let mut priority = 0;
-    let mut list_id = None;
+    let mut tags: Vec<String> = Vec::new();
+    // The day a time like "in 2 hours" or "tonight" falls on, when no date says otherwise.
+    let mut moment_date: Option<Date> = None;
 
     let mut i = 0;
     while i < words.len() {
         let has = |kind| found.iter().any(|(_, _, k)| *k == kind);
+        let mut tag = None;
         let matched: Option<(usize, TokenKind)> = (|| {
             if !has(TokenKind::Priority)
                 && let Some(p) = priority_word(&words[i].raw)
             {
                 return Some((1, TokenKind::Priority)).inspect(|_| priority = p);
             }
-            if !has(TokenKind::List)
-                && let Some(id) = list_word(&words[i].raw, lists)
-            {
-                return Some((1, TokenKind::List)).inspect(|_| list_id = Some(id));
+            if let Some(t) = tag_word(&words[i].raw) {
+                return Some((1, TokenKind::Tag)).inspect(|_| tag = Some(t));
             }
             if !has(TokenKind::Repeat)
                 && let Some((n, r)) = repeat_at(&words, i)
             {
                 return Some((n, TokenKind::Repeat)).inspect(|_| repeat = Some(r));
+            }
+            if !has(TokenKind::Deadline)
+                && DEADLINE_PREPS.contains(&words[i].norm.as_str())
+                && let Some((n, d)) = date_at(&words, i + 1, today)
+            {
+                return Some((n + 1, TokenKind::Deadline)).inspect(|_| deadline = Some(d));
+            }
+            if !has(TokenKind::Someday)
+                && let Some(n) = someday_at(&words, i)
+            {
+                return Some((n, TokenKind::Someday)).inspect(|_| someday = true);
             }
             if !has(TokenKind::Date) {
                 // "on fri", "le 12 mai": the preposition goes with the date.
@@ -79,6 +118,14 @@ pub fn parse_task(input: &str, today: Date, lists: &[(String, String)], dismisse
                 if let Some((n, d)) = with_prep.or_else(|| date_at(&words, i, today)) {
                     return Some((n, TokenKind::Date)).inspect(|_| date = Some(d));
                 }
+            }
+            if !has(TokenKind::Time)
+                && let Some((n, d, t)) = moment_at(&words, i, today, minute)
+            {
+                return Some((n, TokenKind::Time)).inspect(|_| {
+                    time = Some(t);
+                    moment_date = Some(d);
+                });
             }
             if !has(TokenKind::Time)
                 && let Some((n, t)) = time_at(&words, i)
@@ -93,6 +140,9 @@ pub fn parse_task(input: &str, today: Date, lists: &[(String, String)], dismisse
                     .iter()
                     .any(|d| *d == input[words[i].start..words[i + n - 1].end]) =>
             {
+                if let Some(t) = tag.filter(|t| !tags.contains(t)) {
+                    tags.push(t);
+                }
                 found.push((i, i + n, kind));
                 i += n;
             }
@@ -100,10 +150,15 @@ pub fn parse_task(input: &str, today: Date, lists: &[(String, String)], dismisse
                 // Dismissed: undo what the match recorded and keep the word as text.
                 match kind {
                     TokenKind::Priority => priority = 0,
-                    TokenKind::List => list_id = None,
+                    TokenKind::Tag => {}
                     TokenKind::Repeat => repeat = None,
                     TokenKind::Date => date = None,
-                    TokenKind::Time => time = None,
+                    TokenKind::Deadline => deadline = None,
+                    TokenKind::Someday => someday = false,
+                    TokenKind::Time => {
+                        time = None;
+                        moment_date = None;
+                    }
                 }
                 i += 1;
             }
@@ -111,8 +166,13 @@ pub fn parse_task(input: &str, today: Date, lists: &[(String, String)], dismisse
         }
     }
 
-    let due = date
-        .or_else(|| repeat.map(|r: Repeat| r.first_from(today)))
+    let start = date
+        .or_else(|| {
+            repeat
+                .filter(|_| deadline.is_none())
+                .map(|r: Repeat| r.first_from(today))
+        })
+        .or(moment_date)
         .or(time.map(|_| today));
     let utf16 = |byte: usize| input[..byte].encode_utf16().count() as u32;
     let tokens = found
@@ -141,9 +201,15 @@ pub fn parse_task(input: &str, today: Date, lists: &[(String, String)], dismisse
 
     ParsedTask {
         title,
-        schedule: Schedule { due, time, repeat },
+        schedule: Schedule {
+            start,
+            time: start.and(time),
+            deadline,
+            someday: someday && start.is_none(),
+            repeat: repeat.filter(|_| start.or(deadline).is_some()),
+        },
         priority,
-        list_id,
+        tags,
         tokens,
     }
 }
@@ -226,7 +292,7 @@ fn day_number(word: &str) -> Option<i64> {
     digits.parse().ok().filter(|d| (1..=31).contains(d))
 }
 
-// ---- priority and list -------------------------------------------------------------------------
+// ---- priority, tags, someday ---------------------------------------------------------------------
 
 fn priority_word(raw: &str) -> Option<u8> {
     match raw.strip_prefix('!')? {
@@ -237,30 +303,28 @@ fn priority_word(raw: &str) -> Option<u8> {
     }
 }
 
-fn list_word(raw: &str, lists: &[(String, String)]) -> Option<String> {
-    let key = squash(raw.strip_prefix('#')?);
-    if key.is_empty() {
-        return None;
-    }
-    let titles: Vec<_> = lists.iter().map(|(id, title)| (id, squash(title))).collect();
-    titles
-        .iter()
-        .find(|(_, t)| *t == key)
-        .or_else(|| titles.iter().find(|(_, t)| t.starts_with(&key)))
-        .map(|(id, _)| (*id).clone())
+/// `#groceries` → "groceries". A lone `#` or `#1` (an issue number) isn't a tag.
+fn tag_word(raw: &str) -> Option<String> {
+    let rest = raw.strip_prefix('#')?;
+    let tag = normalize_tag(rest.trim_end_matches([',', '.', ';', ':', '!', '?', ')']));
+    (!tag.is_empty() && !tag.bytes().all(|b| b.is_ascii_digit())).then_some(tag)
 }
 
-/// Lowercase letters and digits only, accents folded: "Side Projects" → "sideprojects".
-fn squash(s: &str) -> String {
-    fold(&s.to_lowercase())
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .collect()
+fn someday_at(words: &[Word], i: usize) -> Option<usize> {
+    let w = |k: usize| words.get(i + k).map(|w| w.norm.as_str()).unwrap_or("");
+    match (w(0), w(1)) {
+        ("someday" | "sometime" | "un-jour", _) => Some(1),
+        ("un", "jour") => Some(2),
+        _ => None,
+    }
 }
 
 // ---- dates ---------------------------------------------------------------------------------
 
-const DATE_PREPS: [&str; 5] = ["on", "by", "due", "le", "pour"];
+/// Before a start date: "on fri", "le 12".
+const DATE_PREPS: [&str; 3] = ["on", "le", "from"];
+/// Before a deadline: "by fri", "due 12 dec", "avant vendredi".
+const DEADLINE_PREPS: [&str; 6] = ["by", "due", "deadline", "before", "avant", "pour"];
 
 fn weekday(word: &str) -> Option<u32> {
     let w = word.strip_suffix('s').filter(|w| w.len() > 4).unwrap_or(word); // "lundis"
@@ -313,6 +377,23 @@ fn date_at(words: &[Word], i: usize, today: Date) -> Option<(usize, Date)> {
         ("la", "semaine", "prochaine") => return Some((3, next_monday)),
         ("next", "month", _) | ("mois", "prochain", _) => return Some((2, today.add_months(1).with_day(1))),
         ("weekend" | "week-end", ..) => return Some((1, upcoming(today, 5))),
+        ("eow", ..) => return Some((1, upcoming(today, 4))),
+        ("eom", ..) => return Some((1, today.add_months(1).with_day(1).add_days(-1))),
+        ("end", "of", _) | ("fin", "de" | "du", _) => {
+            // "end of (the) week|month|year", "fin de (la) semaine", "fin du mois", "fin d'année".
+            let skip = usize::from(matches!(w(2), "the" | "la" | "l'"));
+            let unit = words.get(i + 2 + skip).map(|w| w.norm.as_str()).unwrap_or("");
+            let date = match unit {
+                "week" | "semaine" => upcoming(today, 4),
+                "month" | "mois" => today.add_months(1).with_day(1).add_days(-1),
+                "year" | "annee" => Date::from_ymd(today.year(), 12, 31)?,
+                _ => return None,
+            };
+            return Some((3 + skip, date));
+        }
+        ("fin", "d'annee", _) => {
+            return Some((2, Date::from_ymd(today.year(), 12, 31)?));
+        }
         ("this" | "ce", "weekend" | "week-end", _) => return Some((2, upcoming(today, 5))),
         ("in" | "dans", n, unit) => {
             let n = number(n)?;
@@ -417,6 +498,47 @@ impl WithDay for Date {
     }
 }
 
+// ---- moments -------------------------------------------------------------------------------
+
+/// A time relative to now or to the day: "in 2 hours", "in 30 min", "in an hour", "dans 2
+/// heures", "tonight", "ce soir", "this morning", "ce matin", "this afternoon". Gives the day it
+/// lands on and the time.
+fn moment_at(words: &[Word], i: usize, today: Date, minute: Option<u32>) -> Option<(usize, Date, u32)> {
+    let w = |k: usize| words.get(i + k).map(|w| w.norm.as_str()).unwrap_or("");
+    let fixed = |n, t| Some((n, today, t));
+    match (w(0), w(1)) {
+        ("tonight", _) | ("ce", "soir") | ("this", "evening") => {
+            return fixed(if w(0) == "tonight" { 1 } else { 2 }, 19 * 60);
+        }
+        ("this", "morning") | ("ce", "matin") => return fixed(2, 9 * 60),
+        ("this", "afternoon") | ("cet", "apres-midi") => return fixed(2, 14 * 60),
+        _ => {}
+    }
+    if !matches!(w(0), "in" | "dans") {
+        return None;
+    }
+    let now = minute?;
+    // "in 2h", "in 90min" as one word.
+    let (n, unit, used) = match number(w(1)) {
+        Some(n) => (n, w(2), 3),
+        None => {
+            let digits: String = w(1).chars().take_while(char::is_ascii_digit).collect();
+            (digits.parse().ok()?, &w(1)[digits.len()..], 2)
+        }
+    };
+    let minutes = match unit {
+        "h" | "hr" | "hrs" | "hour" | "hours" | "heure" | "heures" => n * 60,
+        "m" | "min" | "mins" | "minute" | "minutes" => n,
+        _ => return None,
+    };
+    let at = i64::from(now) + minutes;
+    Some((
+        used,
+        today.add_days(at.div_euclid(24 * 60)),
+        at.rem_euclid(24 * 60) as u32,
+    ))
+}
+
 // ---- times ---------------------------------------------------------------------------------
 
 /// `9am`, `9:30pm`, `18:30`, `18h`, `18h30`, `noon`, `midi`, and after "at"/"à"/"@"/"vers" a bare
@@ -478,7 +600,63 @@ fn meridiem(t: u32, pm: bool) -> Option<u32> {
 
 // ---- repeats -------------------------------------------------------------------------------
 
+/// A repeat rule at word `i`, with "after done" / "après fait" after it counting from completion.
 fn repeat_at(words: &[Word], i: usize) -> Option<(usize, Repeat)> {
+    let (mut n, mut repeat) = nth_weekday_at(words, i).or_else(|| simple_repeat_at(words, i))?;
+    let w = |k: usize| words.get(i + n + k).map(|w| w.norm.as_str()).unwrap_or("");
+    let suffix = match (w(0), w(1)) {
+        ("after" | "from" | "when" | "once", "done" | "completion" | "completed" | "finished") => 2,
+        ("apres", "fait" | "completion" | "realisation" | "accompli") => 2,
+        _ => 0,
+    };
+    if suffix > 0 {
+        n += suffix;
+        repeat.from_completion = true;
+    }
+    Some((n, repeat))
+}
+
+/// 1…4 or -1 (last): "first", "2nd", "third", "last", "premier", "2e", "dernière", plurals too.
+fn ordinal(word: &str) -> Option<i8> {
+    let w = word.strip_suffix('s').unwrap_or(word);
+    Some(match w {
+        "first" | "1st" | "premier" | "premiere" | "1er" | "1re" | "1ere" => 1,
+        "second" | "2nd" | "deuxieme" | "seconde" | "2e" | "2eme" => 2,
+        "third" | "3rd" | "troisieme" | "3e" | "3eme" => 3,
+        "fourth" | "4th" | "quatrieme" | "4e" | "4eme" => 4,
+        "last" | "dernier" | "derniere" => -1,
+        _ => return None,
+    })
+}
+
+/// "every last friday (of the month)", "every 2nd tue", "chaque premier lundi (du mois)", "tous
+/// les derniers vendredis du mois", "le dernier vendredi de chaque mois".
+fn nth_weekday_at(words: &[Word], i: usize) -> Option<(usize, Repeat)> {
+    let w = |k: usize| words.get(i + k).map(|w| w.norm.as_str()).unwrap_or("");
+    let lead = match (w(0), w(1)) {
+        ("every" | "each" | "chaque", _) => 1,
+        ("tous" | "toutes", "les") => 2,
+        ("le" | "la", _) => 1,
+        _ => return None,
+    };
+    let nth = ordinal(w(lead))?;
+    let day = weekday(w(lead + 1))?;
+    let n = lead + 2;
+    let rest = |k: usize| w(n + k);
+    let tail = match (rest(0), rest(1), rest(2)) {
+        ("of", "the" | "every" | "each", "month") | ("de", "chaque", "mois") => 3,
+        ("of", "month", _) | ("du", "mois", _) => 2,
+        _ => 0,
+    };
+    // "le dernier vendredi" alone is a one-off date, not a rule.
+    if matches!(w(0), "le" | "la") && tail == 0 {
+        return None;
+    }
+    let n = n + tail;
+    Some((n, Repeat::monthly_on(nth, day)))
+}
+
+fn simple_repeat_at(words: &[Word], i: usize) -> Option<(usize, Repeat)> {
     let w = |k: usize| words.get(i + k).map(|w| w.norm.as_str()).unwrap_or("");
     let unit = |u: &str| -> Option<Freq> {
         Some(match u {
@@ -553,24 +731,16 @@ mod tests {
         Date::parse("2026-11-08").unwrap()
     }
 
-    fn lists() -> Vec<(String, String)> {
-        vec![
-            ("inbox".into(), "Inbox".into()),
-            ("g".into(), "Groceries".into()),
-            ("w".into(), "Work stuff".into()),
-        ]
-    }
-
     fn parse(input: &str) -> ParsedTask {
-        parse_task(input, today(), &lists(), &[])
+        parse_task(input, today(), &[])
     }
 
-    /// Title, due, time, repeat rule, priority, list — compactly.
+    /// Title, start, time, repeat rule, deadline, someday, priority, tags — compactly.
     fn summary(input: &str) -> String {
         let p = parse(input);
         let s = p.schedule;
         let mut out = vec![format!("{:?}", p.title)];
-        if let Some(d) = s.due {
+        if let Some(d) = s.start {
             out.push(d.to_string());
         }
         if let Some(t) = s.time {
@@ -579,11 +749,17 @@ mod tests {
         if let Some(r) = s.repeat {
             out.push(r.to_rrule());
         }
+        if let Some(d) = s.deadline {
+            out.push(format!("by {d}"));
+        }
+        if s.someday {
+            out.push("someday".into());
+        }
         if p.priority > 0 {
             out.push(format!("!{}", p.priority));
         }
-        if let Some(l) = p.list_id {
-            out.push(format!("#{l}"));
+        for t in &p.tags {
+            out.push(format!("#{t}"));
         }
         out.join(" ")
     }
@@ -625,7 +801,7 @@ mod tests {
         assert_eq!(summary("taxes 15 avril 2027"), r#""taxes" 2027-04-15"#);
         assert_eq!(summary("dentist 3/12"), r#""dentist" 2026-12-03"#);
         assert_eq!(summary("dentist 3.1"), r#""dentist" 2027-01-03"#);
-        assert_eq!(summary("deadline 2026-12-01"), r#""deadline" 2026-12-01"#);
+        assert_eq!(summary("taxes 2026-12-01"), r#""taxes" 2026-12-01"#);
         assert_eq!(summary("rent the 1st"), r#""rent" 2026-12-01"#);
         assert_eq!(summary("loyer le 15"), r#""loyer" 2026-11-15"#);
     }
@@ -698,13 +874,112 @@ mod tests {
     }
 
     #[test]
-    fn priority_and_lists() {
-        assert_eq!(summary("milk #groceries !1"), r#""milk" !3 #g"#);
-        assert_eq!(summary("milk #gro !low"), r#""milk" !1 #g"#);
-        assert_eq!(summary("report #work !haute"), r#""report" !3 #w"#);
-        assert_eq!(summary("report #worksttuff"), r#""report #worksttuff""#);
+    fn priority_and_tags() {
+        assert_eq!(summary("milk #groceries !1"), r#""milk" !3 #groceries"#);
+        assert_eq!(summary("milk #Gro !low"), r#""milk" !1 #gro"#);
+        assert_eq!(
+            summary("report #work #urgent !haute"),
+            r#""report" !3 #work #urgent"#
+        );
+        assert_eq!(summary("report #work, #work"), r#""report" #work"#);
+        assert_eq!(summary("fix #12 now"), r#""fix #12 now""#);
+        assert_eq!(summary("wow # nice"), r#""wow # nice""#);
+        assert_eq!(summary("café #épicerie"), r#""café" #épicerie"#);
         assert_eq!(summary("wow!!"), r#""wow!!""#);
         assert_eq!(summary("fix bug !!!"), r#""fix bug" !3"#);
+        assert_eq!(normalize_tag(" #Side  Projects "), "side-projects");
+        assert_eq!(normalize_tag("Courses (maison)"), "courses-maison");
+        assert_eq!(normalize_tag("!!"), "");
+    }
+
+    #[test]
+    fn deadlines_and_someday() {
+        assert_eq!(summary("report by fri"), r#""report" by 2026-11-13"#);
+        assert_eq!(summary("report due 12 dec"), r#""report" by 2026-12-12"#);
+        assert_eq!(summary("rapport avant vendredi"), r#""rapport" by 2026-11-13"#);
+        assert_eq!(summary("rapport pour demain"), r#""rapport" by 2026-11-09"#);
+        assert_eq!(
+            summary("draft tomorrow by fri"),
+            r#""draft" 2026-11-09 by 2026-11-13"#
+        );
+        // A word that isn't followed by a date stays.
+        assert_eq!(summary("stand by me"), r#""stand by me""#);
+        assert_eq!(summary("learn piano someday"), r#""learn piano" someday"#);
+        assert_eq!(
+            summary("apprendre le piano un jour"),
+            r#""apprendre le piano" someday"#
+        );
+        // A start date wins over Someday.
+        assert_eq!(summary("trip someday tomorrow"), r#""trip" 2026-11-09"#);
+        // A repeat with only a deadline is anchored on it.
+        assert_eq!(
+            summary("taxes yearly by 15 apr"),
+            r#""taxes" FREQ=YEARLY by 2027-04-15"#
+        );
+    }
+
+    #[test]
+    fn durations_and_moments() {
+        assert_eq!(summary("ship end of week"), r#""ship" 2026-11-13"#);
+        assert_eq!(summary("rent end of the month"), r#""rent" 2026-11-30"#);
+        assert_eq!(summary("bilan fin du mois"), r#""bilan" 2026-11-30"#);
+        assert_eq!(summary("ranger fin de semaine"), r#""ranger" 2026-11-13"#);
+        assert_eq!(summary("taxes end of year"), r#""taxes" 2026-12-31"#);
+        assert_eq!(summary("call mum tonight"), r#""call mum" 2026-11-08 19:00"#);
+        assert_eq!(summary("appeler ce soir"), r#""appeler" 2026-11-08 19:00"#);
+        let at = |input: &str, minute: u32| {
+            let p = parse_task_at(input, today(), Some(minute), &[]);
+            (p.title, p.schedule.start.map(|d| d.to_string()), p.schedule.time)
+        };
+        assert_eq!(
+            at("tea in 2 hours", 600),
+            ("tea".into(), Some("2026-11-08".into()), Some(720))
+        );
+        assert_eq!(
+            at("tea in 30 min", 600),
+            ("tea".into(), Some("2026-11-08".into()), Some(630))
+        );
+        assert_eq!(
+            at("check dans 2h", 23 * 60),
+            ("check".into(), Some("2026-11-09".into()), Some(60))
+        );
+        assert_eq!(at("tea in an hour", 600).2, Some(660));
+        // Without the time of day it stays text.
+        assert_eq!(summary("tea in 2 hours"), r#""tea in 2 hours""#);
+        // A date said elsewhere wins over the moment's day.
+        assert_eq!(summary("call tomorrow tonight"), r#""call" 2026-11-09 19:00"#);
+    }
+
+    #[test]
+    fn nth_weekday_and_after_done() {
+        assert_eq!(
+            summary("review every last friday"),
+            r#""review" 2026-11-27 FREQ=MONTHLY;BYDAY=-1FR"#
+        );
+        assert_eq!(
+            summary("club every 2nd tuesday of the month"),
+            r#""club" 2026-11-10 FREQ=MONTHLY;BYDAY=2TU"#
+        );
+        assert_eq!(
+            summary("réunion chaque premier lundi du mois"),
+            r#""réunion" 2026-12-07 FREQ=MONTHLY;BYDAY=1MO"#
+        );
+        assert_eq!(
+            summary("bilan tous les derniers vendredis du mois"),
+            r#""bilan" 2026-11-27 FREQ=MONTHLY;BYDAY=-1FR"#
+        );
+        assert_eq!(
+            summary("bilan le dernier vendredi de chaque mois"),
+            r#""bilan" 2026-11-27 FREQ=MONTHLY;BYDAY=-1FR"#
+        );
+        assert_eq!(
+            summary("haircut every 4 weeks after done"),
+            r#""haircut" 2026-11-08 FREQ=WEEKLY;INTERVAL=4;X-FROM=COMPLETION"#
+        );
+        assert_eq!(
+            summary("arroser tous les 3 jours après fait"),
+            r#""arroser" 2026-11-08 FREQ=DAILY;INTERVAL=3;X-FROM=COMPLETION"#
+        );
     }
 
     #[test]
@@ -728,12 +1003,13 @@ mod tests {
             [
                 (5, 11, TokenKind::Date, "demain"),
                 (12, 14, TokenKind::Time, "9h"),
-                (15, 19, TokenKind::List, "#gro")
+                (15, 19, TokenKind::Tag, "#gro")
             ]
         );
-        let kept = parse_task("Café demain 9h", today(), &lists(), &["demain".into()]);
-        assert_eq!(kept.title, "Café demain");
-        assert_eq!(kept.schedule.due, Some(today())); // the time alone means today
+        let kept = parse_task("Café demain 9h #gro", today(), &["demain".into(), "#gro".into()]);
+        assert_eq!(kept.title, "Café demain #gro");
+        assert_eq!(kept.schedule.start, Some(today())); // the time alone means today
+        assert!(kept.tags.is_empty());
         assert_eq!(kept.tokens.len(), 1);
     }
 

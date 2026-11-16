@@ -69,20 +69,19 @@ struct ContentView: View {
 private struct Sidebar: View {
     @Bindable var model: AppModel
     @State private var renamingID: String?
-    @State private var sharing: TaskList?
+    @State private var sharing: TaskView?
+    @State private var editing: ViewDraft?
+    @State private var renamingTag: String?
+    @State private var tagDraft = ""
+    @State private var reviewing = false
+    @State private var showsLogbook = false
 
     var body: some View {
         List(selection: $model.selection) {
-            Label("Today", systemImage: "calendar")
-                .badge(model.dueCount)
-                .tag(SidebarItem.today)
-            Label("Upcoming", systemImage: "calendar.badge.clock")
-                .badge(model.upcoming.count)
-                .tag(SidebarItem.upcoming)
-            if let inbox = model.inbox {
-                Label(inbox.title, systemImage: "tray")
-                    .badge(Int(inbox.openCount))
-                    .tag(SidebarItem.list(inbox.id))
+            ForEach(model.builtInViews, id: \.id) { view in
+                Label(view.title, systemImage: builtInSymbol(view.id, model))
+                    .badge(Int(view.openCount))
+                    .tag(view.id == model.todayID ? SidebarItem.today : view.id == model.upcomingID ? .upcoming : .list(view.id))
             }
             Label("Habits", systemImage: "repeat")
                 .badge(model.habits.count { $0.pending })
@@ -124,16 +123,17 @@ private struct Sidebar: View {
                         }
                 }
             }
-            Section("Lists") {
+            Section("Smart Lists") {
                 ForEach(model.userLists, id: \.id) { list in
-                    ListRow(list: list, renamingID: $renamingID, model: model)
+                    Label(list.title, systemImage: "line.3.horizontal.decrease.circle")
+                        .help(list.query)
                         .badge(Int(list.openCount))
                         .tag(SidebarItem.list(list.id))
                         .contextMenu {
-                            Button("Rename") { renamingID = list.id }
+                            Button("Edit…") { editing = ViewDraft(id: list.id, title: list.title, query: list.query) }
                             Button("Share…") { sharing = list }
                             Divider()
-                            Button("Delete List", role: .destructive) { model.delete(id: list.id) }
+                            Button("Delete List", role: .destructive) { model.deleteList(list.id) }
                         }
                 }
                 .onMove { source, destination in
@@ -142,16 +142,53 @@ private struct Sidebar: View {
                     model.moveList(model.userLists[from].id, to: from < destination ? destination - 1 : destination)
                 }
             }
+            if !model.tags.isEmpty {
+                Section("Tags") {
+                    ForEach(model.tags, id: \.name) { tag in
+                        Group {
+                            if renamingTag == tag.name {
+                                TextField("Tag", text: $tagDraft)
+                                    .onSubmit {
+                                        model.renameTag(tag.name, to: tagDraft)
+                                        renamingTag = nil
+                                    }
+                                    .onExitCommand { renamingTag = nil }
+                            } else {
+                                Label(tag.name, systemImage: "number")
+                            }
+                        }
+                        .badge(Int(tag.openCount))
+                        .tag(SidebarItem.list("#" + tag.name))
+                        .contextMenu {
+                            Button("Make Smart List") {
+                                editing = ViewDraft(title: tag.name.capitalized, query: "#" + tag.name)
+                            }
+                            Button("Rename Tag") {
+                                tagDraft = tag.name
+                                renamingTag = tag.name
+                            }
+                            Divider()
+                            Button("Remove from All Tasks", role: .destructive) { model.deleteTag(tag.name) }
+                        }
+                    }
+                }
+            }
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Button {
-                    renamingID = model.addList("New List")
+                    editing = ViewDraft()
                 } label: {
                     Label("New List", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 Spacer()
+                Button { reviewing = true } label: { Label("Weekly Review", systemImage: "checklist") }
+                    .labelStyle(.iconOnly)
+                    .help("Weekly review")
+                Button { showsLogbook = true } label: { Label("Logbook", systemImage: "book.closed") }
+                    .labelStyle(.iconOnly)
+                    .help("Logbook: everything completed, by day")
                 Button {
                     renamingID = model.addFolder()
                 } label: {
@@ -164,13 +201,25 @@ private struct Sidebar: View {
             .padding(12)
         }
         .sheet(item: $sharing) { list in ShareSheet(model: model, list: list) }
+        .sheet(item: $editing) { draft in ViewEditor(model: model, draft: draft) }
+        .sheet(isPresented: $reviewing) { ReviewSheet(model: model) }
+        .sheet(isPresented: $showsLogbook) { LogbookSheet(model: model) }
+    }
+}
+
+func builtInSymbol(_ id: String, _ model: AppModel) -> String {
+    switch id {
+    case model.todayID: "star"
+    case model.upcomingID: "calendar"
+    case model.somedayID: "cloud"
+    default: "tray"
     }
 }
 
 /// Links that show a list in a browser, read only or editable, for people without the app.
 private struct ShareSheet: View {
     let model: AppModel
-    let list: TaskList
+    let list: TaskView
     @Environment(\.dismiss) private var dismiss
     @State private var shares: [ListShare]?
 
@@ -264,36 +313,6 @@ private struct FolderRow: View {
     }
 }
 
-private struct ListRow: View {
-    let list: TaskList
-    @Binding var renamingID: String?
-    let model: AppModel
-    @State private var draft = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        if renamingID == list.id {
-            TextField("List name", text: $draft)
-                .focused($focused)
-                .onAppear {
-                    draft = list.title
-                    focused = true
-                }
-                .onSubmit(commit)
-                .onExitCommand { renamingID = nil }
-                .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
-        } else {
-            Label(list.title, systemImage: "list.bullet")
-        }
-    }
-
-    private func commit() {
-        guard renamingID == list.id else { return }
-        if draft != list.title { model.rename(list.id, to: draft) }
-        renamingID = nil
-    }
-}
-
 // MARK: - Tasks
 
 private struct TaskListView: View {
@@ -323,19 +342,38 @@ private struct TaskListView: View {
         VStack(spacing: 0) {
             addField
             Divider()
+            if !model.earlier.isEmpty {
+                HStack {
+                    Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary)
+                    Text(model.earlier.count == 1 ? "1 from an earlier day" : "\(model.earlier.count) from earlier days")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Move to Today") { model.moveToToday(model.earlier.map(\.id)) }
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 8)
+                Divider()
+            }
             if isEmpty {
                 if model.isUpcoming {
                     ContentUnavailableView(
                         "Nothing coming up",
-                        systemImage: "calendar.badge.clock",
-                        description: Text("Tasks with a date after today show here, soonest first.")
+                        systemImage: "calendar",
+                        description: Text("Tasks starting or due after today show here, soonest first.")
                     )
                     .frame(maxHeight: .infinity)
                 } else if model.isToday {
                     ContentUnavailableView(
-                        "Nothing due today",
-                        systemImage: "calendar",
-                        description: Text("Add “tomorrow”, “fri 9am” or “every mon” to a task to see it here when it's due.")
+                        "Nothing for today",
+                        systemImage: "star",
+                        description: Text("Add “today”, “fri 9am”, “by mon” or “every mon” to a task to see it here on the day.")
+                    )
+                    .frame(maxHeight: .infinity)
+                } else if model.selectedListID == model.somedayID {
+                    ContentUnavailableView(
+                        "Nothing for someday",
+                        systemImage: "cloud",
+                        description: Text("Park ideas and maybes here with “someday”, out of the way until you want them.")
                     )
                     .frame(maxHeight: .infinity)
                 } else {
@@ -355,18 +393,19 @@ private struct TaskListView: View {
         .navigationTitle(model.title)
         .searchable(text: Binding(get: { model.taskSearch }, set: { model.taskSearch = $0 }), prompt: "Search tasks")
         .toolbar {
-            // Today has its own order: overdue first, then by time.
-            if !model.isDateView, let list = model.selectedList {
+            // Upcoming is always by date.
+            if !model.isDateView, let id = model.selectedListID {
+                let sort = model.selectedList?.sort ?? .manual
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        Picker("Sort by", selection: Binding(get: { list.sort }, set: { model.setSort(list.id, $0) })) {
+                        Picker("Sort by", selection: Binding(get: { sort }, set: { model.setSort(id, $0) })) {
                             ForEach([TaskSort.manual, .due, .priority, .title], id: \.self) { Text($0.label).tag($0) }
                         }
                         .pickerStyle(.inline)
                     } label: {
                         Label("Sort", systemImage: "arrow.up.arrow.down")
                     }
-                    .help(list.sort == .manual ? "Sort tasks" : "Sorted by \(list.sort.label.lowercased()); dragging a task switches back to Manual")
+                    .help(sort == .manual ? "Sort tasks" : "Sorted by \(sort.label.lowercased()); dragging a task switches back to Manual")
                 }
             }
         }
@@ -383,7 +422,7 @@ private struct TaskListView: View {
                     .imageScale(.large)
                 TaskInputField(
                     text: $draft.text,
-                    placeholder: model.isToday ? "New task for today" : model.isUpcoming ? "New task for tomorrow" : "New task",
+                    placeholder: model.isToday ? "New task for today" : model.isUpcoming ? "New task — say when, like “fri”" : "New task in \(model.title)",
                     tokens: parsed?.tokens ?? [],
                     focusRequests: focusRequests + model.addFieldFocusRequests
                 ) {
@@ -410,7 +449,7 @@ private struct TaskListView: View {
                 }
             }
             ForEach(model.outline.open, id: \.task.id) { row in
-                TaskRowView(row: row, model: model, showsList: model.isDateView)
+                TaskRowView(row: row, model: model, hiddenTag: model.selectedListID.flatMap(soleTag))
                 if row.task.id == subtaskAnchorID, let parent = model.addingSubtaskTo,
                    let depth = model.outline.open.first(where: { $0.task.id == parent })?.depth {
                     SubtaskComposer(model: model, parentID: parent)
@@ -468,6 +507,15 @@ private struct TaskListView: View {
                 Button("Show Info") {
                     model.selectedTaskID = id
                     model.showsInspector = true
+                }
+                Menu("Snooze") {
+                    ForEach(snoozes, id: \.0) { label, to in
+                        Button(label) { model.snooze([id], to) }
+                    }
+                }
+                Button("Move to Today") { model.moveToToday([id]) }
+                if let task = (model.outline.open + model.outline.completed).first(where: { $0.task.id == id })?.task, !task.someday {
+                    Button("Move to Someday") { model.setSomeday(task) }
                 }
                 Divider()
                 Button("Delete", role: .destructive) { model.delete(id: id) }
@@ -548,7 +596,8 @@ private struct TodayHabitRow: View {
 private struct TaskRowView: View {
     let row: OutlineRow
     let model: AppModel
-    var showsList = false
+    /// The tag the view is about, left out of the row.
+    var hiddenTag: String?
     @State private var draft = ""
     @FocusState private var focused: Bool
 
@@ -607,23 +656,9 @@ private struct TaskRowView: View {
         model.editingTaskID = nil
     }
 
-    /// "Tomorrow 9:00 ⟳ · Groceries": red once overdue, accent when due today.
+    /// "Tomorrow 9:00 ⟳ · ⏳ Fri · 2/5 · #home": a deadline turns accent on the day and red after.
     @ViewBuilder private var meta: some View {
-        let label = scheduleLabel(due: task.due, time: task.dueTime, repeat: nil, today: model.today)
-        if label != nil || showsList {
-            HStack(spacing: 4) {
-                if let label, let due = task.due {
-                    Text(label)
-                        .foregroundStyle(row.done ? AnyShapeStyle(.tertiary) : due < model.today ? AnyShapeStyle(.red) : due == model.today ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                    if task.repeat != nil { Image(systemName: "repeat").imageScale(.small).foregroundStyle(.secondary) }
-                }
-                if showsList {
-                    Text(label == nil ? model.listTitle(task.listId) : "· \(model.listTitle(task.listId))")
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .font(.caption)
-        }
+        TaskMeta(task: task, today: model.today, done: row.done, hiddenTag: hiddenTag, subtasks: (row.subtasks, row.subtasksDone))
     }
 }
 
@@ -649,6 +684,8 @@ private struct TaskDetail: View {
     @State private var notes = ""
     @State private var subtaskDraft = ""
     @State private var schedule = TaskDraft()
+    @State private var tags = ""
+    @State private var deadline = ""
     @FocusState private var notesFocused: Bool
     @FocusState private var subtaskFocused: Bool
 
@@ -658,29 +695,39 @@ private struct TaskDetail: View {
                 TextField("Title", text: $title, axis: .vertical)
                     .font(.title3.weight(.semibold))
                     .onSubmit { model.rename(task.id, to: title) }
-                Picker("List", selection: Binding(
-                    get: { task.listId },
-                    set: { model.move(task.id, toList: $0) }
-                )) {
-                    ForEach(model.lists, id: \.id) { Text($0.title).tag($0.id) }
-                }
-                .disabled(task.parentId != nil)
+                TextField("Tags", text: $tags, prompt: Text("Tags: work, home…"))
+                    .onSubmit { model.setTags(task.id, tags.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)) }
             }
 
             Section {
-                LabeledContent("Due") {
+                LabeledContent("When") {
                     HStack {
-                        Text(scheduleLabel(due: task.due, time: task.dueTime, repeat: task.repeat, today: model.today) ?? "None")
-                            .foregroundStyle(task.due == nil ? .secondary : .primary)
-                        if task.due != nil {
+                        Text(task.someday ? "Someday" : scheduleLabel(due: task.start, time: task.time, repeat: task.repeat, today: model.today) ?? "None")
+                            .foregroundStyle(task.start == nil && !task.someday ? .secondary : .primary)
+                        if task.start != nil || task.someday {
                             Button("Clear") { model.setSchedule(task.id, "") }
                                 .buttonStyle(.link)
                         }
                     }
                 }
+                LabeledContent("Deadline") {
+                    HStack {
+                        Text(task.deadline.flatMap { scheduleLabel(due: $0, time: nil, repeat: task.start == nil ? task.repeat : nil, today: model.today) } ?? "None")
+                            .foregroundStyle(task.deadline.map { $0 < model.today } == true ? AnyShapeStyle(.red) : task.deadline == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                        if task.deadline != nil {
+                            Button("Clear") { model.setDeadline(task, "") }
+                                .buttonStyle(.link)
+                        }
+                    }
+                }
+                TextField("Deadline", text: $deadline, prompt: Text("Set deadline: fri, end of month…"))
+                    .onSubmit {
+                        model.setDeadline(task, deadline)
+                        deadline = ""
+                    }
                 TaskInputField(
                     text: $schedule.text,
-                    placeholder: "Change: fri 9am, every mon, 12 dec…",
+                    placeholder: "Change: fri 9am, every last fri, someday…",
                     tokens: model.parse(schedule.text, dismissed: schedule.dismissed)?.tokens ?? [],
                     font: .preferredFont(forTextStyle: .body)
                 ) {
@@ -736,7 +783,9 @@ private struct TaskDetail: View {
         .onAppear {
             title = task.title
             notes = task.notes
+            tags = task.tags.joined(separator: " ")
         }
+        .onChange(of: task.tags) { _, synced in tags = synced.joined(separator: " ") }
         // Saving pauses half a second after typing stops; each save is one undo step.
         .task(id: notes) {
             guard notes != task.notes else { return }
@@ -891,11 +940,22 @@ extension TaskSort {
     var label: String {
         switch self {
         case .manual: "Manual"
-        case .due: "Due date"
+        case .due: "Date"
         case .priority: "Priority"
         case .title: "Title"
         }
     }
 }
 
-extension TaskList: @retroactive Identifiable {}
+extension TaskView: @retroactive Identifiable {}
+
+/// The tag a view is about when it names just one (`#work`, or a smart list `#work !1`).
+func soleTag(_ viewID: String) -> String? {
+    if viewID.hasPrefix("#") { return String(viewID.dropFirst()) }
+    return nil
+}
+
+let snoozes: [(String, Snooze)] = [
+    ("Later Today", .laterToday), ("This Evening", .thisEvening), ("Tomorrow", .tomorrow),
+    ("This Weekend", .weekend), ("Next Week", .nextWeek),
+]

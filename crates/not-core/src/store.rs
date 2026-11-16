@@ -13,8 +13,8 @@ use rusqlite::Connection;
 use crate::date::Date;
 use crate::parse::{self, ParsedTask};
 use crate::projection::{
-    self, COMPLETED_AT, DELETED_AT, DUE, DUE_TIME, Dirty, KIND, KIND_LIST, KIND_TASK, NOTES, PRIORITY,
-    REPEAT, Roots, TITLE, meta_i64, meta_str, meta_text,
+    self, COMPLETED_AT, DEADLINE, DELETED_AT, DUE, DUE_TIME, Dirty, KIND, KIND_TASK, NOTES, PRIORITY, REPEAT,
+    Roots, SOMEDAY, TAGS, TITLE, TOUCHED_AT, meta_bool, meta_i64, meta_str, meta_text,
 };
 use crate::schedule::{Repeat, Schedule};
 use crate::{Error, Result, habits, notes, storage, workouts};
@@ -26,35 +26,34 @@ const HABIT_LOG: &str = "habit_log";
 const NOTES_TREE: &str = "notes";
 const WORKOUTS_TREE: &str = "workouts";
 const EXERCISE_LINKS: &str = "exercise_links";
-/// List id (or [`INBOX`]) → how its open tasks are sorted; absent means [`TaskSort::Manual`].
+/// View id → how its open tasks are sorted; absent means the view's default (see
+/// [`Store::view_sort`]).
 const TASK_SORT: &str = "task_sort";
+/// Saved views (smart lists): id → mergeable map; see [`crate::views`].
+const VIEWS: &str = "views";
+/// View id → mergeable map of task id → number: the order tasks were dragged into in that view.
+const VIEW_ORDER: &str = "view_order";
 /// `"all"` → how All Notes sorts (see [`crate::NoteSort`]); folders keep theirs on the folder.
 const NOTE_SORT: &str = "note_sort";
 
 /// Completed tasks stay in their list this long, then move to the archive.
 pub const ARCHIVE_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// Id of the built-in Inbox list. It isn't a node: tasks at the root of the tree are in the Inbox,
-/// so there is nothing to create and two fresh devices can't end up with an Inbox each.
+/// Built-in views (ADR 0014). Inbox: untagged tasks.
 pub const INBOX: &str = "inbox";
-const INBOX_TITLE: &str = "Inbox";
+/// Tasks starting or due on or before today.
+pub const TODAY: &str = "today";
+/// Tasks starting or due after today.
+pub const UPCOMING: &str = "upcoming";
+pub const SOMEDAY_VIEW: &str = "someday";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct List {
-    pub id: String,
-    pub title: String,
-    /// Open top-level tasks.
-    pub open_count: u32,
-    pub sort: TaskSort,
-}
-
-/// How a list orders its open tasks (each level of subtasks too). Ties keep the manual order.
+/// How a view orders its open tasks (each level of subtasks too). Ties keep the manual order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TaskSort {
     /// The order they were dragged into; new tasks go first.
     #[default]
     Manual,
-    /// Soonest due first, undated last; then by time and priority.
+    /// Soonest first by start date, else deadline; undated last; then by time and priority.
     Due,
     /// Highest priority first, then soonest due.
     Priority,
@@ -63,16 +62,16 @@ pub enum TaskSort {
 }
 
 impl TaskSort {
-    fn key(self) -> Option<&'static str> {
+    pub(crate) fn key(self) -> &'static str {
         match self {
-            Self::Manual => None,
-            Self::Due => Some("due"),
-            Self::Priority => Some("priority"),
-            Self::Title => Some("title"),
+            Self::Manual => "manual",
+            Self::Due => "due",
+            Self::Priority => "priority",
+            Self::Title => "title",
         }
     }
 
-    fn from_key(key: &str) -> Self {
+    pub(crate) fn from_key(key: &str) -> Self {
         match key {
             "due" => Self::Due,
             "priority" => Self::Priority,
@@ -81,9 +80,12 @@ impl TaskSort {
         }
     }
 
-    fn compare(self, a: &Task, b: &Task) -> std::cmp::Ordering {
+    pub(crate) fn compare(self, a: &Task, b: &Task) -> std::cmp::Ordering {
         // Undated (or no time) sorts after dated.
-        let due = |t: &Task| (t.due.is_none(), t.due.clone(), t.due_time.is_none(), t.due_time);
+        let due = |t: &Task| {
+            let date = t.start.clone().or_else(|| t.deadline.clone());
+            (date.is_none(), date, t.time.is_none(), t.time)
+        };
         let priority = |t: &Task| std::cmp::Reverse(t.priority);
         match self {
             Self::Manual => std::cmp::Ordering::Equal,
@@ -97,7 +99,6 @@ impl TaskSort {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub id: String,
-    pub list_id: String,
     /// Set for subtasks.
     pub parent_id: Option<String>,
     pub title: String,
@@ -105,14 +106,19 @@ pub struct Task {
     pub notes: String,
     /// Unix millis.
     pub completed_at: Option<i64>,
+    /// Start date, `YYYY-MM-DD`: when the user plans to do it. Hidden from views before then.
+    pub start: Option<String>,
+    /// Minutes after midnight, on the start date.
+    pub time: Option<u32>,
     /// `YYYY-MM-DD`.
-    pub due: Option<String>,
-    /// Minutes after midnight.
-    pub due_time: Option<u32>,
+    pub deadline: Option<String>,
+    pub someday: bool,
     /// 0 = none, 1 = low, 2 = medium, 3 = high.
     pub priority: u8,
     /// RRULE subset, see [`Repeat`].
     pub repeat: Option<String>,
+    /// Its own tags, sorted (subtasks also count their ancestors' in views).
+    pub tags: Vec<String>,
 }
 
 /// A task in display order, with its nesting depth.
@@ -122,9 +128,12 @@ pub struct OutlineRow {
     pub depth: u32,
     /// The task or one of its ancestors is completed.
     pub done: bool,
+    /// Its direct subtasks, and how many of them are completed.
+    pub subtasks: u32,
+    pub subtasks_done: u32,
 }
 
-/// A list as shown: open tasks (with all their subtasks) in user order, then tasks completed in the
+/// A view as shown: open tasks (with all their subtasks) in its order, then tasks completed in the
 /// last [`ARCHIVE_AFTER_MS`], most recently completed first. Older ones are in [`Store::archive`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outline {
@@ -159,7 +168,9 @@ pub struct Store {
     pub(crate) workouts: LoroTree,
     /// The user's exercise name keys → catalogue ids; see [`crate::catalog`].
     pub(crate) exercise_links: LoroMap,
-    task_sort: LoroMap,
+    pub(crate) task_sort: LoroMap,
+    pub(crate) views: LoroMap,
+    pub(crate) view_order: LoroMap,
     pub(crate) note_sort: LoroMap,
     pub(crate) inner: Mutex<Inner>,
     dirty: Arc<Mutex<Dirty>>,
@@ -187,14 +198,25 @@ impl Store {
         Self::from_connection(Connection::open_in_memory()?)
     }
 
-    fn from_connection(mut db: Connection) -> Result<Self> {
+    fn from_connection(db: Connection) -> Result<Self> {
+        let store = Self::load(db)?;
+        store.migrate_lists()?;
+        Ok(store)
+    }
+
+    fn load(mut db: Connection) -> Result<Self> {
         storage::init(&db)?;
 
         let doc = LoroDoc::new();
         // Notes saved by a version that linked checklist lines to tasks carry `task` text marks;
         // they mean nothing now, but Loro needs to know how text typed next to one behaves.
         let mut styles = loro::StyleConfigMap::new();
-        styles.insert("task".into(), loro::StyleConfig { expand: loro::ExpandType::None });
+        styles.insert(
+            "task".into(),
+            loro::StyleConfig {
+                expand: loro::ExpandType::None,
+            },
+        );
         doc.config_text_style(styles);
         for blob in storage::load_doc(&db, WORKSPACE)? {
             doc.import(&blob)?;
@@ -210,6 +232,8 @@ impl Store {
         workouts.enable_fractional_index(0);
         let exercise_links = doc.get_map(EXERCISE_LINKS);
         let task_sort = doc.get_map(TASK_SORT);
+        let views = doc.get_map(VIEWS);
+        let view_order = doc.get_map(VIEW_ORDER);
         let note_sort = doc.get_map(NOTE_SORT);
 
         let tx = db.transaction()?;
@@ -265,6 +289,8 @@ impl Store {
             workouts,
             exercise_links,
             task_sort,
+            views,
+            view_order,
             note_sort,
             dirty,
             history,
@@ -276,85 +302,217 @@ impl Store {
 
     // ---- commands -------------------------------------------------------------------------
 
-    pub fn create_list(&self, title: &str) -> Result<String> {
-        let title = clean_title(title)?;
-        self.write(|tree| {
-            let id = tree.create(TreeParentId::Root)?;
-            let meta = tree.get_meta(id)?;
-            meta.insert(KIND, KIND_LIST)?;
-            meta.insert(TITLE, title)?;
-            Ok(id.to_string())
-        })
+    /// Adds a task: a subtask (last) when `target` is a task, else a top-level task (first) with
+    /// what view `target` gives new tasks (see [`crate::views`]).
+    pub fn add_task(&self, target: &str, title: &str, today: Date) -> Result<String> {
+        self.add_task_with(target, title, &Schedule::default(), 0, &[], today)
     }
 
-    /// Adds a task to `parent`: first in a list or [`INBOX`], last under a task (a subtask, so
-    /// subtasks typed one after another keep their order).
-    pub fn add_task(&self, parent: &str, title: &str) -> Result<String> {
-        let title = clean_title(title)?;
-        let parent = self.container(parent)?;
-        self.write(|tree| {
-            let id = create_task_node(tree, parent)?;
-            let meta = tree.get_meta(id)?;
-            meta.insert(KIND, KIND_TASK)?;
-            meta.insert(TITLE, title)?;
-            Ok(id.to_string())
-        })
-    }
-
-    /// Adds a task with a schedule and priority in one step (one undo step), placed as in
-    /// [`Store::add_task`].
+    /// Adds a task with a schedule, priority and tags in one step (one undo step), placed as in
+    /// [`Store::add_task`]. What the view gives new tasks fills in what these leave empty; tags add up.
     pub fn add_task_with(
         &self,
-        parent: &str,
+        target: &str,
         title: &str,
         schedule: &Schedule,
         priority: u8,
+        tags: &[String],
+        today: Date,
     ) -> Result<String> {
         let title = clean_title(title)?;
-        let parent = self.container(parent)?;
+        let (parent, defaults) = self.target(target, today)?;
+        let mut schedule = *schedule;
+        let mut priority = priority;
+        let mut all_tags: Vec<String> = Vec::new();
+        if let Some(d) = defaults {
+            if schedule.start.is_none() && schedule.deadline.is_none() && !schedule.someday {
+                schedule.start = d.start;
+                schedule.someday = d.someday;
+            }
+            if priority == 0 {
+                priority = d.priority;
+            }
+            all_tags = d.tags;
+        }
+        for tag in tags
+            .iter()
+            .map(|t| parse::normalize_tag(t))
+            .filter(|t| !t.is_empty())
+        {
+            if !all_tags.contains(&tag) {
+                all_tags.push(tag);
+            }
+        }
         self.write(|tree| {
             let id = create_task_node(tree, parent)?;
-            let meta = tree.get_meta(id)?;
-            meta.insert(KIND, KIND_TASK)?;
-            meta.insert(TITLE, title)?;
-            write_schedule(&meta, schedule)?;
-            write_priority(&meta, priority)?;
+            fill_task(&tree.get_meta(id)?, &title, &schedule, priority, &all_tags)?;
             Ok(id.to_string())
         })
     }
 
-    /// Parses `input` (see [`parse::parse_task`]) and adds the task to the list it names, or else to
-    /// `parent`, due on `default_due` unless the input says when. Returns the new task's id.
-    pub fn quick_add(
+    /// Adds a task per non-empty line of `text` (pasted), as [`Store::quick_add_at`] would, in
+    /// their order; list markers (`-`, `*`, `•`, `1.`, `- [ ]`) go, `- [x]` lines start completed,
+    /// and indented lines become subtasks of the line above. One undo step. Returns the ids of the
+    /// top-level ones.
+    pub fn quick_add_lines(
         &self,
-        parent: &str,
+        target: &str,
+        text: &str,
+        today: Date,
+        minute: Option<u32>,
+    ) -> Result<Vec<String>> {
+        let lines = paste_lines(text);
+        if lines.is_empty() {
+            return Err(Error::Invalid("nothing to add".into()));
+        }
+        let (parent, defaults) = self.target(target, today)?;
+        let defaults = defaults.unwrap_or_default();
+        self.write(|tree| {
+            let mut levels: Vec<(usize, TreeID)> = Vec::new();
+            let mut tops = Vec::new();
+            let mut last_top: Option<TreeID> = None;
+            for line in &lines {
+                while levels.last().is_some_and(|&(indent, _)| indent >= line.indent) {
+                    levels.pop();
+                }
+                let parsed = parse::parse_task_at(&line.text, today, minute, &[]);
+                let title = if parsed.title.is_empty() {
+                    line.text.clone()
+                } else {
+                    parsed.title
+                };
+                let mut schedule = parsed.schedule;
+                let mut tags = parsed.tags;
+                let mut priority = parsed.priority;
+                let id = match levels.last() {
+                    Some(&(_, above)) => tree.create(TreeParentId::Node(above))?,
+                    None => {
+                        if schedule.start.is_none() && schedule.deadline.is_none() && !schedule.someday {
+                            schedule.start = defaults.start;
+                            schedule.someday = defaults.someday;
+                        }
+                        if priority == 0 {
+                            priority = defaults.priority;
+                        }
+                        for t in &defaults.tags {
+                            if !tags.contains(t) {
+                                tags.push(t.clone());
+                            }
+                        }
+                        let id = create_task_node(tree, parent)?;
+                        if let Some(prev) = last_top {
+                            tree.mov_after(id, prev)?;
+                        }
+                        last_top = Some(id);
+                        tops.push(id.to_string());
+                        id
+                    }
+                };
+                let meta = tree.get_meta(id)?;
+                fill_task(&meta, &clean_title(&title)?, &schedule, priority, &tags)?;
+                if line.done {
+                    meta.insert(COMPLETED_AT, now_millis())?;
+                }
+                levels.push((line.indent, id));
+            }
+            Ok(tops)
+        })
+    }
+
+    /// Parses `input` (see [`parse::parse_task`]) and adds the task as [`Store::add_task_with`] does.
+    /// Returns the new task's id.
+    pub fn quick_add(&self, target: &str, input: &str, today: Date, dismissed: &[String]) -> Result<String> {
+        self.quick_add_at(target, input, today, None, dismissed)
+    }
+
+    /// [`Store::quick_add`] knowing the time of day (minutes after midnight), for "in 2 hours".
+    pub fn quick_add_at(
+        &self,
+        target: &str,
         input: &str,
         today: Date,
+        minute: Option<u32>,
         dismissed: &[String],
-        default_due: Option<Date>,
     ) -> Result<String> {
-        let mut parsed = self.parse_task(input, today, dismissed)?;
-        parsed.schedule.due = parsed.schedule.due.or(default_due);
+        let parsed = parse::parse_task_at(input, today, minute, dismissed);
         // A title made only of tokens ("tomorrow") keeps its words rather than being refused.
         let title = if parsed.title.is_empty() {
             input
         } else {
             &parsed.title
         };
-        let parent = parsed.list_id.as_deref().unwrap_or(parent);
-        self.add_task_with(parent, title, &parsed.schedule, parsed.priority)
+        self.add_task_with(
+            target,
+            title,
+            &parsed.schedule,
+            parsed.priority,
+            &parsed.tags,
+            today,
+        )
     }
 
-    /// [`parse::parse_task`] against this store's lists.
-    pub fn parse_task(&self, input: &str, today: Date, dismissed: &[String]) -> Result<ParsedTask> {
-        let lists: Vec<_> = self.lists()?.into_iter().map(|l| (l.id, l.title)).collect();
-        Ok(parse::parse_task(input, today, &lists, dismissed))
+    /// [`parse::parse_task`].
+    pub fn parse_task(&self, input: &str, today: Date, dismissed: &[String]) -> ParsedTask {
+        parse::parse_task(input, today, dismissed)
     }
 
-    /// Sets or (with no due date) clears when the task is due and how it repeats.
+    /// Sets when the task starts, its time, deadline, Someday and repeat. A time needs a start
+    /// date; a repeat needs a start date or deadline; a start date ends Someday.
     pub fn set_schedule(&self, id: &str, schedule: &Schedule) -> Result<()> {
         let id = self.node(id, &[KIND_TASK])?;
         self.write(|tree| write_schedule(&tree.get_meta(id)?, schedule))
+    }
+
+    /// Puts tasks off (one undo step) to a [`Snooze`] point, relative to `today` and the time of day
+    /// `minute`. Returns where they went.
+    pub fn snooze(&self, ids: &[String], to: Snooze, today: Date, minute: u32) -> Result<Schedule> {
+        let (start, time) = to.resolve(today, minute);
+        let ids = ids
+            .iter()
+            .map(|id| self.node(id, &[KIND_TASK]))
+            .collect::<Result<Vec<_>>>()?;
+        self.write(|tree| {
+            let mut last = Schedule::default();
+            for &id in &ids {
+                let meta = tree.get_meta(id)?;
+                let current = read_schedule(&meta);
+                last = Schedule {
+                    start: Some(start),
+                    time: time.or(current.time),
+                    someday: false,
+                    ..current
+                };
+                write_schedule(&meta, &last)?;
+            }
+            Ok(last)
+        })
+    }
+
+    /// Sets the start date of several tasks at once (one undo step), keeping their time, deadline
+    /// and repeat; `None` clears it. For moving what slipped past its day to today.
+    pub fn reschedule(&self, ids: &[String], start: Option<Date>) -> Result<()> {
+        let ids = ids
+            .iter()
+            .map(|id| self.node(id, &[KIND_TASK]))
+            .collect::<Result<Vec<_>>>()?;
+        self.write(|tree| {
+            for &id in &ids {
+                let meta = tree.get_meta(id)?;
+                let schedule = Schedule {
+                    start,
+                    someday: false,
+                    ..read_schedule(&meta)
+                };
+                write_schedule(&meta, &schedule)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Marks a task as looked at now, so the weekly review stops asking about it for a while.
+    pub fn keep_task(&self, id: &str) -> Result<()> {
+        let id = self.node(id, &[KIND_TASK])?;
+        self.write(|tree| touch(&tree.get_meta(id)?))
     }
 
     /// 0 = none … 3 = high.
@@ -363,10 +521,25 @@ impl Store {
         self.write(|tree| write_priority(&tree.get_meta(id)?, priority))
     }
 
+    /// Replaces a task's own tags (normalised; empty ones dropped).
+    pub fn set_tags(&self, id: &str, tags: &[String]) -> Result<()> {
+        let id = self.node(id, &[KIND_TASK])?;
+        let tags: Vec<String> = tags
+            .iter()
+            .map(|t| parse::normalize_tag(t))
+            .filter(|t| !t.is_empty())
+            .collect();
+        self.write(|tree| write_tags(&tree.get_meta(id)?, &tags))
+    }
+
     pub fn rename(&self, id: &str, title: &str) -> Result<()> {
         let title = clean_title(title)?;
-        let id = self.node(id, &[KIND_LIST, KIND_TASK])?;
-        self.write(|tree| Ok(tree.get_meta(id)?.insert(TITLE, title)?))
+        let id = self.node(id, &[KIND_TASK])?;
+        self.write(|tree| {
+            let meta = tree.get_meta(id)?;
+            touch(&meta)?;
+            Ok(meta.insert(TITLE, title)?)
+        })
     }
 
     /// Replaces the notes; the text CRDT merges concurrent edits from other devices.
@@ -374,62 +547,43 @@ impl Store {
         let id = self.node(id, &[KIND_TASK])?;
         self.write(|tree| {
             // Mergeable: two devices adding the first notes concurrently share one text.
-            let text = tree.get_meta(id)?.ensure_mergeable_text(NOTES)?;
+            let meta = tree.get_meta(id)?;
+            touch(&meta)?;
+            let text = meta.ensure_mergeable_text(NOTES)?;
             text.update(notes, Default::default())
                 .map_err(|e| Error::Invalid(format!("notes: {e}")))
         })
     }
 
     /// Completes or reopens a task. Completing a repeating task logs this occurrence as a completed
-    /// copy and moves the task on to its next due date after `today`, with its subtasks reopened.
+    /// copy and moves the task on to its next date after `today`, with its subtasks reopened.
     pub fn set_completed(&self, id: &str, completed: bool, today: Date) -> Result<()> {
         let id = self.node(id, &[KIND_TASK])?;
         self.write(|tree| complete_in(tree, id, completed, today))
     }
 
-    /// Moves a task under `parent` (a list, [`INBOX`] or a task) to `index` among its sibling tasks.
-    pub fn move_task(&self, id: &str, parent: &str, index: usize) -> Result<()> {
+    /// Moves a task under `parent` (a task; `None` for top level) right before its child `before`,
+    /// or to the end when `None`. Anchoring on a sibling keeps drag-and-drop exact when some
+    /// siblings (completed ones) are shown elsewhere. Top-level order within a view is
+    /// [`Store::move_in_view`]'s.
+    pub fn move_task_before(&self, id: &str, parent: Option<&str>, before: Option<&str>) -> Result<()> {
         let id = self.node(id, &[KIND_TASK])?;
-        let parent = self.container(parent)?;
-        self.write(|tree| place(tree, id, parent, KIND_TASK, index))
-    }
-
-    /// Moves a task under `parent` right before its child `before`, or to the end when `None`.
-    /// Anchoring on a sibling keeps drag-and-drop exact when some siblings (completed ones) are
-    /// shown elsewhere.
-    ///
-    /// In a sorted list, dragging means taking over the order: the list switches to
-    /// [`TaskSort::Manual`], starting from the order shown, in the same undo step.
-    pub fn move_task_before(&self, id: &str, parent: &str, before: Option<&str>) -> Result<()> {
-        let task = self.task(id)?;
-        let id = self.node(id, &[KIND_TASK])?;
-        let parent = self.container(parent)?;
+        let parent = match parent {
+            Some(p) => TreeParentId::Node(self.node(p, &[KIND_TASK])?),
+            None => TreeParentId::Root,
+        };
         let before = before.map(|b| self.node(b, &[KIND_TASK])).transpose()?;
         if let Some(before) = before
             && self.tasks.parent(before) != Some(parent)
         {
             return Err(Error::Invalid("`before` must be a child of `parent`".into()));
         }
-        // Only within its own list; a move to another list takes that list's order.
-        let freeze = match self.list_sort(&task.list_id) {
-            TaskSort::Manual => None,
-            sort if self.list_of(parent)? == task.list_id => Some(self.sorted_children(&task.list_id, sort)?),
-            _ => None,
-        };
+        if let TreeParentId::Node(p) = parent
+            && (p == id || self.is_ancestor(id, p))
+        {
+            return Err(Error::Invalid("a task can't go under itself".into()));
+        }
         self.write(|tree| {
-            if let Some(children) = freeze {
-                self.task_sort.delete(&task.list_id)?;
-                for (parent, kids) in children {
-                    let parent = match parent {
-                        Some(p) => TreeParentId::Node(tree_id(&p)?),
-                        None => self.container(&task.list_id)?,
-                    };
-                    // Each to the front, last first, so they end up first in the order shown.
-                    for kid in kids.iter().rev().filter(|k| k.completed_at.is_none()) {
-                        tree.mov_to(tree_id(&kid.id)?, parent, 0)?;
-                    }
-                }
-            }
             match before {
                 Some(before) if before != id => tree.mov_before(id, before)?,
                 Some(_) => {}
@@ -440,7 +594,7 @@ impl Store {
     }
 
     /// Makes a task the last subtask of the open sibling right above it. Returns false when there is
-    /// none (it is the first).
+    /// none (it is the first). For top-level tasks in a view, see [`Store::indent_in_view`].
     pub fn indent_task(&self, id: &str) -> Result<bool> {
         let id = self.node(id, &[KIND_TASK])?;
         let parent = self
@@ -466,52 +620,15 @@ impl Store {
         Ok(true)
     }
 
-    /// Makes a subtask a sibling of its parent task, right after it. Returns false for top-level
-    /// tasks.
+    /// Makes a subtask a sibling of its parent task, right after it, keeping the tags it had
+    /// through its parent. Returns false for top-level tasks.
     pub fn outdent_task(&self, id: &str) -> Result<bool> {
-        let id = self.node(id, &[KIND_TASK])?;
-        let Some(TreeParentId::Node(parent)) = self.tasks.parent(id) else {
-            return Ok(false);
-        };
-        if projection::kind(&self.tasks, parent).as_deref() != Some(KIND_TASK) {
-            return Ok(false);
-        }
-        self.write(|tree| Ok(tree.mov_after(id, parent)?))?;
-        Ok(true)
+        self.outdent(id, None)
     }
 
-    /// Moves a list to `index` among the other lists. The Inbox always comes first.
-    pub fn move_list(&self, id: &str, index: usize) -> Result<()> {
-        let id = self.node(id, &[KIND_LIST])?;
-        self.write(|tree| place(tree, id, TreeParentId::Root, KIND_LIST, index))
-    }
-
-    /// How a list (or [`INBOX`]) sorts its open tasks.
-    pub fn set_list_sort(&self, list_id: &str, sort: TaskSort) -> Result<()> {
-        if list_id != INBOX {
-            self.node(list_id, &[KIND_LIST])?;
-        }
-        self.transact(|| {
-            match sort.key() {
-                Some(key) => self.task_sort.insert(list_id, key)?,
-                None => self.task_sort.delete(list_id)?,
-            }
-            Ok(())
-        })
-    }
-
-    pub fn list_sort(&self, list_id: &str) -> TaskSort {
-        match self.task_sort.get(list_id) {
-            Some(loro::ValueOrContainer::Value(v)) => {
-                v.as_string().map_or(TaskSort::Manual, |s| TaskSort::from_key(s))
-            }
-            _ => TaskSort::Manual,
-        }
-    }
-
-    /// Deletes a list or task together with everything under it. Undoable; see [`DELETED_AT`].
+    /// Deletes a task together with its subtasks. Undoable; see [`DELETED_AT`].
     pub fn delete(&self, id: &str) -> Result<()> {
-        let id = self.node(id, &[KIND_LIST, KIND_TASK])?;
+        let id = self.node(id, &[KIND_TASK])?;
         self.write(|tree| Ok(tree.get_meta(id)?.insert(DELETED_AT, now_millis())?))
     }
 
@@ -523,6 +640,7 @@ impl Store {
             (result, self.flush(&mut inner)?)
         };
         if changed {
+            self.migrate_lists()?;
             self.notify(ChangeOrigin::Remote);
         }
         result
@@ -550,66 +668,32 @@ impl Store {
 
     // ---- queries (read model) -------------------------------------------------------------
 
-    /// The Inbox, then the user's lists in order.
-    pub fn lists(&self) -> Result<Vec<List>> {
-        let inner = self.lock();
-        let open = |list: &str| -> rusqlite::Result<u32> {
-            inner
-                .db
-                .prepare_cached(OPEN_COUNT)?
-                .query_row([list], |r| r.get(0))
-        };
-        let mut lists = vec![List {
-            id: INBOX.into(),
-            title: INBOX_TITLE.into(),
-            open_count: open(INBOX)?,
-            sort: self.list_sort(INBOX),
-        }];
-        let mut stmt = inner.db.prepare_cached(&format!(
-            "SELECT id, title, ({}) FROM list ORDER BY position, id",
-            OPEN_COUNT.replace("?1", "list.id")
-        ))?;
-        let rows = stmt.query_map([], |r| {
-            let id: String = r.get(0)?;
-            Ok(List {
-                sort: self.list_sort(&id),
-                id,
-                title: r.get(1)?,
-                open_count: r.get(2)?,
-            })
-        })?;
-        for row in rows {
-            lists.push(row?);
-        }
-        Ok(lists)
-    }
-
-    /// All tasks of a list (or [`INBOX`]), top-level first, each level in user order.
-    pub fn tasks(&self, list_id: &str) -> Result<Vec<Task>> {
+    /// Every task (top-level first, each level in tree order).
+    pub fn all_tasks(&self) -> Result<Vec<Task>> {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(&format!(
-            "SELECT {TASK_COLUMNS} FROM task t
-             WHERE list_id = ?1 ORDER BY parent_id IS NOT NULL, parent_id, position, id"
+            "SELECT {TASK_COLUMNS} FROM task t ORDER BY parent_id IS NOT NULL, parent_id, position, id"
         ))?;
-        let rows = stmt.query_map([list_id], task_row)?;
+        let rows = stmt.query_map([], task_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Open tasks due on or before `today`, from every list: overdue first, then by time and
-    /// priority. Subtasks of completed tasks are left out.
-    pub fn due_tasks(&self, today: Date) -> Result<Vec<Task>> {
+    /// Open tasks with a start date and a time, soonest first, for reminders. Subtasks of
+    /// completed tasks are left out.
+    pub fn timed_tasks(&self) -> Result<Vec<Task>> {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(&format!(
             "SELECT {TASK_COLUMNS} FROM task t LEFT JOIN task p ON p.id = t.parent_id
-             WHERE t.completed_at IS NULL AND t.due IS NOT NULL AND t.due <= ?1 AND p.completed_at IS NULL
-             ORDER BY t.due, t.due_time IS NULL, t.due_time, t.priority DESC, t.position, t.id"
+             WHERE t.completed_at IS NULL AND t.start IS NOT NULL AND t.time IS NOT NULL
+               AND p.completed_at IS NULL
+             ORDER BY t.start, t.time, t.id"
         ))?;
-        let rows = stmt.query_map([today.to_string()], task_row)?;
+        let rows = stmt.query_map([], task_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Tasks from every list whose title or notes contain each word of `query` (ignoring case):
-    /// open ones first, then completed ones latest first. At most `limit`.
+    /// Tasks whose title or notes contain each word of `query` (ignoring case): open ones first,
+    /// then completed ones latest first. At most `limit`.
     pub fn search_tasks(&self, query: &str, limit: u32) -> Result<Vec<Task>> {
         let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
         if words.is_empty() {
@@ -618,14 +702,14 @@ impl Store {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(&format!(
             "SELECT {TASK_COLUMNS} FROM task t
-             ORDER BY t.completed_at IS NOT NULL, t.completed_at DESC, t.due IS NULL, t.due, t.position, t.id"
+             ORDER BY t.completed_at IS NOT NULL, t.completed_at DESC, t.start IS NULL, t.start, t.position, t.id"
         ))?;
         // Filtered here rather than with LIKE, which only folds ASCII case ("Été" vs "été").
         let mut found = Vec::new();
         for task in stmt.query_map([], task_row)? {
             let task = task?;
-            let haystack = format!("{}\n{}", task.title, task.notes).to_lowercase();
-            if words.iter().all(|w| haystack.contains(w.as_str())) {
+            let haystack = format!("{}\n{}\n{}", task.title, task.notes, task.tags.join(" ")).to_lowercase();
+            if words.iter().all(|w| haystack.contains(w.trim_start_matches('#'))) {
                 found.push(task);
                 if found.len() as u32 >= limit {
                     break;
@@ -635,47 +719,36 @@ impl Store {
         Ok(found)
     }
 
-    /// Open tasks due after `today`, from every list, soonest first, then by time and priority.
-    /// Subtasks of completed tasks are left out.
-    pub fn upcoming_tasks(&self, today: Date) -> Result<Vec<Task>> {
+    /// Open top-level tasks without a start date, not in Someday, that nobody has edited for
+    /// `days` as of `now` (tasks from before edits were dated count as stale), oldest first: what
+    /// the weekly review asks about.
+    pub fn stale_tasks(&self, now: i64, days: u32) -> Result<Vec<Task>> {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(&format!(
-            "SELECT {TASK_COLUMNS} FROM task t LEFT JOIN task p ON p.id = t.parent_id
-             WHERE t.completed_at IS NULL AND t.due IS NOT NULL AND t.due > ?1 AND p.completed_at IS NULL
-             ORDER BY t.due, t.due_time IS NULL, t.due_time, t.priority DESC, t.position, t.id"
+            "SELECT {TASK_COLUMNS} FROM task t
+             WHERE t.parent_id IS NULL AND t.completed_at IS NULL AND t.start IS NULL AND t.someday = 0
+               AND coalesce(t.touched_at, 0) <= ?1
+             ORDER BY coalesce(t.touched_at, 0), t.position, t.id"
         ))?;
-        let rows = stmt.query_map([today.to_string()], task_row)?;
+        let rows = stmt.query_map([now - i64::from(days) * 86_400_000], task_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// The tasks of a list arranged for display. See [`Outline`].
-    pub fn outline(&self, list_id: &str) -> Result<Outline> {
-        self.outline_at(list_id, now_millis())
+    /// Top-level tasks completed, latest first, at most `limit`: the logbook. Apps group them by
+    /// local day.
+    pub fn logbook(&self, limit: u32) -> Result<Vec<Task>> {
+        let inner = self.lock();
+        let mut stmt = inner.db.prepare_cached(&format!(
+            "SELECT {TASK_COLUMNS} FROM task t
+             WHERE t.parent_id IS NULL AND t.completed_at IS NOT NULL
+             ORDER BY t.completed_at DESC, t.id LIMIT ?1"
+        ))?;
+        let rows = stmt.query_map([limit], task_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// [`Store::outline`] as of `now` (Unix millis).
-    pub fn outline_at(&self, list_id: &str, now: i64) -> Result<Outline> {
-        let mut children = self.sorted_children(list_id, self.list_sort(list_id))?;
-        let (mut completed, open): (Vec<_>, Vec<_>) = children
-            .remove(&None)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|t| t.completed_at.is_none_or(|at| at > now - ARCHIVE_AFTER_MS))
-            .partition(|t| t.completed_at.is_some());
-        completed.sort_by_key(|t| std::cmp::Reverse(t.completed_at));
-
-        let mut outline = Outline::default();
-        for task in open {
-            push_subtree(&mut outline.open, &mut children, task, 0, false);
-        }
-        for task in completed {
-            push_subtree(&mut outline.completed, &mut children, task, 0, true);
-        }
-        Ok(outline)
-    }
-
-    /// Top-level tasks from every list completed more than [`ARCHIVE_AFTER_MS`] before `now`,
-    /// most recently completed first. Their subtasks go with them.
+    /// Top-level tasks completed more than [`ARCHIVE_AFTER_MS`] before `now`, most recently
+    /// completed first. Their subtasks go with them.
     pub fn archive(&self, now: i64) -> Result<Vec<Task>> {
         let inner = self.lock();
         let mut stmt = inner.db.prepare_cached(&format!(
@@ -703,27 +776,22 @@ impl Store {
         })
     }
 
-    /// A list's tasks grouped by parent task (`None` for top-level), each group in `sort` order.
-    fn sorted_children(&self, list_id: &str, sort: TaskSort) -> Result<HashMap<Option<String>, Vec<Task>>> {
-        let mut children: HashMap<Option<String>, Vec<Task>> = HashMap::new();
-        // `tasks` returns each parent's children in user order, which the stable sort keeps for ties.
-        for task in self.tasks(list_id)? {
-            children.entry(task.parent_id.clone()).or_default().push(task);
-        }
-        if sort != TaskSort::Manual {
-            for kids in children.values_mut() {
-                kids.sort_by(|a, b| sort.compare(a, b));
-            }
-        }
-        Ok(children)
-    }
-
-    /// One task by id, from any list.
+    /// One task by id.
     pub fn task_by_id(&self, id: &str) -> Result<Task> {
         self.task(id)
     }
 
-    fn task(&self, id: &str) -> Result<Task> {
+    /// A task's direct subtasks, in order.
+    pub fn subtasks(&self, id: &str) -> Result<Vec<Task>> {
+        let inner = self.lock();
+        let mut stmt = inner.db.prepare_cached(&format!(
+            "SELECT {TASK_COLUMNS} FROM task t WHERE t.parent_id = ?1 ORDER BY t.position, t.id"
+        ))?;
+        let rows = stmt.query_map([id], task_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub(crate) fn task(&self, id: &str) -> Result<Task> {
         let inner = self.lock();
         let mut stmt = inner
             .db
@@ -735,15 +803,16 @@ impl Store {
         }
     }
 
-    /// The list a container (the root, a list or a task) belongs to.
-    fn list_of(&self, container: TreeParentId) -> Result<String> {
-        match container {
-            TreeParentId::Node(node) if projection::kind(&self.tasks, node).as_deref() == Some(KIND_LIST) => {
-                Ok(node.to_string())
+    /// Whether `ancestor` is above `id` in the tree.
+    fn is_ancestor(&self, ancestor: TreeID, id: TreeID) -> bool {
+        let mut current = id;
+        while let Some(TreeParentId::Node(parent)) = self.tasks.parent(current) {
+            if parent == ancestor {
+                return true;
             }
-            TreeParentId::Node(node) => Ok(self.task(&node.to_string())?.list_id),
-            _ => Ok(INBOX.into()),
+            current = parent;
         }
+        false
     }
 
     // ---- change notifications -------------------------------------------------------------
@@ -791,7 +860,7 @@ impl Store {
         Ok(applied?)
     }
 
-    fn write<T>(&self, mutate: impl FnOnce(&LoroTree) -> Result<T>) -> Result<T> {
+    pub(crate) fn write<T>(&self, mutate: impl FnOnce(&LoroTree) -> Result<T>) -> Result<T> {
         self.transact(|| mutate(&self.tasks))
     }
 
@@ -851,20 +920,7 @@ impl Store {
         Ok(true)
     }
 
-    /// Where tasks can go: the Inbox (the tree root), a list, or a task.
-    pub(crate) fn container(&self, id: &str) -> Result<TreeParentId> {
-        if id == INBOX {
-            return Ok(TreeParentId::Root);
-        }
-        Ok(TreeParentId::Node(self.node(id, &[KIND_LIST, KIND_TASK])?))
-    }
-
     pub(crate) fn node(&self, id: &str, kinds: &[&str]) -> Result<TreeID> {
-        if id == INBOX {
-            return Err(Error::Invalid(
-                "the Inbox is built in and can't be changed".into(),
-            ));
-        }
         let tree_id = TreeID::try_from(id).map_err(|_| Error::Invalid(format!("bad id {id:?}")))?;
         if !projection::is_alive(&self.tasks, tree_id) {
             return Err(Error::NotFound(id.to_owned()));
@@ -880,57 +936,99 @@ impl Store {
 
 pub(crate) const SERVER_VV_KEY: &str = "server_vv:workspace";
 
-const TASK_COLUMNS: &str =
-    "t.id, t.list_id, t.parent_id, t.title, t.notes, t.completed_at, t.due, t.due_time, t.priority, t.repeat";
+pub(crate) const TASK_COLUMNS: &str = "t.id, t.parent_id, t.title, t.notes, t.completed_at, t.start, t.time, \
+     t.deadline, t.someday, t.priority, t.repeat, t.tags";
 
-fn task_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+pub(crate) fn task_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+    let tags: String = r.get(11)?;
     Ok(Task {
         id: r.get(0)?,
-        list_id: r.get(1)?,
-        parent_id: r.get(2)?,
-        title: r.get(3)?,
-        notes: r.get(4)?,
-        completed_at: r.get(5)?,
-        due: r.get(6)?,
-        due_time: r.get(7)?,
-        priority: r.get(8)?,
-        repeat: r.get(9)?,
+        parent_id: r.get(1)?,
+        title: r.get(2)?,
+        notes: r.get(3)?,
+        completed_at: r.get(4)?,
+        start: r.get(5)?,
+        time: r.get(6)?,
+        deadline: r.get(7)?,
+        someday: r.get(8)?,
+        priority: r.get(9)?,
+        repeat: r.get(10)?,
+        tags: tags
+            .split('\n')
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+            .collect(),
     })
 }
 
-fn read_schedule(meta: &LoroMap) -> Schedule {
-    let due = meta_str(meta, DUE).and_then(|d| Date::parse(&d).ok());
+pub(crate) fn read_schedule(meta: &LoroMap) -> Schedule {
+    let date = |key| meta_str(meta, key).and_then(|d| Date::parse(&d).ok());
+    let start = date(DUE);
+    let deadline = date(DEADLINE);
     Schedule {
-        due,
-        time: due.and(meta_i64(meta, DUE_TIME)).map(|t| t as u32),
-        repeat: due
+        start,
+        time: start.and(meta_i64(meta, DUE_TIME)).map(|t| t as u32),
+        deadline,
+        someday: start.is_none() && meta_bool(meta, SOMEDAY),
+        repeat: start
+            .or(deadline)
             .and(meta_str(meta, REPEAT))
             .and_then(|r| Repeat::parse_rrule(&r).ok()),
     }
 }
 
-/// A time or repeat rule only means something with a due date; without one all three go.
-fn write_schedule(meta: &LoroMap, schedule: &Schedule) -> Result<()> {
-    let Some(due) = schedule.due else {
-        for key in [DUE, DUE_TIME, REPEAT] {
-            meta.delete(key)?;
-        }
-        return Ok(());
+/// A time only means something with a start date, a repeat with a start date or deadline;
+/// Someday only without a start date.
+pub(crate) fn write_schedule(meta: &LoroMap, schedule: &Schedule) -> Result<()> {
+    touch(meta)?;
+    let set_date = |key, date: Option<Date>| match date {
+        Some(d) => meta.insert(key, d.to_string()),
+        None => meta.delete(key),
     };
-    meta.insert(DUE, due.to_string())?;
-    match schedule.time {
+    set_date(DUE, schedule.start)?;
+    set_date(DEADLINE, schedule.deadline)?;
+    match schedule.time.filter(|_| schedule.start.is_some()) {
         Some(t) if t < 24 * 60 => meta.insert(DUE_TIME, i64::from(t))?,
         Some(t) => return Err(Error::Invalid(format!("time {t} is past midnight"))),
         None => meta.delete(DUE_TIME)?,
     }
-    match &schedule.repeat {
+    match schedule.repeat.filter(|_| schedule.anchor().is_some()) {
         Some(r) => meta.insert(REPEAT, r.to_rrule())?,
         None => meta.delete(REPEAT)?,
+    }
+    if schedule.someday && schedule.start.is_none() {
+        meta.insert(SOMEDAY, true)?;
+    } else {
+        meta.delete(SOMEDAY)?;
+    }
+    Ok(())
+}
+
+/// Replaces the tag set; tags are already normalised.
+/// Marks the task as edited now.
+fn touch(meta: &LoroMap) -> Result<()> {
+    Ok(meta.insert(TOUCHED_AT, now_millis())?)
+}
+
+pub(crate) fn write_tags(meta: &LoroMap, tags: &[String]) -> Result<()> {
+    touch(meta)?;
+    let current = projection::tags_of(meta);
+    if current.is_empty() && tags.is_empty() {
+        return Ok(());
+    }
+    // Mergeable: two devices tagging a task for the first time concurrently share one map.
+    let map = meta.ensure_mergeable_map(TAGS)?;
+    for old in current.iter().filter(|t| !tags.contains(t)) {
+        map.delete(old)?;
+    }
+    for tag in tags {
+        map.insert(tag, true)?;
     }
     Ok(())
 }
 
 fn write_priority(meta: &LoroMap, priority: u8) -> Result<()> {
+    touch(meta)?;
     match priority {
         0 => meta.delete(PRIORITY)?,
         1..=3 => meta.insert(PRIORITY, i64::from(priority))?,
@@ -939,11 +1037,7 @@ fn write_priority(meta: &LoroMap, priority: u8) -> Result<()> {
     Ok(())
 }
 
-/// Open top-level tasks of list `?1`.
-const OPEN_COUNT: &str =
-    "SELECT count(*) FROM task WHERE list_id = ?1 AND parent_id IS NULL AND completed_at IS NULL";
-
-fn push_subtree(
+pub(crate) fn push_subtree(
     rows: &mut Vec<OutlineRow>,
     children: &mut HashMap<Option<String>, Vec<Task>>,
     task: Task,
@@ -952,7 +1046,13 @@ fn push_subtree(
 ) {
     let done = ancestor_done || task.completed_at.is_some();
     let kids = children.remove(&Some(task.id.clone())).unwrap_or_default();
-    rows.push(OutlineRow { task, depth, done });
+    rows.push(OutlineRow {
+        task,
+        depth,
+        done,
+        subtasks: kids.len() as u32,
+        subtasks_done: kids.iter().filter(|k| k.completed_at.is_some()).count() as u32,
+    });
     for kid in kids {
         push_subtree(rows, children, kid, depth + 1, done);
     }
@@ -966,7 +1066,8 @@ pub(crate) fn complete_in(tree: &LoroTree, id: TreeID, completed: bool, today: D
         return Ok(());
     }
     let schedule = read_schedule(&meta);
-    let (Some(due), Some(repeat), None) = (schedule.due, schedule.repeat, meta.get(COMPLETED_AT)) else {
+    let (Some(anchor), Some(repeat), None) = (schedule.anchor(), schedule.repeat, meta.get(COMPLETED_AT))
+    else {
         meta.insert(COMPLETED_AT, now_millis())?;
         return Ok(());
     };
@@ -983,6 +1084,7 @@ pub(crate) fn complete_in(tree: &LoroTree, id: TreeID, completed: bool, today: D
         },
     )?;
     write_priority(&done, meta_i64(&meta, PRIORITY).unwrap_or(0) as u8)?;
+    write_tags(&done, &projection::tags_of(&meta))?;
     if let Some(notes) = meta_text(&meta, NOTES).filter(|n| !n.is_empty()) {
         done.ensure_mergeable_text(NOTES)?
             .update(&notes, Default::default())
@@ -990,11 +1092,17 @@ pub(crate) fn complete_in(tree: &LoroTree, id: TreeID, completed: bool, today: D
     }
     done.insert(COMPLETED_AT, now_millis())?;
 
-    let mut next = repeat.next_after(due);
-    while next <= today {
-        next = repeat.next_after(next);
-    }
-    meta.insert(DUE, next.to_string())?;
+    // Start date and deadline move on together, keeping the days between them.
+    let next = repeat.next_for_completion(anchor, today);
+    let shift = next.days_since(anchor);
+    write_schedule(
+        &meta,
+        &Schedule {
+            start: schedule.start.map(|d| d.add_days(shift)),
+            deadline: schedule.deadline.map(|d| d.add_days(shift)),
+            ..schedule
+        },
+    )?;
     let mut stack = tree.children(id).unwrap_or_default();
     while let Some(child) = stack.pop() {
         tree.get_meta(child)?.delete(COMPLETED_AT)?;
@@ -1003,7 +1111,7 @@ pub(crate) fn complete_in(tree: &LoroTree, id: TreeID, completed: bool, today: D
     Ok(())
 }
 
-/// New tasks go first in a list (or the Inbox) and last under a task.
+/// New tasks go first at the top level and last under a task.
 pub(crate) fn create_task_node(tree: &LoroTree, parent: TreeParentId) -> Result<TreeID> {
     let under_task =
         matches!(parent, TreeParentId::Node(p) if projection::kind(tree, p).as_deref() == Some(KIND_TASK));
@@ -1014,25 +1122,8 @@ pub(crate) fn create_task_node(tree: &LoroTree, parent: TreeParentId) -> Result<
     })
 }
 
-fn tree_id(id: &str) -> Result<TreeID> {
+pub(crate) fn tree_id(id: &str) -> Result<TreeID> {
     TreeID::try_from(id).map_err(|_| Error::Invalid(format!("bad id {id:?}")))
-}
-
-/// Moves `id` under `parent` so that it ends up at `index` among siblings of the same kind. The root
-/// holds both lists and Inbox tasks, so a plain child index would count the other kind too.
-fn place(tree: &LoroTree, id: TreeID, parent: TreeParentId, kind: &str, index: usize) -> Result<()> {
-    let siblings: Vec<TreeID> = tree
-        .children(parent)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|&s| s != id && projection::kind(tree, s).as_deref() == Some(kind))
-        .collect();
-    match (siblings.get(index), siblings.last()) {
-        (Some(&next), _) => tree.mov_before(id, next)?,
-        (None, Some(&last)) => tree.mov_after(id, last)?,
-        (None, None) => tree.mov(id, parent)?,
-    }
-    Ok(())
 }
 
 pub(crate) fn clean_title(title: &str) -> Result<String> {
@@ -1047,4 +1138,100 @@ pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// Where [`Store::snooze`] puts tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Snooze {
+    /// Three hours from now (rounded to the half hour), or tomorrow at 9:00 late in the evening.
+    LaterToday,
+    /// Today at 19:00, or tomorrow evening once past it.
+    ThisEvening,
+    /// Tomorrow, keeping the time.
+    Tomorrow,
+    /// The coming Saturday (the next one on a weekend).
+    Weekend,
+    /// Next Monday.
+    NextWeek,
+}
+
+impl Snooze {
+    fn resolve(self, today: Date, minute: u32) -> (Date, Option<u32>) {
+        const EVENING: u32 = 19 * 60;
+        match self {
+            Self::LaterToday => {
+                let later = (minute + 180).div_ceil(30) * 30;
+                if later < 22 * 60 {
+                    (today, Some(later))
+                } else {
+                    (today.add_days(1), Some(9 * 60))
+                }
+            }
+            Self::ThisEvening if minute < EVENING => (today, Some(EVENING)),
+            Self::ThisEvening => (today.add_days(1), Some(EVENING)),
+            Self::Tomorrow => (today.add_days(1), None),
+            Self::Weekend => {
+                let days = (5 + 7 - i64::from(today.weekday())) % 7;
+                (today.add_days(if days == 0 { 7 } else { days }), None)
+            }
+            Self::NextWeek => (today.monday().add_days(7), None),
+        }
+    }
+}
+
+/// Title, schedule, priority and tags of a new task, in its meta map.
+fn fill_task(meta: &LoroMap, title: &str, schedule: &Schedule, priority: u8, tags: &[String]) -> Result<()> {
+    meta.insert(KIND, KIND_TASK)?;
+    meta.insert(TITLE, title)?;
+    write_schedule(meta, schedule)?;
+    write_priority(meta, priority)?;
+    write_tags(meta, tags)
+}
+
+struct PastedLine {
+    indent: usize,
+    text: String,
+    done: bool,
+}
+
+/// The lines of pasted text worth a task each, with list markers taken off.
+fn paste_lines(text: &str) -> Vec<PastedLine> {
+    text.lines()
+        .filter_map(|raw| {
+            let trimmed = raw.trim_start();
+            // Tabs count as four spaces, so tab- and space-indented pastes nest the same.
+            let indent: usize = raw[..raw.len() - trimmed.len()]
+                .chars()
+                .map(|c| if c == '\t' { 4 } else { 1 })
+                .sum();
+            let mut rest = trimmed.trim_end();
+            let mut done = false;
+            for marker in ["- ", "* ", "+ ", "• ", "– "] {
+                if let Some(r) = rest.strip_prefix(marker) {
+                    rest = r.trim_start();
+                    break;
+                }
+            }
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            if digits > 0
+                && let Some(r) = rest[digits..]
+                    .strip_prefix(". ")
+                    .or_else(|| rest[digits..].strip_prefix(") "))
+            {
+                rest = r.trim_start();
+            }
+            for (box_, ticked) in [("[ ] ", false), ("[x] ", true), ("[X] ", true)] {
+                if let Some(r) = rest.strip_prefix(box_) {
+                    rest = r.trim_start();
+                    done = ticked;
+                }
+            }
+            let bare_marker = matches!(rest, "-" | "*" | "+" | "•" | "–" | "[ ]" | "[x]" | "[X]");
+            (!rest.is_empty() && !bare_marker).then(|| PastedLine {
+                indent,
+                text: rest.to_owned(),
+                done,
+            })
+        })
+        .collect()
 }

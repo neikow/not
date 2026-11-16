@@ -155,11 +155,13 @@ struct TokenChips: View {
 
     private func describe(_ token: ParsedToken, _ parsed: ParsedTask) -> (String, String) {
         switch token.kind {
-        case .date: ("calendar", scheduleLabel(due: parsed.due, time: nil, repeat: nil, today: model.today) ?? token.text)
-        case .time: ("clock", parsed.dueTime.map(clockLabel) ?? token.text)
+        case .date: ("calendar", scheduleLabel(due: parsed.start, time: nil, repeat: nil, today: model.today) ?? token.text)
+        case .deadline: ("hourglass", "Due " + (scheduleLabel(due: parsed.deadline, time: nil, repeat: nil, today: model.today) ?? token.text))
+        case .time: ("clock", parsed.time.map(clockLabel) ?? token.text)
         case .repeat: ("repeat", parsed.repeat.flatMap(repeatLabel) ?? token.text)
+        case .someday: ("cloud", "Someday")
         case .priority: ("flag.fill", "\(priorityName(parsed.priority)) priority")
-        case .list: ("list.bullet", parsed.listId.map(model.listTitle) ?? token.text)
+        case .tag: ("number", token.text.trimmingCharacters(in: CharacterSet(charactersIn: "#")).lowercased())
         }
     }
 }

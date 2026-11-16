@@ -9,13 +9,16 @@ import SystemConfiguration
 @Observable
 final class AppModel {
     let inboxID = inboxId()
-    private(set) var lists: [TaskList] = []
-    /// The selected list, arranged for display.
+    let todayID = todayViewId()
+    let upcomingID = upcomingViewId()
+    let somedayID = somedayViewId()
+    /// Built-in views (Inbox, Today, Upcoming, Someday), then the user's smart lists.
+    private(set) var lists: [TaskView] = []
+    private(set) var tags: [TagInfo] = []
+    /// The selected view, arranged for display.
     private(set) var outline = Outline(open: [], completed: [])
-    /// Open tasks due today or earlier, for the Today badge.
+    /// Open tasks for today, for the Today badge.
     private(set) var dueCount = 0
-    /// Open tasks due after today, soonest first.
-    private(set) var upcoming: [TaskItem] = []
     /// Tasks completed over a day ago, from every list, latest first (Settings → Archive).
     private(set) var archive: [TaskItem] = []
     /// Typed in the task list's search field; while set, the list shows matches from every list.
@@ -23,8 +26,8 @@ final class AppModel {
         didSet { if oldValue != taskSearch { reloadTasks() } }
     }
     var isSearching: Bool { !taskSearch.trimmingCharacters(in: .whitespaces).isEmpty }
-    /// Every task of the selected task's list, for its subtasks (Today only shows due ones).
-    private var selectedTaskList: [TaskItem] = []
+    /// The selected task's subtasks.
+    private var selectedSubtasks: [TaskItem] = []
     private(set) var syncState: SyncState?
     /// `nil` until this Mac is paired with a server.
     private(set) var syncInfo: SyncInfo?
@@ -47,9 +50,16 @@ final class AppModel {
         }
     }
 
-    /// The list shown, if the selection is one.
+    /// The view shown, if the selection is one (`.list` holds any view id, or a `#tag`).
     var selectedListID: String? {
-        get { if case let .list(id) = selection { id } else { nil } }
+        get {
+            switch selection {
+            case .today: todayID
+            case .upcoming: upcomingID
+            case let .list(id): id
+            default: nil
+            }
+        }
         set { selection = newValue.map(SidebarItem.list) }
     }
     var selectedTaskID: String? {
@@ -159,8 +169,8 @@ final class AppModel {
     /// Dev runs: `-seedDemo YES` fills an empty database with sample data (use with `-dataDir`);
     /// `-show habits|notes` opens that section, selecting the note titled `-note` or the first one.
     private func applyDevArguments(_ defaults: UserDefaults) {
-        if defaults.bool(forKey: "seedDemo"), lists.count == 1, outline.open.isEmpty {
-            for title in ["Buy oat milk today !2", "Call the dentist tomorrow 9am", "Renew passport fri !1", "Water plants every 2 days"] {
+        if defaults.bool(forKey: "seedDemo"), lists.count == 4, outline.open.isEmpty {
+            for title in ["Buy oat milk today !2 #groceries", "Call the dentist tomorrow 9am", "Renew passport by fri !1", "Water plants every 2 days #home", "Learn the cello someday", "Draft report #work"] {
                 quickAdd(title)
             }
             if let read = addHabit("Read") { toggleHabit(read) }
@@ -175,10 +185,12 @@ final class AppModel {
             // A checklist made into tasks.
             if let note = run({ try store.createNote(folderId: nil, body: "Errands\nBefore leaving:\n- [ ] Post office\n- [x] Pharmacy\nThat's all") }) {
                 let body = noteBody(note)
-                if let moved = run({ try store.checklistToTasks(noteId: note, body: body, start: 0, end: UInt32((body as NSString).length), listId: nil, newList: "") }),
-                   let first = run({ try store.outline(listId: moved.listId) })?.open.first {
-                    _ = run { try store.addTask(parentId: first.task.id, title: "Stamps") }
+                if let moved = run({ try store.checklistToTasks(noteId: note, body: body, start: 0, end: UInt32((body as NSString).length), tag: "") }),
+                   let tag = moved.tag,
+                   let first = run({ try store.viewOutline(view: "#" + tag, today: today) })?.open.first {
+                    _ = run { try store.addTask(target: first.task.id, title: "Stamps", today: today) }
                 }
+                _ = run { try store.createView(title: "Errands", query: "#errands") }
             }
             // A note with a picture (the app icon), to see images drawn in the editor.
             if let tiff = NSImage(named: NSImage.applicationIconName)?.tiffRepresentation,
@@ -233,20 +245,32 @@ final class AppModel {
     """
     #endif
 
-    var selectedList: TaskList? { lists.first { $0.id == selectedListID } }
+    var selectedList: TaskView? { lists.first { $0.id == selectedListID } }
     var isToday: Bool { selection == .today }
     var isUpcoming: Bool { selection == .upcoming }
-    /// Today or Upcoming: tasks from every list by date, so no order, sort or nesting of their own.
-    var isDateView: Bool { isToday || isUpcoming || isSearching }
-    var title: String { isSearching ? "Search" : isToday ? "Today" : isUpcoming ? "Upcoming" : selectedList?.title ?? "not" }
-    func listTitle(_ id: String) -> String { lists.first { $0.id == id }?.title ?? "Inbox" }
-    var inbox: TaskList? { lists.first { $0.id == inboxID } }
-    var userLists: [TaskList] { lists.filter { $0.id != inboxID } }
-    var panelList: TaskList? { lists.first { $0.id == panelListID } }
+    /// Search results and Upcoming (always by date) have no order of their own.
+    var isDateView: Bool { isUpcoming || isSearching }
+    var title: String {
+        if isSearching { return "Search" }
+        if let id = selectedListID, id.hasPrefix("#") { return id }
+        return selectedList?.title ?? "not"
+    }
+    var inbox: TaskView? { lists.first { $0.id == inboxID } }
+    /// Inbox, Today, Upcoming, Someday.
+    var builtInViews: [TaskView] { lists.filter(\.builtIn) }
+    /// The user's smart lists.
+    var userLists: [TaskView] { lists.filter { !$0.builtIn } }
+    var panelList: TaskView? { lists.first { $0.id == panelListID } }
 
     var selectedTask: TaskItem? {
         guard let id = selectedTaskID else { return nil }
         return (outline.open + outline.completed).first { $0.task.id == id }?.task
+    }
+
+    /// Today's open tasks planned for an earlier day: what "Move to today" picks up.
+    var earlier: [TaskItem] {
+        guard isToday else { return [] }
+        return outline.open.filter { $0.depth == 0 && ($0.task.start.map { $0 < today } ?? false) }.map(\.task)
     }
 
     /// Whether the selected list still shows this task.
@@ -256,7 +280,7 @@ final class AppModel {
 
     /// Direct subtasks of `taskID`, in order.
     func subtasks(of taskID: String) -> [TaskItem] {
-        selectedTaskList.filter { $0.parentId == taskID }
+        taskID == selectedTaskID ? selectedSubtasks : (run { try store.subtasks(id: taskID) } ?? [])
     }
 
     // MARK: Sync and pairing
@@ -313,18 +337,48 @@ final class AppModel {
         await runAsync { try await store.revokeDevice(id: device.id) }
     }
 
-    // MARK: Lists
+    // MARK: Smart lists and tags
 
-    /// Creates a list and returns its id, so the caller can start renaming it.
+    /// Saves a smart list and shows it.
     @discardableResult
-    func addList(_ title: String) -> String? {
-        guard let id = run({ try store.createList(title: title) }) else { return nil }
+    func addList(_ title: String, query: String) -> String? {
+        guard let id = run({ try store.createView(title: title, query: query) }) else { return nil }
         selectedListID = id
         return id
     }
 
+    func updateList(_ id: String, title: String, query: String) {
+        run { try store.updateView(id: id, title: title, query: query) }
+    }
+
+    func deleteList(_ id: String) {
+        if selectedListID == id { selectedListID = inboxID }
+        run { try store.deleteView(id: id) }
+    }
+
+    /// `index` among the user's smart lists.
     func moveList(_ id: String, to index: Int) {
-        run { try store.moveList(id: id, index: UInt32(index)) }
+        run { try store.moveView(id: id, index: UInt32(index)) }
+    }
+
+    /// `nil` when `query` is a valid filter, else what's wrong.
+    func checkQuery(_ query: String) -> String? { store.checkQuery(query: query) }
+
+    func countQuery(_ query: String) -> Int { Int(run { try store.countQuery(query: query, today: today) } ?? 0) }
+
+    func renameTag(_ old: String, to new: String) {
+        guard !new.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        run { try store.renameTag(old: old, new: new) }
+        if selectedListID == "#" + old { selectedListID = "#" + normalizeTag(tag: new) }
+    }
+
+    func deleteTag(_ tag: String) {
+        if selectedListID == "#" + tag { selectedListID = inboxID }
+        run { try store.deleteTag(tag: tag) }
+    }
+
+    func setTags(_ id: String, _ tags: [String]) {
+        run { try store.setTags(id: id, tags: tags) }
     }
 
     // MARK: Tasks
@@ -335,10 +389,10 @@ final class AppModel {
         addTask(title, to: selectedListID ?? inboxID)
     }
 
-    /// `parentID` is a list or, for a subtask, a task.
+    /// `parentID` is a view (the task gets what it shows) or, for a subtask, a task.
     func addTask(_ title: String, to parentID: String) {
         guard !title.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        run { _ = try store.addTask(parentId: parentID, title: title) }
+        run { _ = try store.addTask(target: parentID, title: title, today: today) }
     }
 
     func rename(_ id: String, to title: String) {
@@ -359,39 +413,82 @@ final class AppModel {
     /// What quick add would make of `text`, for highlighting and chips.
     func parse(_ text: String, dismissed: [String] = []) -> ParsedTask? {
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
-        return run { try store.parseTask(input: text, today: today, dismissed: dismissed) }
+        return run { try store.parseTask(input: text, today: today, minute: Self.nowMinute, dismissed: dismissed) }
     }
 
-    /// Adds typed input with its dates and tags parsed out, to `parentID` or the selected list.
-    /// From Today, a task without a date is due today.
+    /// Minutes after midnight now, for "in 2 hours" and snoozing.
+    static var nowMinute: UInt32 {
+        let c = Calendar.current.dateComponents([.hour, .minute], from: .now)
+        return UInt32((c.hour ?? 0) * 60 + (c.minute ?? 0))
+    }
+
+    /// Adds typed input with its dates and tags parsed out, to `parentID` or the selected view (which
+    /// gives it its tags, Today's date…). Several lines (pasted) make a task each.
     func quickAdd(_ text: String, dismissed: [String] = [], to parentID: String? = nil) {
-        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         refreshToday()
-        let parent = parentID ?? (isDateView ? inboxID : selectedListID ?? inboxID)
-        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: .now).map(AppModel.dayString)
-        run {
-            _ = try store.quickAdd(
-                parentId: parent, input: text, today: today, dismissed: dismissed,
-                defaultDue: parentID != nil ? nil : isToday ? today : isUpcoming ? tomorrow : nil
-            )
-        }
-    }
-
-    /// Takes the date, time and repeat out of `text` ("fri 9am every week"); blank clears them.
-    func setSchedule(_ id: String, _ text: String) {
-        guard let parsed = parse(text) else {
-            run { try store.setSchedule(id: id, due: nil, dueTime: nil, repeat: nil) }
+        let target = parentID ?? (isSearching ? inboxID : selectedListID ?? inboxID)
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).contains("\n") {
+            run { _ = try store.quickAddLines(target: target, text: text, today: today, minute: Self.nowMinute) }
             return
         }
-        run { try store.setSchedule(id: id, due: parsed.due, dueTime: parsed.dueTime, repeat: parsed.repeat) }
+        run { _ = try store.quickAdd(target: target, input: text, today: today, minute: Self.nowMinute, dismissed: dismissed) }
     }
+
+    /// Takes the start date, time, deadline, Someday and repeat out of `text` ("fri 9am by mon every
+    /// week"); blank clears them.
+    func setSchedule(_ id: String, _ text: String) {
+        guard let p = parse(text) else {
+            run { try store.setSchedule(id: id, start: nil, time: nil, deadline: nil, someday: false, repeat: nil) }
+            return
+        }
+        run { try store.setSchedule(id: id, start: p.start, time: p.time, deadline: p.deadline, someday: p.someday, repeat: p.repeat) }
+    }
+
+    /// Only the deadline, from words ("fri", "end of month"); blank clears it.
+    func setDeadline(_ task: TaskItem, _ text: String) {
+        var deadline: String?
+        if !text.trimmingCharacters(in: .whitespaces).isEmpty {
+            guard let p = parse(text), let day = p.start ?? p.deadline else { return }
+            deadline = day
+        }
+        run { try store.setSchedule(id: task.id, start: task.start, time: task.time, deadline: deadline, someday: task.someday, repeat: task.repeat) }
+    }
+
+    func setSomeday(_ task: TaskItem) {
+        run { try store.setSchedule(id: task.id, start: nil, time: nil, deadline: task.deadline, someday: true, repeat: task.repeat) }
+    }
+
+    func snooze(_ ids: [String], _ to: Snooze) {
+        refreshToday()
+        run { _ = try store.snooze(ids: ids, to: to, today: today, minute: Self.nowMinute) }
+    }
+
+    /// What slipped past its day comes to today, in one undo step.
+    func moveToToday(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        refreshToday()
+        run { try store.reschedule(ids: ids, start: today) }
+    }
+
+    /// "Still relevant" in the weekly review.
+    func keep(_ id: String) { run { try store.keepTask(id: id) } }
+
+    /// Open top-level tasks a view shows now (for the review).
+    func viewTasks(_ id: String) -> [TaskItem] {
+        (run { try store.viewOutline(view: id, today: today) }?.open ?? []).filter { $0.depth == 0 }.map(\.task)
+    }
+
+    func staleTasks() -> [TaskItem] { run { try store.staleTasks(days: 30) } ?? [] }
+
+    func logbook() -> [TaskItem] { run { try store.logbook(limit: 300) } ?? [] }
 
     func setPriority(_ id: String, _ priority: UInt8) {
         run { try store.setPriority(id: id, priority: priority) }
     }
 
     func setSort(_ listID: String, _ sort: TaskSort) {
-        run { try store.setListSort(listId: listID, sort: sort) }
+        run { try store.setViewSort(id: listID, sort: sort) }
     }
 
     func toggleSelected() {
@@ -407,25 +504,22 @@ final class AppModel {
         if let id = selectedTaskID { delete(id: id) }
     }
 
-    /// Moves a task (with its subtasks) to the end of another list.
-    func move(_ taskID: String, toList listID: String) {
-        // To the top, like a new task.
-        run { try store.moveTask(id: taskID, parentId: listID, index: 0) }
-    }
-
     /// Drag and drop within the open tasks: `destination` is an index into `outline.open` (before
     /// the move). The task stays under its parent, placed before the next sibling at the drop point.
     func moveOpenRow(from source: Int, to destination: Int) {
         let rows = outline.open
-        let moving = rows[source].task
-        let anchor = rows[destination...].first { $0.task.parentId == moving.parentId && $0.task.id != moving.id }
-        place(moving, before: anchor?.task.id)
+        let moving = rows[source]
+        let anchor = rows[destination...].first {
+            $0.depth == moving.depth && (moving.depth == 0 || $0.task.parentId == moving.task.parentId) && $0.task.id != moving.task.id
+        }
+        place(moving.task, before: anchor?.task.id)
     }
 
     /// ⌘↑ / ⌘↓: swaps the selected task with its previous or next open sibling.
     func moveSelected(by offset: Int) {
         guard let task = selectedTask, task.completedAt == nil else { return }
-        let siblings = outline.open.map(\.task).filter { $0.parentId == task.parentId }
+        let depth = outline.open.first { $0.task.id == task.id }?.depth ?? 0
+        let siblings = outline.open.filter { $0.depth == depth && (depth == 0 || $0.task.parentId == task.parentId) }.map(\.task)
         guard let index = siblings.firstIndex(where: { $0.id == task.id }) else { return }
         let target = index + offset
         guard siblings.indices.contains(target) else { return }
@@ -445,19 +539,23 @@ final class AppModel {
 
     /// Tab / ⌘]: the selected task becomes a subtask of the one above it.
     func indentSelected() {
-        guard let id = selectedTaskID, !isDateView else { return }
-        run { _ = try store.indentTask(id: id) }
+        guard let id = selectedTaskID, !isDateView, let view = selectedListID else { return }
+        run { _ = try store.indentInView(view: view, id: id, today: today) }
     }
 
     /// ⇧Tab / ⌘[: the selected subtask moves out a level.
     func outdentSelected() {
-        guard let id = selectedTaskID, !isDateView else { return }
-        run { _ = try store.outdentTask(id: id) }
+        guard let id = selectedTaskID, !isDateView, let view = selectedListID else { return }
+        run { _ = try store.outdentInView(view: view, id: id) }
     }
 
     private func place(_ task: TaskItem, before anchor: String?) {
-        let parent = task.parentId ?? task.listId
-        run { try store.moveTaskBefore(id: task.id, parentId: parent, beforeId: anchor) }
+        let atTop = outline.open.contains { $0.task.id == task.id && $0.depth == 0 }
+        if atTop, let view = selectedListID {
+            run { try store.moveInView(view: view, id: task.id, beforeId: anchor, today: today) }
+        } else {
+            run { try store.moveTaskBefore(id: task.id, parentId: task.parentId, beforeId: anchor) }
+        }
     }
 
     // MARK: Habits
@@ -562,14 +660,14 @@ final class AppModel {
 
     // ---- reminders ----
 
-    /// Open tasks that may want a reminder: due by today, and upcoming.
+    /// Open tasks starting at a time: what reminders are set for.
     func reminderTasks() -> [TaskItem] {
-        (run { try store.dueTasks(today: today) } ?? []) + upcoming
+        run { try store.timedTasks() } ?? []
     }
 
-    /// Open tasks due on or before `day`, for the morning summary.
+    /// Open tasks for `day` (Today as of then), for the morning summary.
     func reminderDue(on day: String) -> [TaskItem] {
-        run { try store.dueTasks(today: day) } ?? []
+        (run { try store.viewOutline(view: todayID, today: day) }?.open ?? []).filter { $0.depth == 0 }.map(\.task)
     }
 
     /// Titles of habits due on `day` and not done yet.
@@ -584,8 +682,8 @@ final class AppModel {
 
     /// From clicking a notification: the task in its list, selected.
     func reveal(taskID: String) {
-        guard let task = reminderTasks().first(where: { $0.id == taskID }) else { return }
-        selectedListID = task.listId
+        guard run({ try store.taskById(id: taskID) }) != nil else { return }
+        selection = .today
         selectedTaskID = taskID
         NSApp.activate()
     }
@@ -649,11 +747,11 @@ final class AppModel {
     }
 
     /// Makes tasks of the checklist items `start..<end` (UTF-16) touches in `body` (saved with
-    /// them), in a list or a new one titled `newList` when `listID` is nil. The lines stay as they
-    /// are; the tasks are a copy.
-    func checklistToTasks(_ noteID: String, _ body: String, start: Int, end: Int, listID: String?, newList: String) -> Bool {
+    /// them), tagged `tag` ("" for one from the heading), or untagged (Inbox) when nil. The lines
+    /// stay as they are; the tasks are a copy.
+    func checklistToTasks(_ noteID: String, _ body: String, start: Int, end: Int, tag: String?) -> Bool {
         run {
-            try store.checklistToTasks(noteId: noteID, body: body, start: UInt32(start), end: UInt32(end), listId: listID, newList: newList)
+            try store.checklistToTasks(noteId: noteID, body: body, start: UInt32(start), end: UInt32(end), tag: tag)
         } != nil
     }
 
@@ -825,7 +923,8 @@ final class AppModel {
     }
     func redo() { run { _ = try store.redo() } }
 
-    /// `not://add?title=Milk[&list=Groceries]` — the list is matched by title, else the Inbox.
+    /// `not://add?title=Milk[&list=Groceries]` — the smart list is matched by title, else the
+    /// Inbox; `#tags` in the title work as in quick add.
     func handle(url: URL) {
         guard url.scheme == "not", url.host() == "add",
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
@@ -841,11 +940,12 @@ final class AppModel {
     fileprivate func reload() {
         imageVersion += 1
         reminders.reschedule()
-        guard let lists = run({ try store.lists() }) else { return }
+        guard let lists = run({ try store.views(today: today) }) else { return }
         self.lists = lists
         canUndo = store.canUndo()
         canRedo = store.canRedo()
-        dueCount = (run { try store.dueTasks(today: today) } ?? []).count
+        tags = run { try store.tags() } ?? []
+        dueCount = Int(lists.first { $0.id == todayID }?.openCount ?? 0)
         switch selection {
         case .today, .upcoming:
             reloadTasks()
@@ -853,7 +953,7 @@ final class AppModel {
             break
         case .notes:
             break // reloadNotes() handles deleted folders.
-        case let .list(id) where lists.contains(where: { $0.id == id }):
+        case let .list(id) where lists.contains(where: { $0.id == id }) || tags.contains(where: { "#" + $0.name == id }):
             reloadTasks()
         default:
             selectedListID = inboxID
@@ -910,25 +1010,18 @@ final class AppModel {
             panelListID = inboxID
             return
         }
-        panelRows = (run { try store.outline(listId: panelListID) })?.open.filter { !$0.done } ?? []
+        panelRows = (run { try store.viewOutline(view: panelListID, today: today) })?.open.filter { !$0.done } ?? []
     }
 
     private func reloadTasks() {
-        let due = run { try store.dueTasks(today: today) } ?? []
-        dueCount = due.count
         archive = run { try store.archive() } ?? []
-        upcoming = run { try store.upcomingTasks(today: today) } ?? []
         if isSearching {
             let found = run { try store.searchTasks(query: taskSearch, limit: 100) } ?? []
             outline = Outline(
-                open: found.filter { $0.completedAt == nil }.map { OutlineRow(task: $0, depth: 0, done: false) },
-                completed: found.filter { $0.completedAt != nil }.map { OutlineRow(task: $0, depth: 0, done: true) }
+                open: found.filter { $0.completedAt == nil }.map { OutlineRow(task: $0, depth: 0, done: false, subtasks: 0, subtasksDone: 0) },
+                completed: found.filter { $0.completedAt != nil }.map { OutlineRow(task: $0, depth: 0, done: true, subtasks: 0, subtasksDone: 0) }
             )
-        } else if isToday {
-            outline = Outline(open: due.map { OutlineRow(task: $0, depth: 0, done: false) }, completed: [])
-        } else if isUpcoming {
-            outline = Outline(open: upcoming.map { OutlineRow(task: $0, depth: 0, done: false) }, completed: [])
-        } else if let list = selectedListID, let outline = run({ try store.outline(listId: list) }) {
+        } else if let list = selectedListID, let outline = run({ try store.viewOutline(view: list, today: today) }) {
             self.outline = outline
         } else {
             outline = Outline(open: [], completed: [])
@@ -946,7 +1039,7 @@ final class AppModel {
     }
 
     private func loadSelectedTaskList() {
-        selectedTaskList = selectedTask.flatMap { task in run { try store.tasks(listId: task.listId) } } ?? []
+        selectedSubtasks = selectedTaskID.flatMap { id in run { try store.subtasks(id: id) } } ?? []
     }
 
     @discardableResult
@@ -979,10 +1072,11 @@ final class AppModel {
 
 /// What the sidebar shows in the main column.
 enum SidebarItem: Hashable {
-    /// Open tasks due today or earlier, from every list.
+    /// The Today view.
     case today
-    /// Open tasks due after today, from every list.
+    /// The Upcoming view.
     case upcoming
+    /// Any other view (Inbox, Someday, a smart list) or a `#tag`.
     case list(String)
     case habits
     case workouts

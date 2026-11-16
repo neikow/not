@@ -559,7 +559,9 @@ pub fn expand_sets(text: &str) -> String {
                 if line.done { DONE_MARK } else { "" },
                 if line.warmup { "E " } else { "" }
             );
-            if i == last && let Some(note) = &line.note {
+            if i == last
+                && let Some(note) = &line.note
+            {
                 set.push_str(&format!(" \" {note}"));
             }
             out.push(set);
@@ -1181,9 +1183,15 @@ mod tests {
     fn expands_repeated_sets_one_per_line() {
         assert_eq!(expand_sets("66kg x 8 x 3"), "66kg x 8\n66kg x 8\n66kg x 8");
         assert_eq!(expand_sets("E 18kg x (10 + 8)"), "E 18kg x 10\nE 18kg x 8");
-        assert_eq!(expand_sets("24,8kg x 10 x 2 \" last one hard"), "24.8kg x 10\n24.8kg x 10 \" last one hard");
+        assert_eq!(
+            expand_sets("24,8kg x 10 x 2 \" last one hard"),
+            "24.8kg x 10\n24.8kg x 10 \" last one hard"
+        );
         assert_eq!(expand_sets("20 x 3"), "bw x 20\nbw x 20\nbw x 20");
-        assert_eq!(expand_sets("26kg x 8\nfelt strong\n500m 14min"), "26kg x 8\nfelt strong\n500m 14min");
+        assert_eq!(
+            expand_sets("26kg x 8\nfelt strong\n500m 14min"),
+            "26kg x 8\nfelt strong\n500m 14min"
+        );
         // Each copy reads back as one set of the same weight and reps.
         for line in parse_sets(&expand_sets("24.8kg x (10 x 2 + 8)")) {
             assert_eq!((line.weight, line.reps.len()), (Some(24.8), 1));

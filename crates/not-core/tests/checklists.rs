@@ -21,18 +21,19 @@ fn body(store: &Store, note: &str) -> String {
     store.note_body(note).unwrap()
 }
 
-/// A note with `text` whose whole checklist went into a new list. Returns (note, list).
+/// A note with `text` whose whole checklist went into tasks tagged after its heading. Returns
+/// (note, `#tag` to view them by).
 fn make(store: &Store, text: &str) -> (String, String) {
     let note = store.create_note(None, text).unwrap();
     let moved = store
-        .checklist_to_tasks(&note, text, 0, utf16(text), None, "")
+        .checklist_to_tasks(&note, text, 0, utf16(text), Some(""))
         .unwrap();
-    (note, moved.list_id)
+    (note, format!("#{}", moved.tag.unwrap()))
 }
 
-/// A list as (depth, title, done), open then completed.
+/// A view as (depth, title, done), open then completed.
 fn list(store: &Store, id: &str) -> Vec<(u32, String, bool)> {
-    let o = store.outline(id).unwrap();
+    let o = store.view_outline(id, today()).unwrap();
     [o.open, o.completed]
         .concat()
         .into_iter()
@@ -45,7 +46,7 @@ fn rows(rows: &[(u32, &str, bool)]) -> Vec<(u32, String, bool)> {
 }
 
 fn task_id(store: &Store, list_id: &str, title: &str) -> String {
-    let o = store.outline(list_id).unwrap();
+    let o = store.view_outline(list_id, today()).unwrap();
     [o.open, o.completed]
         .concat()
         .into_iter()
@@ -68,43 +69,32 @@ fn making_tasks_copies_the_items_and_leaves_the_note_as_it_was() {
         list(&store, &list_id),
         rows(&[(0, "milk", false), (1, "oat", true), (0, "eggs", false)])
     );
-    assert!(
-        store
-            .lists()
-            .unwrap()
-            .iter()
-            .any(|l| l.id == list_id && l.title == "Groceries")
-    );
+    assert_eq!(list_id, "#groceries");
+    assert!(store.tags().unwrap().iter().any(|t| t.name == "groceries"));
 }
 
 #[test]
-fn a_typed_list_title_wins_over_the_heading() {
+fn a_typed_tag_wins_over_the_heading() {
     let store = Store::open_in_memory().unwrap();
     let note = store.create_note(None, SHOPPING).unwrap();
     let moved = store
-        .checklist_to_tasks(&note, SHOPPING, 0, utf16(SHOPPING), None, "  Weekly shop ")
+        .checklist_to_tasks(&note, SHOPPING, 0, utf16(SHOPPING), Some("  Weekly shop "))
         .unwrap();
-    assert!(
-        store
-            .lists()
-            .unwrap()
-            .iter()
-            .any(|l| l.id == moved.list_id && l.title == "Weekly shop")
-    );
+    assert_eq!(moved.tag.as_deref(), Some("weekly-shop"));
     assert_eq!(moved.count, 3);
 }
 
 #[test]
-fn tasks_go_first_in_an_existing_list_in_note_order() {
+fn tasks_go_first_under_an_existing_tag_in_note_order() {
     let store = Store::open_in_memory().unwrap();
-    let errands = store.create_list("Errands").unwrap();
-    store.add_task(&errands, "old").unwrap();
+    let errands = store.create_view("Errands", "#errands").unwrap();
+    store.add_task(&errands, "old", today()).unwrap();
     let text = "Note\n- [ ] one\n- [ ] two";
     let note = store.create_note(None, text).unwrap();
     let moved = store
-        .checklist_to_tasks(&note, text, 0, utf16(text), Some(&errands), "")
+        .checklist_to_tasks(&note, text, 0, utf16(text), Some("errands"))
         .unwrap();
-    assert_eq!(moved.list_id, errands);
+    assert_eq!(moved.tag.as_deref(), Some("errands"));
     assert_eq!(
         list(&store, &errands),
         rows(&[(0, "one", false), (0, "two", false), (0, "old", false)])
@@ -117,7 +107,7 @@ fn the_inbox_works_as_a_target() {
     let text = "Note\n- [ ] call mum";
     let note = store.create_note(None, text).unwrap();
     store
-        .checklist_to_tasks(&note, text, 0, utf16(text), Some(INBOX), "")
+        .checklist_to_tasks(&note, text, 0, utf16(text), None)
         .unwrap();
     assert_eq!(list(&store, INBOX), rows(&[(0, "call mum", false)]));
 }
@@ -128,9 +118,7 @@ fn only_the_touched_items_are_made() {
     let text = "Note\n- [ ] a\n- [ ] b\n- [ ] c";
     let note = store.create_note(None, text).unwrap();
     let at = text.find('b').unwrap() as u32;
-    let moved = store
-        .checklist_to_tasks(&note, text, at, at, Some(INBOX), "")
-        .unwrap();
+    let moved = store.checklist_to_tasks(&note, text, at, at, None).unwrap();
     assert_eq!(moved.count, 1);
     assert_eq!(list(&store, INBOX), rows(&[(0, "b", false)]));
 }
@@ -141,9 +129,7 @@ fn a_nested_item_alone_goes_to_the_top_level() {
     let text = "Note\n- [ ] a\n  - [ ] a1";
     let note = store.create_note(None, text).unwrap();
     let at = text.find("a1").unwrap() as u32;
-    store
-        .checklist_to_tasks(&note, text, at, at, Some(INBOX), "")
-        .unwrap();
+    store.checklist_to_tasks(&note, text, at, at, None).unwrap();
     assert_eq!(list(&store, INBOX), rows(&[(0, "a1", false)]));
 }
 
@@ -172,7 +158,7 @@ fn what_the_editor_shows_is_saved_first() {
     let note = store.create_note(None, "Note\n- [ ] a").unwrap();
     let shown = "Note\nintro\n- [ ] a\n- [ ] b";
     store
-        .checklist_to_tasks(&note, shown, 0, utf16(shown), Some(INBOX), "")
+        .checklist_to_tasks(&note, shown, 0, utf16(shown), None)
         .unwrap();
     assert_eq!(body(&store, &note), shown);
     assert_eq!(list(&store, INBOX).len(), 2);
@@ -186,11 +172,11 @@ fn nothing_to_make_is_refused_without_changes() {
     let shown = "Note\njust words, edited";
     assert!(
         store
-            .checklist_to_tasks(&note, shown, 0, utf16(shown), None, "")
+            .checklist_to_tasks(&note, shown, 0, utf16(shown), Some(""))
             .is_err()
     );
-    assert_eq!(store.lists().unwrap().len(), 1, "only the Inbox");
-    assert!(store.tasks(INBOX).unwrap().is_empty());
+    assert!(store.tags().unwrap().is_empty());
+    assert!(store.all_tasks().unwrap().is_empty());
     assert_eq!(body(&store, &note), text, "nothing saved either");
 }
 
@@ -199,7 +185,7 @@ fn one_undo_takes_the_tasks_away_and_keeps_the_note() {
     let store = Store::open_in_memory().unwrap();
     let (note, list_id) = make(&store, SHOPPING);
     assert!(store.undo().unwrap());
-    assert!(store.lists().unwrap().iter().all(|l| l.id != list_id));
+    assert!(list(&store, &list_id).is_empty());
     assert_eq!(body(&store, &note), SHOPPING);
 }
 
@@ -210,7 +196,7 @@ fn making_tasks_again_makes_them_again() {
     let note = store.create_note(None, text).unwrap();
     for _ in 0..2 {
         store
-            .checklist_to_tasks(&note, text, 0, utf16(text), Some(INBOX), "")
+            .checklist_to_tasks(&note, text, 0, utf16(text), None)
             .unwrap();
     }
     assert_eq!(list(&store, INBOX).len(), 2, "a copy each time");
@@ -222,9 +208,7 @@ fn offsets_are_utf16_and_titles_can_be_unicode() {
     let text = "😀 Trip\n- [ ] 🧳 bag\n- [ ] café";
     let note = store.create_note(None, text).unwrap();
     let at = utf16(text);
-    store
-        .checklist_to_tasks(&note, text, at, at, Some(INBOX), "")
-        .unwrap();
+    store.checklist_to_tasks(&note, text, at, at, None).unwrap();
     assert_eq!(list(&store, INBOX), rows(&[(0, "café", false)]));
 }
 
@@ -251,10 +235,10 @@ fn task_changes_leave_the_note_alone() {
     store
         .rename(&task_id(&store, &list_id, "milk"), "oat milk")
         .unwrap();
-    store.add_task(&eggs, "large").unwrap();
-    store.add_task(&list_id, "bread").unwrap();
+    store.add_task(&eggs, "large", today()).unwrap();
+    store.add_task(&list_id, "bread", today()).unwrap();
     store.delete(&task_id(&store, &list_id, "oat")).unwrap();
-    store.delete(&list_id).unwrap();
+    store.delete_tag(&list_id).unwrap();
     assert_eq!(body(&store, &note), SHOPPING);
 }
 
@@ -292,10 +276,10 @@ fn with_block(store: &Store, source: &TaskSource) -> String {
 #[test]
 fn a_list_block_opens_as_a_plain_checklist() {
     let store = Store::open_in_memory().unwrap();
-    let errands = store.create_list("Errands").unwrap();
-    let post = store.add_task(&errands, "post office").unwrap();
-    store.add_task(&post, "stamps").unwrap();
-    let bank = store.add_task(&errands, "bank").unwrap();
+    let errands = store.create_view("Errands", "#errands").unwrap();
+    let bank = store.add_task(&errands, "bank", today()).unwrap();
+    let post = store.add_task(&errands, "post office", today()).unwrap();
+    store.add_task(&post, "stamps", today()).unwrap();
     store.set_completed(&bank, true, today()).unwrap();
     let note = with_block(&store, &TaskSource::List(errands.clone()));
     let opened = store.open_note(&note).unwrap();
@@ -305,7 +289,7 @@ fn a_list_block_opens_as_a_plain_checklist() {
     );
     assert_eq!(body(&store, &note), opened);
     // Plain from now on.
-    store.add_task(&errands, "pharmacy").unwrap();
+    store.add_task(&errands, "pharmacy", today()).unwrap();
     store.set_completed(&post, true, today()).unwrap();
     assert_eq!(body(&store, &note), opened);
 }
@@ -313,10 +297,9 @@ fn a_list_block_opens_as_a_plain_checklist() {
 #[test]
 fn a_block_of_picked_tasks_opens_as_their_lines_only() {
     let store = Store::open_in_memory().unwrap();
-    let errands = store.create_list("Errands").unwrap();
-    store.add_task(&errands, "other").unwrap();
-    let a = store.add_task(&errands, "a").unwrap();
-    store.add_task(&a, "a.1").unwrap();
+    store.add_task(INBOX, "other", today()).unwrap();
+    let a = store.add_task(INBOX, "a", today()).unwrap();
+    store.add_task(&a, "a.1", today()).unwrap();
     let note = with_block(&store, &TaskSource::Tasks(vec![a]));
     assert_eq!(
         store.open_note(&note).unwrap(),
@@ -334,7 +317,7 @@ fn a_block_whose_tasks_are_gone_opens_without_its_line() {
 #[test]
 fn per_line_markers_are_taken_out_on_opening() {
     let store = Store::open_in_memory().unwrap();
-    let tea = store.add_task(INBOX, "tea").unwrap();
+    let tea = store.add_task(INBOX, "tea", today()).unwrap();
     let note = store
         .create_note(None, &format!("Note\n- [ ] tea <!--task:{tea}-->\n- [ ] plain"))
         .unwrap();
@@ -351,14 +334,14 @@ fn per_line_markers_are_taken_out_on_opening() {
 #[test]
 fn opening_an_old_note_isnt_undone() {
     let store = Store::open_in_memory().unwrap();
-    let errands = store.create_list("Errands").unwrap();
-    store.add_task(&errands, "a").unwrap();
+    let errands = store.create_view("Errands", "#errands").unwrap();
+    let a = store.add_task(&errands, "a", today()).unwrap();
     let note = with_block(&store, &TaskSource::List(errands.clone()));
-    store.rename(&errands, "Chores").unwrap();
+    store.rename(&a, "b").unwrap();
     let opened = store.open_note(&note).unwrap();
     // Undo takes the user's last step (the rename), not the update.
     assert!(store.undo().unwrap());
-    assert!(store.lists().unwrap().iter().any(|l| l.title == "Errands"));
+    assert_eq!(store.task_by_id(&a).unwrap().title, "a");
     assert_eq!(body(&store, &note), opened);
 }
 

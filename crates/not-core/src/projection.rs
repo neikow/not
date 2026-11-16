@@ -1,4 +1,4 @@
-//! Projects the `tasks` tree of the workspace doc into the `list` / `task` read-model tables.
+//! Projects the `tasks` tree of the workspace doc into the `task` read-model table.
 //!
 //! Loro events tell us which nodes changed; only those rows (and, for structural changes, their
 //! subtrees) are rewritten. [`Dirty`] also collects what changed in the other containers, which
@@ -13,20 +13,28 @@ use loro::{
 use rusqlite::{Connection, params};
 
 use crate::Result;
-use crate::store::INBOX;
 
 pub const KIND: &str = "kind";
+/// Lists from before ADR 0014; [`crate::views`] turns them into tags and saved views.
 pub const KIND_LIST: &str = "list";
 pub const KIND_TASK: &str = "task";
 pub const TITLE: &str = "title";
 pub const COMPLETED_AT: &str = "completed_at";
-/// `YYYY-MM-DD`; see [`crate::schedule`].
+/// The start date, `YYYY-MM-DD` (named for when it was the only date); see [`crate::schedule`].
 pub const DUE: &str = "due";
 /// Minutes after midnight; only with [`DUE`].
 pub const DUE_TIME: &str = "due_time";
+/// `YYYY-MM-DD`.
+pub const DEADLINE: &str = "deadline";
+/// `true` when parked in Someday; never with [`DUE`].
+pub const SOMEDAY: &str = "someday";
+/// Mergeable map: tag → `true`.
+pub const TAGS: &str = "tags";
+/// Unix millis of the last edit made to the task itself (for the weekly review's stale tasks).
+pub const TOUCHED_AT: &str = "touched_at";
 /// 1 = low … 3 = high; absent = none.
 pub const PRIORITY: &str = "priority";
-/// RRULE subset; only with [`DUE`].
+/// RRULE subset; only with [`DUE`] or [`DEADLINE`].
 pub const REPEAT: &str = "repeat";
 /// `LoroText` with the task's markdown notes.
 pub const NOTES: &str = "notes";
@@ -57,7 +65,11 @@ pub struct Dirty {
 
 impl Dirty {
     pub fn is_empty(&self) -> bool {
-        self.tasks.is_empty() && !self.habits && self.habit_log.is_empty() && self.notes.is_empty() && !self.workouts
+        self.tasks.is_empty()
+            && !self.habits
+            && self.habit_log.is_empty()
+            && self.notes.is_empty()
+            && !self.workouts
     }
 
     pub fn record(&mut self, roots: &Roots, event: &DiffEvent) {
@@ -143,7 +155,7 @@ pub fn apply(tree: &LoroTree, db: &Connection, dirty: TreeDirty) -> Result<()> {
 }
 
 pub fn rebuild(tree: &LoroTree, db: &Connection) -> Result<()> {
-    db.execute_batch("DELETE FROM list; DELETE FROM task;")?;
+    db.execute_batch("DELETE FROM task;")?;
     for root in tree.roots() {
         project_subtree(tree, db, root)?;
     }
@@ -188,77 +200,74 @@ fn project_node(tree: &LoroTree, db: &Connection, id: TreeID) -> Result<()> {
     let meta = tree.get_meta(id)?;
     let title = meta_str(&meta, TITLE).unwrap_or_default();
     let position = tree.fractional_index(id).unwrap_or_default();
-    match meta_str(&meta, KIND).as_deref() {
-        Some(KIND_LIST) => {
-            db.execute(
-                "INSERT INTO list (id, title, position) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (id) DO UPDATE SET title = excluded.title, position = excluded.position",
-                params![id.to_string(), title, position],
-            )?;
-        }
-        Some(KIND_TASK) => {
-            let Some((list_id, parent_id)) = locate_task(tree, id) else {
-                // Under something that isn't a list or task (not possible through the public API).
-                return remove(db, id);
-            };
-            db.execute(
-                "INSERT INTO task (id, list_id, parent_id, title, notes, completed_at, position,
-                                   due, due_time, priority, repeat)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                 ON CONFLICT (id) DO UPDATE SET
-                    list_id = excluded.list_id, parent_id = excluded.parent_id, title = excluded.title,
-                    notes = excluded.notes, completed_at = excluded.completed_at,
-                    position = excluded.position, due = excluded.due, due_time = excluded.due_time,
-                    priority = excluded.priority, repeat = excluded.repeat",
-                params![
-                    id.to_string(),
-                    list_id,
-                    parent_id.map(|p| p.to_string()),
-                    title,
-                    meta_text(&meta, NOTES).unwrap_or_default(),
-                    meta_i64(&meta, COMPLETED_AT),
-                    position,
-                    meta_str(&meta, DUE),
-                    meta_i64(&meta, DUE_TIME),
-                    meta_i64(&meta, PRIORITY).unwrap_or(0),
-                    meta_str(&meta, REPEAT),
-                ],
-            )?;
-        }
-        _ => {}
+    if meta_str(&meta, KIND).as_deref() != Some(KIND_TASK) {
+        return Ok(());
     }
+    let Some(parent_id) = locate_task(tree, id) else {
+        // Under something that isn't a list or task (not possible through the public API).
+        return remove(db, id);
+    };
+    db.execute(
+        "INSERT INTO task (id, parent_id, title, notes, completed_at, position,
+                           start, time, deadline, someday, priority, repeat, tags, touched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT (id) DO UPDATE SET
+            parent_id = excluded.parent_id, title = excluded.title, notes = excluded.notes,
+            completed_at = excluded.completed_at, position = excluded.position,
+            start = excluded.start, time = excluded.time, deadline = excluded.deadline,
+            someday = excluded.someday, priority = excluded.priority, repeat = excluded.repeat,
+            tags = excluded.tags, touched_at = excluded.touched_at",
+        params![
+            id.to_string(),
+            parent_id.map(|p| p.to_string()),
+            title,
+            meta_text(&meta, NOTES).unwrap_or_default(),
+            meta_i64(&meta, COMPLETED_AT),
+            position,
+            meta_str(&meta, DUE),
+            meta_i64(&meta, DUE_TIME),
+            meta_str(&meta, DEADLINE),
+            meta_bool(&meta, SOMEDAY),
+            meta_i64(&meta, PRIORITY).unwrap_or(0),
+            meta_str(&meta, REPEAT),
+            tags_of(&meta).join("\n"),
+            meta_i64(&meta, TOUCHED_AT),
+        ],
+    )?;
     Ok(())
 }
 
-/// Returns the owning list id ([`INBOX`] for tasks outside any list) and, for subtasks, the parent
-/// task.
-fn locate_task(tree: &LoroTree, id: TreeID) -> Option<(String, Option<TreeID>)> {
-    let parent = match tree.parent(id)? {
-        TreeParentId::Root => return Some((INBOX.into(), None)),
-        TreeParentId::Node(parent) => parent,
-        _ => return None,
+/// A task's own tags, sorted.
+pub fn tags_of(meta: &LoroMap) -> Vec<String> {
+    let Some(ValueOrContainer::Container(Container::Map(tags))) = meta.get(TAGS) else {
+        return Vec::new();
     };
-    let mut current = parent;
-    loop {
-        match kind(tree, current).as_deref() {
-            Some(KIND_LIST) => {
-                let parent_task = (current != parent).then_some(parent);
-                return Some((current.to_string(), parent_task));
-            }
-            Some(KIND_TASK) => match tree.parent(current)? {
-                TreeParentId::Node(next) => current = next,
-                TreeParentId::Root => return Some((INBOX.into(), Some(parent))),
-                _ => return None,
-            },
-            _ => return None,
+    let mut out: Vec<String> = Vec::new();
+    tags.for_each(|key, value| {
+        if matches!(value, ValueOrContainer::Value(LoroValue::Bool(true))) {
+            out.push(key.to_string());
         }
+    });
+    out.sort();
+    out
+}
+
+/// The parent task of a subtask; `None` for a top-level task (at the root, or still in a list
+/// from before ADR 0014). `None` overall when it is under something else.
+fn locate_task(tree: &LoroTree, id: TreeID) -> Option<Option<TreeID>> {
+    match tree.parent(id)? {
+        TreeParentId::Root => Some(None),
+        TreeParentId::Node(parent) => match kind(tree, parent).as_deref() {
+            Some(KIND_TASK) => Some(Some(parent)),
+            Some(KIND_LIST) => Some(None),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
 fn remove(db: &Connection, id: TreeID) -> Result<()> {
     let id = id.to_string();
-    db.execute("DELETE FROM list WHERE id = ?1", [&id])?;
-    db.execute("DELETE FROM task WHERE list_id = ?1", [&id])?;
     db.execute(
         "WITH RECURSIVE sub (id) AS (
              SELECT ?1 UNION ALL SELECT task.id FROM task JOIN sub ON task.parent_id = sub.id
@@ -281,6 +290,13 @@ pub fn meta_text(meta: &LoroMap, key: &str) -> Option<String> {
         ValueOrContainer::Container(Container::Text(text)) => Some(text.to_string()),
         _ => None,
     }
+}
+
+pub fn meta_bool(meta: &LoroMap, key: &str) -> bool {
+    matches!(
+        meta.get(key),
+        Some(ValueOrContainer::Value(LoroValue::Bool(true)))
+    )
 }
 
 pub fn meta_i64(meta: &LoroMap, key: &str) -> Option<i64> {

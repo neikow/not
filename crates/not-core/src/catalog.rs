@@ -57,7 +57,8 @@ struct Catalog {
 fn catalog() -> &'static Catalog {
     static CATALOG: OnceLock<Catalog> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        let items: Vec<CatalogExercise> = serde_json::from_str(DATA).expect("bundled exercises.json is valid");
+        let items: Vec<CatalogExercise> =
+            serde_json::from_str(DATA).expect("bundled exercises.json is valid");
         let names: Vec<Vec<String>> = items
             .iter()
             .map(|e| {
@@ -142,7 +143,10 @@ pub fn search(query: &str, limit: usize) -> Vec<CatalogExercise> {
         })
         .collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    hits.into_iter().take(limit).map(|(_, _, i)| cat.items[i].clone()).collect()
+    hits.into_iter()
+        .take(limit)
+        .map(|(_, _, i)| cat.items[i].clone())
+        .collect()
 }
 
 pub fn by_id(id: &str) -> Option<CatalogExercise> {
@@ -164,7 +168,8 @@ impl Store {
 
     /// What a name of the user's is linked to: by hand, else by matching a catalogue name.
     pub fn exercise_info(&self, name: &str) -> Option<CatalogExercise> {
-        self.resolve(&crate::workouts::name_key(name)).and_then(|id| by_id(&id))
+        self.resolve(&crate::workouts::name_key(name))
+            .and_then(|id| by_id(&id))
     }
 
     /// Links the user's name to a catalogue exercise (`None` unlinks, overriding a name match).
@@ -201,14 +206,21 @@ mod tests {
     #[test]
     fn search_matches_french_without_accents() {
         let hits = search("developpe couche halteres", 5);
-        assert!(hits.iter().any(|e| e.name_fr.as_deref() == Some("Développé couché avec haltères")), "{hits:#?}");
+        assert!(
+            hits.iter()
+                .any(|e| e.name_fr.as_deref() == Some("Développé couché avec haltères")),
+            "{hits:#?}"
+        );
         assert_eq!(search("Bench Press", 1)[0].name_en, "Bench Press");
         assert!(search("", 5).is_empty());
     }
 
     #[test]
     fn normalizes() {
-        assert_eq!(normalize("  Curl Biceps Haltères (double) "), "curl biceps halteres double");
+        assert_eq!(
+            normalize("  Curl Biceps Haltères (double) "),
+            "curl biceps halteres double"
+        );
         assert_eq!(normalize("Élévations latérales"), "elevations laterales");
     }
 }

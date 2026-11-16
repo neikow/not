@@ -76,7 +76,7 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
                 guard let at = dueDate(task), at > now, at < horizon else { continue }
                 let content = UNMutableNotificationContent()
                 content.title = task.title
-                content.body = [timeLabel(task), model.listTitle(task.listId)].compactMap { $0 }.joined(separator: " · ")
+                content.body = [timeLabel(task), task.tags.isEmpty ? nil : task.tags.map { "#" + $0 }.joined(separator: " ")].compactMap { $0 }.joined(separator: " · ")
                 content.sound = .default
                 content.categoryIdentifier = Self.category
                 content.userInfo = ["id": task.id]
@@ -116,13 +116,13 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func dueDate(_ task: TaskItem) -> Date? {
-        guard let due = task.due, let minutes = task.dueTime,
+        guard let due = task.start, let minutes = task.time,
               let day = AppModel.dayFormatter.date(from: due) else { return nil }
         return Calendar.current.date(byAdding: .minute, value: Int(minutes), to: day)
     }
 
     private func timeLabel(_ task: TaskItem) -> String? {
-        task.dueTime.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
+        task.time.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
     }
 
     private func next(minutes: Int, after now: Date) -> Date {

@@ -3,6 +3,10 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use not_core::{Credentials, Error, INBOX, LiveSync, Store, SyncClient, SyncStatus};
+
+fn day() -> not_core::date::Date {
+    not_core::date::Date::parse("2026-11-16").unwrap()
+}
 use not_protocol::Poke;
 use not_server::AppState;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -48,13 +52,13 @@ async fn two_devices_converge_through_server() {
     let mac = Store::open_in_memory().unwrap();
     let phone = Store::open_in_memory().unwrap();
 
-    let milk = mac.add_task(INBOX, "milk").unwrap();
+    let milk = mac.add_task(INBOX, "milk", day()).unwrap();
     let report = mac_client.sync(&mac).await.unwrap();
     assert!(report.pushed);
     assert_eq!(report.pulled, 0, "own updates are not echoed back");
 
     phone_client.sync(&phone).await.unwrap();
-    assert_eq!(phone.tasks(INBOX).unwrap(), mac.tasks(INBOX).unwrap());
+    assert_eq!(phone.all_tasks().unwrap(), mac.all_tasks().unwrap());
 
     mac.rename(&milk, "oat milk").unwrap();
     phone.set_completed(&milk, true, today()).unwrap();
@@ -62,8 +66,8 @@ async fn two_devices_converge_through_server() {
     phone_client.sync(&phone).await.unwrap();
     mac_client.sync(&mac).await.unwrap();
 
-    let tasks = mac.tasks(INBOX).unwrap();
-    assert_eq!(tasks, phone.tasks(INBOX).unwrap());
+    let tasks = mac.all_tasks().unwrap();
+    assert_eq!(tasks, phone.all_tasks().unwrap());
     assert_eq!(tasks[0].title, "oat milk");
     assert!(tasks[0].completed_at.is_some());
 
@@ -112,7 +116,7 @@ async fn pairing_codes_are_single_use() {
 async fn rejects_unknown_token() {
     let server = Server::start().await;
     let store = Store::open_in_memory().unwrap();
-    store.add_task(INBOX, "x").unwrap();
+    store.add_task(INBOX, "x", day()).unwrap();
     let err = SyncClient::new(&server.base, "nope")
         .sync(&store)
         .await
@@ -137,7 +141,7 @@ async fn revoked_devices_lose_access() {
 
     phone.revoke(mac.device_id).await.unwrap();
     let store = Store::open_in_memory().unwrap();
-    store.add_task(INBOX, "x").unwrap();
+    store.add_task(INBOX, "x", day()).unwrap();
     let err = SyncClient::from_credentials(&mac).sync(&store).await.unwrap_err();
     assert!(matches!(err, Error::Unauthorized), "{err}");
     assert_eq!(phone.devices().await.unwrap().len(), 1);
@@ -171,7 +175,7 @@ async fn websocket_pokes_on_push() {
     assert_eq!(next_poke(&mut socket).await, Poke { seq: 0 }, "head on connect");
 
     let store = Store::open_in_memory().unwrap();
-    store.add_task(INBOX, "x").unwrap();
+    store.add_task(INBOX, "x", day()).unwrap();
     server.client("Phone").await.sync(&store).await.unwrap();
     assert_eq!(next_poke(&mut socket).await, Poke { seq: 1 });
 }
@@ -185,12 +189,12 @@ async fn live_sync_propagates_both_ways() {
     let _mac_sync = LiveSync::start(&runtime, mac.clone(), server.client("Mac").await, |_| {});
     let _phone_sync = LiveSync::start(&runtime, phone.clone(), server.client("Phone").await, |_| {});
 
-    mac.add_task(INBOX, "milk").unwrap();
-    wait_until(|| phone.tasks(INBOX).unwrap().len() == 1).await;
+    mac.add_task(INBOX, "milk", day()).unwrap();
+    wait_until(|| phone.all_tasks().unwrap().len() == 1).await;
 
-    let milk = phone.tasks(INBOX).unwrap()[0].id.clone();
+    let milk = phone.all_tasks().unwrap()[0].id.clone();
     phone.set_completed(&milk, true, today()).unwrap();
-    wait_until(|| mac.tasks(INBOX).unwrap()[0].completed_at.is_some()).await;
+    wait_until(|| mac.all_tasks().unwrap()[0].completed_at.is_some()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -233,14 +237,14 @@ async fn undo_works_while_live_sync_runs() {
     let _phone_sync = LiveSync::start(&runtime, phone.clone(), server.client("Phone").await, |_| {});
     let _mac_sync = LiveSync::start(&runtime, mac.clone(), server.client("Mac").await, |_| {});
 
-    let id = phone.add_task(INBOX, "probe").unwrap();
-    wait_until(|| mac.tasks(INBOX).unwrap().len() == 1).await;
+    let id = phone.add_task(INBOX, "probe", day()).unwrap();
+    wait_until(|| mac.all_tasks().unwrap().len() == 1).await;
     phone.delete(&id).unwrap();
-    wait_until(|| mac.tasks(INBOX).unwrap().is_empty()).await;
+    wait_until(|| mac.all_tasks().unwrap().is_empty()).await;
 
     assert!(phone.undo().unwrap());
-    assert_eq!(phone.tasks(INBOX).unwrap().len(), 1, "restored on the phone");
-    wait_until(|| mac.tasks(INBOX).unwrap().len() == 1).await;
+    assert_eq!(phone.all_tasks().unwrap().len(), 1, "restored on the phone");
+    wait_until(|| mac.all_tasks().unwrap().len() == 1).await;
 }
 
 #[tokio::test]

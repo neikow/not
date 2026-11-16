@@ -4,7 +4,8 @@
 //!
 //! - `/` and below: the owner's pages, signed in by pairing the browser with a one-time code (it
 //!   then shows among the devices and can be revoked like one).
-//! - `/s/<token>`: one list, for anyone with the link; the owner chose read-only or edit.
+//! - `/s/<token>`: one view (smart list, ADR 0014), for anyone with the link; the owner chose
+//!   read-only or edit.
 //!
 //! Plain HTML forms; scripts only report the browser's UTC offset, so dates typed in
 //! ("tomorrow") mean the visitor's tomorrow, and keep shared lists live over a WebSocket
@@ -20,7 +21,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use not_core::date::Date;
-use not_core::{INBOX, OutlineRow, Task};
+use not_core::{OutlineRow, TODAY, Task, UPCOMING};
 use not_protocol::ShareInfo;
 use serde::Deserialize;
 use tokio::sync::broadcast;
@@ -29,8 +30,6 @@ use crate::AppState;
 
 const SESSION_COOKIE: &str = "not_session";
 const OFFSET_COOKIE: &str = "not_tzo";
-const TODAY: &str = "today";
-const UPCOMING: &str = "upcoming";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -145,63 +144,53 @@ async fn list_page(
         return unavailable();
     };
     let today = today(&headers);
-    let lists = match store.lists() {
-        Ok(lists) => lists,
+    let views = match store.views(today) {
+        Ok(views) => views,
         Err(e) => return core_error(e),
     };
-    let title_of = |id: &str| {
-        lists
-            .iter()
-            .find(|l| l.id == id)
-            .map_or("Inbox".to_owned(), |l| l.title.clone())
+    let title = match views.iter().find(|v| v.id == list) {
+        Some(v) => v.title.clone(),
+        None if list.starts_with('#') => list.clone(),
+        None => return not_found(),
     };
-    let (title, rows, completed, by_date) = match list.as_str() {
-        TODAY => match store.due_tasks(today) {
-            Ok(tasks) => ("Today".to_owned(), flat(tasks), Vec::new(), true),
-            Err(e) => return core_error(e),
-        },
-        UPCOMING => match store.upcoming_tasks(today) {
-            Ok(tasks) => ("Upcoming".to_owned(), flat(tasks), Vec::new(), true),
-            Err(e) => return core_error(e),
-        },
-        id if lists.iter().any(|l| l.id == id) => match store.outline(id) {
-            Ok(outline) => (title_of(id), outline.open, outline.completed, false),
-            Err(e) => return core_error(e),
-        },
-        _ => return not_found(),
+    let (rows, completed) = match store.view_outline(&list, today) {
+        Ok(outline) => (outline.open, outline.completed),
+        Err(e) => return core_error(e),
     };
 
     let mut nav = String::new();
-    for (id, label) in [(TODAY, "Today"), (UPCOMING, "Upcoming")]
-        .into_iter()
-        .map(|(a, b)| (a.to_owned(), b.to_owned()))
-        .chain(lists.iter().map(|l| (l.id.clone(), l.title.clone())))
-    {
-        let current = if id == list { r#" aria-current="page""# } else { "" };
-        let _ = write!(nav, r#"<a href="/l/{}"{current}>{}</a>"#, esc(&id), esc(&label));
+    for v in &views {
+        let current = if v.id == list {
+            r#" aria-current="page""#
+        } else {
+            ""
+        };
+        let _ = write!(
+            nav,
+            r#"<a href="/l/{}"{current}>{}</a>"#,
+            urlencode(&v.id),
+            esc(&v.title)
+        );
     }
     nav.push_str(r#"<a href="/notes">Notes</a>"#);
 
-    let here = format!("/l/{}", esc(&list));
+    let here = format!("/l/{}", urlencode(&list));
     let mut body = format!(r#"<main><h1>{}</h1>"#, esc(&title));
-    let target = if by_date { INBOX.to_owned() } else { list.clone() };
     let placeholder = match list.as_str() {
         TODAY => "New task for today",
-        UPCOMING => "New task for tomorrow",
+        UPCOMING => "New task — say when, like “fri”",
         _ => "New task",
     };
     let _ = write!(
         body,
-        r#"<form method="post" action="/l/{}/add" class="add"><input name="text" placeholder="{placeholder} — try “call mum fri 6pm !1”" required><input type="hidden" name="from" value="{}"><button aria-label="Add">+</button></form>"#,
-        esc(&target),
-        esc(&list)
+        r#"<form method="post" action="/l/{}/add" class="add"><input name="text" placeholder="{placeholder} — try “call mum fri 6pm #home !1”" required><button aria-label="Add">+</button></form>"#,
+        urlencode(&list),
     );
     body.push_str(&task_rows(
         today,
         &rows,
         |t| format!("/t/{}/toggle", esc(&t.id)),
         &here,
-        by_date.then_some(&title_of as &dyn Fn(&str) -> String),
         true,
     ));
     if rows.is_empty() {
@@ -218,7 +207,6 @@ async fn list_page(
             &completed,
             |t| format!("/t/{}/toggle", esc(&t.id)),
             &here,
-            None,
             true,
         ));
         body.push_str("</details>");
@@ -230,9 +218,6 @@ async fn list_page(
 #[derive(Deserialize)]
 struct AddForm {
     text: String,
-    /// The page to go back to (a list, or Today / Upcoming).
-    #[serde(default)]
-    from: String,
 }
 
 async fn add_task(
@@ -248,19 +233,19 @@ async fn add_task(
         return unavailable();
     };
     let today = today(&headers);
-    let due = match form.from.as_str() {
-        TODAY => Some(today),
-        UPCOMING => Some(today.add_days(1)),
-        _ => None,
+    // Several lines (pasted) make a task each.
+    let added = if form.text.contains('\n') {
+        store.quick_add_lines(&list, &form.text, today, None).map(|_| ())
+    } else if form.text.trim().is_empty() {
+        Ok(())
+    } else {
+        store.quick_add(&list, &form.text, today, &[]).map(|_| ())
     };
-    if !form.text.trim().is_empty()
-        && let Err(e) = store.quick_add(&list, &form.text, today, &[], due)
-    {
+    if let Err(e) = added {
         return core_error(e);
     }
     state.publish_replica();
-    let back = if form.from.is_empty() { list } else { form.from };
-    Redirect::to(&format!("/l/{}", urlencode(&back))).into_response()
+    Redirect::to(&format!("/l/{}", urlencode(&list))).into_response()
 }
 
 #[derive(Deserialize)]
@@ -373,7 +358,7 @@ async fn image(State(state): State<AppState>, headers: HeaderMap, UrlPath(id): U
     crate::image_response(&state, &id).unwrap_or_else(server_error)
 }
 
-// ---- shared lists --------------------------------------------------------------------------------
+// ---- shared views --------------------------------------------------------------------------------
 
 async fn shared_page(
     State(state): State<AppState>,
@@ -416,7 +401,7 @@ struct SharedView {
 }
 
 enum SharedError {
-    /// The link was revoked or its list deleted.
+    /// The link was revoked or its view deleted.
     Gone,
     Unavailable,
     Core(not_core::Error),
@@ -429,16 +414,19 @@ fn shared_view(
     today: Date,
 ) -> Result<SharedView, SharedError> {
     let store = state.replica(true).ok_or(SharedError::Unavailable)?;
-    let lists = store.lists().map_err(SharedError::Core)?;
-    let title = lists
+    let title = store
+        .views(today)
+        .map_err(SharedError::Core)?
         .into_iter()
-        .find(|l| l.id == share.list_id)
+        .find(|v| v.id == share.list_id)
         .ok_or(SharedError::Gone)?
         .title;
-    let outline = store.outline(&share.list_id).map_err(SharedError::Core)?;
+    let outline = store
+        .view_outline(&share.list_id, today)
+        .map_err(SharedError::Core)?;
     let here = format!("/s/{}", esc(token));
     let toggle = |t: &Task| format!("{here}/t/{}/toggle", esc(&t.id));
-    let mut tasks = task_rows(today, &outline.open, toggle, &here, None, share.can_edit);
+    let mut tasks = task_rows(today, &outline.open, toggle, &here, share.can_edit);
     if outline.open.is_empty() {
         tasks.push_str(r#"<p class="empty">All done.</p>"#);
     }
@@ -453,7 +441,6 @@ fn shared_view(
             &outline.completed,
             toggle,
             &here,
-            None,
             share.can_edit,
         ));
         tasks.push_str("</details>");
@@ -554,10 +541,10 @@ async fn shared_add(
     let Some(store) = state.replica(true) else {
         return unavailable();
     };
-    // Guests' text is a title: no `#list` jumping out of the shared list. Dates still parse.
+    // Guests' text is a title: no `#tag` taking it out of the shared view. Dates still parse.
     let text = form.text.replace('#', "");
     if !text.trim().is_empty()
-        && let Err(e) = store.quick_add(&share.list_id, &text, today(&headers), &[], None)
+        && let Err(e) = store.quick_add(&share.list_id, &text, today(&headers), &[])
     {
         return core_error(e);
     }
@@ -576,10 +563,10 @@ async fn shared_toggle(
     let Some(store) = state.replica(true) else {
         return unavailable();
     };
-    // Only tasks of the shared list.
+    // Only tasks the shared view shows.
     let in_list = store
-        .tasks(&share.list_id)
-        .is_ok_and(|tasks| tasks.iter().any(|t| t.id == task));
+        .view_outline(&share.list_id, today(&headers))
+        .is_ok_and(|o| o.open.iter().chain(&o.completed).any(|r| r.task.id == task));
     if !in_list {
         return not_found();
     }
@@ -597,25 +584,13 @@ fn toggle(store: &not_core::Store, id: &str, today: Date) -> not_core::Result<()
     store.set_completed(id, task.completed_at.is_none(), today)
 }
 
-fn flat(tasks: Vec<Task>) -> Vec<OutlineRow> {
-    tasks
-        .into_iter()
-        .map(|task| OutlineRow {
-            task,
-            depth: 0,
-            done: false,
-        })
-        .collect()
-}
-
-/// Rows with a tick button each (a form, so no script), titles, and when/where for date views.
-#[allow(clippy::too_many_arguments)]
+/// Rows with a tick button each (a form, so no script), titles, dates, deadline, tags and
+/// subtask progress.
 fn task_rows(
     today: Date,
     rows: &[OutlineRow],
     action: impl Fn(&Task) -> String,
     back: &str,
-    list_title: Option<&dyn Fn(&str) -> String>,
     can_edit: bool,
 ) -> String {
     let mut out = String::from(r#"<ul class="tasks">"#);
@@ -623,12 +598,19 @@ fn task_rows(
         let t = &row.task;
         let done = row.done || t.completed_at.is_some();
         let mut meta = Vec::new();
-        if let Some(due) = t.due.as_deref().and_then(|d| Date::parse(d).ok()) {
-            meta.push(not_core::due_label(due, t.due_time, today));
+        if let Some(start) = t.start.as_deref().and_then(|d| Date::parse(d).ok()) {
+            meta.push(not_core::due_label(start, t.time, today));
         }
-        if let Some(title_of) = list_title {
-            meta.push(title_of(&t.list_id));
+        if t.someday {
+            meta.push("Someday".to_owned());
         }
+        if let Some(deadline) = t.deadline.as_deref().and_then(|d| Date::parse(d).ok()) {
+            meta.push(format!("Due {}", not_core::due_label(deadline, None, today)));
+        }
+        if row.subtasks > 0 {
+            meta.push(format!("{}/{}", row.subtasks_done, row.subtasks));
+        }
+        meta.extend(t.tags.iter().map(|tag| format!("#{tag}")));
         let check = if can_edit {
             format!(
                 r#"<form method="post" action="{}"><input type="hidden" name="back" value="{}"><button class="check{}" aria-label="{} {}"></button></form>"#,

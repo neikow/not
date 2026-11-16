@@ -48,7 +48,7 @@ import dev.lysen.not.core.NotException
 import dev.lysen.not.core.NotStore
 import dev.lysen.not.core.OutlineRow
 
-/** Per-widget setting: which list it shows (or Today / Upcoming). Missing means the Inbox. */
+/** Per-widget setting: which view it shows (built in or a smart list). Missing means the Inbox. */
 val LIST_KEY = stringPreferencesKey("list_id")
 internal val TASK_ID = ActionParameters.Key<String>("task_id")
 
@@ -87,23 +87,15 @@ private data class WidgetContent(
     val listId: String,
     val title: String,
     val rows: List<OutlineRow>,
-    /** Today / Upcoming gather tasks by date: rows say when and from which list. */
-    val byDate: Boolean = false,
-    val listTitles: Map<String, String> = emptyMap(),
 ) {
     companion object {
         fun load(store: NotStore, listId: String): WidgetContent =
             try {
-                val lists = store.lists()
-                val titles = lists.associate { it.id to it.title }
-                when (listId) {
-                    TODAY_ID -> return WidgetContent(TODAY_ID, "Today", store.dueTasks(today()).map { OutlineRow(it, 0u, false) }, true, titles)
-                    UPCOMING_ID -> return WidgetContent(UPCOMING_ID, "Upcoming", store.upcomingTasks(today()).map { OutlineRow(it, 0u, false) }, true, titles)
-                }
-                // The list may have been deleted on another device: fall back to the Inbox.
-                val list = lists.firstOrNull { it.id == listId } ?: lists.first()
+                val views = store.views(today())
+                // The view may have been deleted on another device: fall back to the Inbox.
+                val view = views.firstOrNull { it.id == listId } ?: views.first()
                 // Open tasks only: completed subtasks of open tasks are left out too.
-                WidgetContent(list.id, list.title, store.outline(list.id).open.filter { !it.done })
+                WidgetContent(view.id, view.title, store.viewOutline(view.id, today()).open.filter { !it.done })
             } catch (e: NotException) {
                 logLoadFailure("tasks", e)
                 WidgetContent(INBOX_ID, "Inbox", emptyList())
@@ -126,13 +118,14 @@ private fun TasksWidgetContent(content: WidgetContent) {
         when {
             content.rows.isNotEmpty() -> LazyColumn(GlanceModifier.fillMaxSize()) {
                 items(content.rows, itemId = { it.task.id.hashCode().toLong() }) { row ->
-                    val meta = if (content.byDate) {
-                        listOfNotNull(scheduleLabel(row.task.due, row.task.dueTime, null), content.listTitles[row.task.listId] ?: "Inbox").joinToString(" · ")
-                    } else null
+                    val meta = listOfNotNull(
+                        row.task.start?.let { scheduleLabel(it, row.task.time, null) },
+                        row.task.deadline?.let { "Due " + scheduleLabel(it, null, null) },
+                    ).joinToString(" · ").ifEmpty { null }
                     TaskRow(row, open, meta)
                 }
             }
-            content.listId == TODAY_ID -> WidgetEmpty(R.drawable.ic_today, "Nothing due today", null, open)
+            content.listId == TODAY_ID -> WidgetEmpty(R.drawable.ic_today, "Nothing for today", null, open)
             content.listId == UPCOMING_ID -> WidgetEmpty(R.drawable.ic_calendar, "Nothing coming up", null, open)
             content.listId == INBOX_ID -> WidgetEmpty(R.drawable.ic_inbox, "Inbox zero", "Tap + to jot something down.", open)
             else -> WidgetEmpty(R.drawable.ic_check, "All done", "Nothing left in ${content.title}.", open)

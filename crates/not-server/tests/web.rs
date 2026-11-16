@@ -3,7 +3,21 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use not_core::{INBOX, Store, SyncClient};
+use not_core::{Store, SyncClient, Task};
+
+fn day() -> not_core::date::Date {
+    not_core::date::Date::parse("2026-11-16").unwrap()
+}
+
+/// Top-level tasks tagged `tag`, newest first.
+fn tagged(store: &Store, tag: &str) -> Vec<Task> {
+    store
+        .all_tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.parent_id.is_none() && t.tags.iter().any(|x| x == tag))
+        .collect()
+}
 use not_server::AppState;
 use tower::ServiceExt;
 
@@ -58,8 +72,8 @@ async fn browser_signs_in_with_a_code_and_edits_flow_back() {
     let phone_client =
         SyncClient::from_credentials(&SyncClient::pair(&base, &code.code, "Phone").await.unwrap());
     let phone = Store::open_in_memory().unwrap();
-    let groceries = phone.create_list("Groceries").unwrap();
-    phone.add_task(&groceries, "milk").unwrap();
+    let groceries = phone.create_view("Groceries", "#groceries").unwrap();
+    phone.add_task(&groceries, "milk", day()).unwrap();
     phone_client.sync(&phone).await.unwrap();
 
     // Signed out: to the login page.
@@ -100,13 +114,13 @@ async fn browser_signs_in_with_a_code_and_edits_flow_back() {
         &state,
         post(
             &format!("/l/{groceries}/add"),
-            "text=bread+%3Cb%3E&from=",
+            "text=bread+%3Cb%3E",
             Some(&cookie),
         ),
     )
     .await;
     phone_client.sync(&phone).await.unwrap();
-    let tasks = phone.tasks(&groceries).unwrap();
+    let tasks = tagged(&phone, "groceries");
     assert_eq!(tasks[0].title, "bread <b>");
     let (_, _, html) = send(&state, get(&format!("/l/{groceries}"), Some(&cookie))).await;
     assert!(html.contains("bread &lt;b&gt;"), "escaped");
@@ -118,7 +132,6 @@ async fn browser_signs_in_with_a_code_and_edits_flow_back() {
     .await;
     phone_client.sync(&phone).await.unwrap();
     assert!(phone.task_by_id(&tasks[1].id).unwrap().completed_at.is_some());
-    let _ = INBOX;
 }
 
 #[tokio::test]
@@ -127,10 +140,10 @@ async fn shared_lists_are_read_only_or_editable_and_revocable() {
     let code = state.create_pairing_code().unwrap();
     let client = SyncClient::from_credentials(&SyncClient::pair(&base, &code.code, "Phone").await.unwrap());
     let phone = Store::open_in_memory().unwrap();
-    let groceries = phone.create_list("Groceries").unwrap();
-    let secret = phone.create_list("Secret").unwrap();
-    phone.add_task(&groceries, "milk").unwrap();
-    let hidden = phone.add_task(&secret, "hidden").unwrap();
+    let groceries = phone.create_view("Groceries", "#groceries").unwrap();
+    let secret = phone.create_view("Secret", "#secret").unwrap();
+    phone.add_task(&groceries, "milk", day()).unwrap();
+    let hidden = phone.add_task(&secret, "hidden", day()).unwrap();
     client.sync(&phone).await.unwrap();
 
     let view = client.create_share(&groceries, false).await.unwrap();
@@ -158,9 +171,9 @@ async fn shared_lists_are_read_only_or_editable_and_revocable() {
     )
     .await;
     client.sync(&phone).await.unwrap();
-    let tasks = phone.tasks(&groceries).unwrap();
+    let tasks = tagged(&phone, "groceries");
     assert_eq!(tasks[0].title, "eggs secret");
-    assert_eq!(tasks[0].due.as_deref(), Some(today_plus_one_utc().as_str()));
+    assert_eq!(tasks[0].start.as_deref(), Some(today_plus_one_utc().as_str()));
     send(
         &state,
         post(&format!("/s/{}/t/{}/toggle", edit.token, tasks[1].id), "", None),
@@ -204,8 +217,8 @@ async fn shared_lists_update_live_and_close_when_revoked() {
     let code = state.create_pairing_code().unwrap();
     let client = SyncClient::from_credentials(&SyncClient::pair(&base, &code.code, "Phone").await.unwrap());
     let phone = Store::open_in_memory().unwrap();
-    let groceries = phone.create_list("Groceries").unwrap();
-    phone.add_task(&groceries, "milk").unwrap();
+    let groceries = phone.create_view("Groceries", "#groceries").unwrap();
+    phone.add_task(&groceries, "milk", day()).unwrap();
     client.sync(&phone).await.unwrap();
     let share = client.create_share(&groceries, true).await.unwrap();
 
@@ -230,8 +243,8 @@ async fn shared_lists_update_live_and_close_when_revoked() {
     assert!(first["html"].as_str().unwrap().contains("milk"));
 
     // A change from the phone arrives without asking.
-    phone.add_task(&groceries, "eggs <b>").unwrap();
-    phone.rename(&groceries, "Shopping").unwrap();
+    phone.add_task(&groceries, "eggs <b>", day()).unwrap();
+    phone.update_view(&groceries, "Shopping", "#groceries").unwrap();
     client.sync(&phone).await.unwrap();
     let update = view(next(&mut socket).await);
     assert_eq!(update["title"], "Shopping");
@@ -248,7 +261,7 @@ async fn shared_lists_update_live_and_close_when_revoked() {
 
     // Revoking cuts the open page off at the next change.
     client.revoke_share(share.id).await.unwrap();
-    phone.add_task(&groceries, "after").unwrap();
+    phone.add_task(&groceries, "after", day()).unwrap();
     client.sync(&phone).await.unwrap();
     match next(&mut socket).await {
         Message::Close(Some(frame)) => assert_eq!(u16::from(frame.code), 4404),
@@ -271,9 +284,11 @@ async fn note_pages_show_checklists() {
         .unwrap();
     let body = phone.note_body(&note).unwrap();
     phone
-        .checklist_to_tasks(&note, &body, 5, body.len() as u32, None, "")
+        .checklist_to_tasks(&note, &body, 5, body.len() as u32, Some(""))
         .unwrap();
-    phone.set_note_body(&note, &body.replace("- [ ] passport", "- [x] passport")).unwrap();
+    phone
+        .set_note_body(&note, &body.replace("- [ ] passport", "- [x] passport"))
+        .unwrap();
     client.sync(&phone).await.unwrap();
 
     let code = state.create_pairing_code().unwrap().code;

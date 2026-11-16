@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Only for scanning pairing QR codes; asked for when the scanner opens. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Today and Upcoming can show the phone's calendar events (read only, opt in). -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <!-- Reminders at saved places (opt in, per task). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <!-- Rest timer between sets: the countdown notification and the alarm at its end. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -69,6 +75,10 @@
                 <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".PlaceReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".RestTimerReceiver"

@@ -113,6 +113,8 @@ impl Store {
         }
         drop(inner);
         if changed {
+            // A device on an older version may have made a list (ADR 0014).
+            self.migrate_lists()?;
             self.notify(ChangeOrigin::Remote);
         }
         result

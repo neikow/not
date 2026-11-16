@@ -22,7 +22,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalWindowInfo
 import dev.lysen.not.core.NotException
-import dev.lysen.not.core.TaskList
 import dev.lysen.not.ui.Button
 import dev.lysen.not.ui.ButtonKind
 import dev.lysen.not.ui.CardDialog
@@ -37,32 +36,21 @@ class QuickAddActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val store = (application as NotApp).store
-        val lists = try {
-            store.lists()
+        val views = try {
+            store.views(today())
         } catch (_: NotException) {
             emptyList()
         }
         val wanted = intent.getStringExtra(MainActivity.EXTRA_LIST) ?: INBOX_ID
-        // The list may have been deleted since the widget last rendered: fall back to the Inbox.
-        val list = lists.firstOrNull { it.id == wanted } ?: lists.firstOrNull()
-        // From a Today or Upcoming widget: into the Inbox, due today or tomorrow unless typed.
-        val due = when (wanted) {
-            TODAY_ID -> today()
-            UPCOMING_ID -> java.time.LocalDate.now().plusDays(1).toString()
-            else -> null
-        }
+        // The view may have been deleted since the widget last rendered: fall back to the Inbox.
+        val view = views.firstOrNull { it.id == wanted } ?: views.firstOrNull()
         setContent {
             NotTheme {
                 QuickAddDialog(
-                    listTitle = when (wanted) {
-                        TODAY_ID -> "Today"
-                        UPCOMING_ID -> "Tomorrow"
-                        else -> list?.title ?: "Inbox"
-                    },
-                    lists = lists,
+                    listTitle = view?.title ?: "Inbox",
                     onAdd = { draft ->
                         try {
-                            store.quickAdd(list?.id ?: INBOX_ID, draft.text, today(), draft.dismissed, due)
+                            store.quickAdd(view?.id ?: INBOX_ID, draft.text, today(), nowMinute(), draft.dismissed)
                             SyncWorker.pushSoon(this)
                         } catch (e: NotException) {
                             Toast.makeText(this, e.userMessage, Toast.LENGTH_LONG).show()
@@ -82,7 +70,7 @@ class QuickAddActivity : ComponentActivity() {
 }
 
 @Composable
-private fun QuickAddDialog(listTitle: String, lists: List<TaskList>, onAdd: (TaskDraft) -> Unit, onDismiss: () -> Unit) {
+private fun QuickAddDialog(listTitle: String, onAdd: (TaskDraft) -> Unit, onDismiss: () -> Unit) {
     val draft = rememberTaskDraft()
     val focus = remember { FocusRequester() }
     val submit = { if (!draft.isBlank) onAdd(draft) }
@@ -114,6 +102,6 @@ private fun QuickAddDialog(listTitle: String, lists: List<TaskList>, onAdd: (Tas
                 .padding(horizontal = 16.dp, vertical = 8.dp)
                 .focusRequester(focus),
         )
-        TokenChips(draft, lists, Modifier.padding(top = 8.dp))
+        TokenChips(draft, Modifier.padding(top = 8.dp))
     }
 }

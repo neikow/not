@@ -11,10 +11,12 @@ struct MarkdownEditor: NSViewRepresentable {
     /// Bumped by the owner to move keyboard focus here.
     var focusRequests = 0
     /// Where "Move to Tasks" in the context menu can send checklist items.
-    var taskLists: [TaskList] = []
+    /// Tags tasks already carry, for "Make Tasks Tagged ▸".
+    var taskTags: [String] = []
     /// Moves the checklist items in a UTF-16 range of the text into a list (nil: a new one with
     /// the given title). Without it the menu item doesn't show.
-    var onMakeTasks: ((_ range: NSRange, _ listID: String?, _ title: String) -> Void)?
+    /// The tag to give the new tasks; nil for none (the Inbox).
+    var onMakeTasks: ((_ range: NSRange, _ tag: String?) -> Void)?
     /// Keeps pasted or dropped image data (downscaled first) and returns its id.
     var onAddImage: ((Data) -> String?)?
     /// An image id to put in at the caret, with a counter so the same picture can go in twice.
@@ -131,7 +133,7 @@ struct MarkdownEditor: NSViewRepresentable {
             parent.text = textView.string
         }
 
-        /// "Make N Tasks In ▸ New List “Groceries” / Inbox / lists…" for the checklist items the
+        /// "Make N Tasks Tagged ▸ New Tag #groceries / tags… / No Tag" for the checklist items the
         /// selection touches; nil when there are none. The lines stay as they are.
         func makeTasksItem(for textView: NSTextView) -> NSMenuItem? {
             guard let make = parent.onMakeTasks else { return nil }
@@ -142,19 +144,23 @@ struct MarkdownEditor: NSViewRepresentable {
                 end: UInt32(range.location + range.length)
             ) else { return nil }
             let items = checklist.count == 1 ? "1 Task" : "\(checklist.count) Tasks"
-            let item = NSMenuItem(title: "Make \(items) In", action: nil, keyEquivalent: "")
+            let item = NSMenuItem(title: "Make \(items) Tagged", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
             func add(_ title: String, _ image: String, _ run: @escaping () -> Void) {
                 let entry = ClosureMenuItem(title: title, run: run)
                 entry.image = NSImage(systemSymbolName: image, accessibilityDescription: nil)
                 submenu.addItem(entry)
             }
-            add("New List “\(checklist.suggestedTitle)”", "plus") { make(range, nil, checklist.suggestedTitle) }
-            submenu.addItem(.separator())
-            add("Inbox", "tray") { make(range, inboxId(), "Inbox") }
-            for list in parent.taskLists where list.id != inboxId() {
-                add(list.title, "list.bullet") { make(range, list.id, list.title) }
+            let suggested = normalizeTag(tag: checklist.suggestedTitle)
+            if !suggested.isEmpty, !parent.taskTags.contains(suggested) {
+                add("New Tag #\(suggested)", "plus") { make(range, suggested) }
+                submenu.addItem(.separator())
             }
+            for tag in parent.taskTags {
+                add("#" + tag, "number") { make(range, tag) }
+            }
+            submenu.addItem(.separator())
+            add("No Tag (Inbox)", "tray") { make(range, nil) }
             item.submenu = submenu
             return item
         }

@@ -52,7 +52,9 @@ fn offline_check_ins_add_up() {
 
     mac.log_habit(&water, MON, 2).unwrap();
     phone.log_habit(&water, MON, 3).unwrap();
-    phone.update_habit(&water, "Drink water", 8, EVERY_DAY, Period::Day).unwrap();
+    phone
+        .update_habit(&water, "Drink water", 8, EVERY_DAY, Period::Day)
+        .unwrap();
     log.sync(&mac);
     log.sync(&phone);
     log.sync(&mac);
@@ -116,9 +118,15 @@ fn rejects_bad_input() {
 fn weekly_goals_count_any_days_of_the_week() {
     let store = Store::open_in_memory().unwrap();
     let gym = store.create_habit("Gym", 3, EVERY_DAY).unwrap();
-    store.update_habit(&gym, "Gym", 3, WEEKDAYS, Period::Week).unwrap();
+    store
+        .update_habit(&gym, "Gym", 3, WEEKDAYS, Period::Week)
+        .unwrap();
     let s = summary(&store, MON);
-    assert_eq!((s.habit.period, s.habit.days), (Period::Week, EVERY_DAY), "any day counts");
+    assert_eq!(
+        (s.habit.period, s.habit.days),
+        (Period::Week, EVERY_DAY),
+        "any day counts"
+    );
 
     // A tap is the day's check-in, and a second one takes it back.
     assert_eq!(store.toggle_habit(&gym, MON).unwrap(), 1);
@@ -146,7 +154,9 @@ fn weekly_goals_count_any_days_of_the_week() {
 fn monthly_goals_follow_the_calendar() {
     let store = Store::open_in_memory().unwrap();
     let call = store.create_habit("Call mum", 1, EVERY_DAY).unwrap();
-    store.update_habit(&call, "Call mum", 2, EVERY_DAY, Period::Month).unwrap();
+    store
+        .update_habit(&call, "Call mum", 2, EVERY_DAY, Period::Month)
+        .unwrap();
     for day in ["2026-10-03", "2026-10-30", "2026-11-15"] {
         store.toggle_habit(&call, day).unwrap();
     }

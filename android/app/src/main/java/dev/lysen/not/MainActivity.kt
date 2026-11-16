@@ -44,6 +44,10 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra(EXTRA_TAB)?.let { name ->
             requestedTab.value = Tab.entries.firstOrNull { it.name == name }
         }
+        if (intent.getBooleanExtra(EXTRA_REVIEW, false)) {
+            viewModel.requestReview()
+            requestedTab.value = Tab.Tasks
+        }
         intent.getStringExtra(EXTRA_NOTE)?.let {
             notes.open(it)
             requestedTab.value = Tab.Notes
@@ -105,6 +109,8 @@ class MainActivity : ComponentActivity() {
         /** List id to show (or, for quick add, to add to). */
         const val EXTRA_LIST = "dev.lysen.not.LIST"
         const val EXTRA_TAB = "dev.lysen.not.TAB"
+        /** Opens the weekly review (from its Sunday notification). */
+        const val EXTRA_REVIEW = "dev.lysen.not.REVIEW"
         private const val EXTRA_NOTE = "dev.lysen.not.NOTE"
         /** Folder id for the new note, "" for none. */
         private const val EXTRA_NEW_NOTE = "dev.lysen.not.NEW_NOTE"

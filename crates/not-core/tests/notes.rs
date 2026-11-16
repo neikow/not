@@ -195,9 +195,7 @@ fn folders_and_all_notes_sort_by_edit_creation_or_title() {
     pause();
     store.create_note(Some(&work), "cherry").unwrap();
     pause();
-    store
-        .set_note_body(&banana, "banana\nedited last")
-        .unwrap();
+    store.set_note_body(&banana, "banana\nedited last").unwrap();
 
     assert_eq!(store.folders().unwrap()[0].sort, NoteSort::Edited);
     assert_eq!(

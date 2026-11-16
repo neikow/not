@@ -276,7 +276,7 @@ private fun WorkoutsPage(viewModel: WorkoutsViewModel) {
 private fun LazyListScope.archivePage(state: UiState, viewModel: TasksViewModel, toasts: ToastState) {
     if (state.archive.isEmpty()) {
         item(key = "empty") {
-            EmptyState(R.drawable.ic_history, "Nothing archived", "Tasks you complete stay in their list for a day, then move here.")
+            EmptyState(R.drawable.ic_history, "Nothing archived", "Tasks you complete stay in their list for a day, then move here. The Logbook (in Lists) shows them all by day.")
         }
         return
     }
@@ -306,12 +306,12 @@ private fun LazyListScope.archivePage(state: UiState, viewModel: TasksViewModel,
             ) {
                 RoundCheck(true, {
                     viewModel.restore(task)
-                    scope.launch { if (toasts.show("Back in ${state.listTitle(task.listId)}", action = "Undo")) viewModel.undo() }
-                }, contentDescription = "Put back in ${state.listTitle(task.listId)}")
+                    scope.launch { if (toasts.show("Reopened", action = "Undo")) viewModel.undo() }
+                }, contentDescription = "Reopen")
                 Column(Modifier.weight(1f).padding(start = 4.dp)) {
                     Text(task.title, style = Not.type.body, color = colors.inkMuted)
                     val done = task.completedAt?.let { DateUtils.getRelativeTimeSpanString(it, System.currentTimeMillis(), DateUtils.DAY_IN_MILLIS) }
-                    Text(listOfNotNull(state.listTitle(task.listId), done).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
+                    Text(listOfNotNull(task.tags.joinToString(" ") { "#$it" }.ifEmpty { null }, done).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
                 }
             }
         }
@@ -399,9 +399,12 @@ private fun RemindersPage() {
             reminders.update(s.copy(tasks = it))
         }
         Divider(Modifier.padding(start = 16.dp))
-        ToggleRow("Morning summary", "What's due today, and anything overdue", s.digest) { reminders.update(s.copy(digest = it)) }
+        ToggleRow("Morning summary", "What's on today, and anything left from earlier days", s.digest) { reminders.update(s.copy(digest = it)) }
         if (s.digest) TimeRow("Every day at", s.digestAt) { reminders.update(s.copy(digestAt = it)) }
+        Divider(Modifier.padding(start = 16.dp))
+        ToggleRow("Weekly review", "Sunday at 18:00: Inbox, what slipped, Someday", s.review) { reminders.update(s.copy(review = it)) }
     }
+    CalendarSection()
     Section("Habits", padded = false) {
         ToggleRow("Evening nudge", "Names the habits still to do today; quiet when all are done", s.habits) {
             reminders.update(s.copy(habits = it))
@@ -414,6 +417,27 @@ private fun RemindersPage() {
         color = Not.colors.inkFaint,
         modifier = Modifier.padding(horizontal = 28.dp, vertical = 12.dp),
     )
+}
+
+/** Today and Upcoming can show the phone's calendar beside tasks (read only). */
+@Composable
+private fun CalendarSection() {
+    val context = LocalContext.current
+    var on by remember { mutableStateOf(CalendarOverlay.enabled(context)) }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        CalendarOverlay.setEnabled(context, granted)
+        on = CalendarOverlay.enabled(context)
+    }
+    Section("Calendar", padded = false) {
+        ToggleRow("Show calendar events", "In Today and Upcoming, from the calendars your calendar app shows", on) { wanted ->
+            if (wanted && !CalendarOverlay.permitted(context)) {
+                ask.launch(Manifest.permission.READ_CALENDAR)
+            } else {
+                CalendarOverlay.setEnabled(context, wanted)
+                on = CalendarOverlay.enabled(context)
+            }
+        }
+    }
 }
 
 @Composable

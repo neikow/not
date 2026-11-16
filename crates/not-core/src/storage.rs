@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::Result;
 
 /// Bump when the read-model tables change; a mismatch triggers a full rebuild from the docs.
-pub const READ_MODEL_VERSION: i64 = 10;
+pub const READ_MODEL_VERSION: i64 = 11;
 
 /// Local update rows per doc before they are folded into a snapshot on open.
 const COMPACT_AFTER: i64 = 200;
@@ -58,26 +58,24 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
         DROP TABLE IF EXISTS workout;
         DROP TABLE IF EXISTS workout_exercise;
 
-        CREATE TABLE list (
-            id       TEXT PRIMARY KEY,
-            title    TEXT NOT NULL,
-            position TEXT NOT NULL
-        );
         CREATE TABLE task (
             id           TEXT PRIMARY KEY,
-            list_id      TEXT NOT NULL,
             parent_id    TEXT,
             title        TEXT NOT NULL,
             notes        TEXT NOT NULL,
             completed_at INTEGER,
             position     TEXT NOT NULL,
-            due          TEXT,
-            due_time     INTEGER,
+            start        TEXT,
+            time         INTEGER,
+            deadline     TEXT,
+            someday      INTEGER NOT NULL,
             priority     INTEGER NOT NULL,
-            repeat       TEXT
+            repeat       TEXT,
+            -- Own tags, sorted, one per line.
+            tags         TEXT NOT NULL,
+            touched_at   INTEGER
         );
-        CREATE INDEX task_by_list ON task (list_id, parent_id, position);
-        CREATE INDEX task_by_due ON task (due) WHERE due IS NOT NULL AND completed_at IS NULL;
+        CREATE INDEX task_by_parent ON task (parent_id, position);
         CREATE TABLE habit (
             id       TEXT PRIMARY KEY,
             title    TEXT NOT NULL,

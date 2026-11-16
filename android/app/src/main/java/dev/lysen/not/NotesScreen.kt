@@ -10,7 +10,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 
 import dev.lysen.not.core.NoteChecklist
-import dev.lysen.not.core.TaskList
+import dev.lysen.not.core.normalizeTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -650,10 +650,10 @@ private fun NoteEditor(note: NoteSummary, state: NotesState, viewModel: NotesVie
         )
     }
     if (makingTasks && checklist != null) {
-        MakeTasksSheet(checklist, viewModel.taskLists(), onDismiss = { makingTasks = false }) { listId, title ->
+        MakeTasksSheet(checklist, viewModel.taskTags(), onDismiss = { makingTasks = false }) { tag ->
             makingTasks = false
             // The text stays as it is; the body was saved with the tasks.
-            if (viewModel.checklistToTasks(note.id, text, selection.min, selection.max, listId, if (listId == null) title else "", title) != null) {
+            if (viewModel.checklistToTasks(note.id, text, selection.min, selection.max, tag) != null) {
                 saved = text
             }
         }
@@ -707,27 +707,30 @@ private fun FormatBar(editor: TextFieldState, checklist: NoteChecklist?, onMakeT
 }
 
 /**
- * Where "Make tasks" sends a note's checklist: a new list (named after the heading above it, or the
- * note), the Inbox, or an existing list. [onPick] gets the list id (null for the new one) and title.
+ * Which tag "Make tasks" gives a note's checklist: a new one named after the heading above it (or
+ * the note), an existing one, or none (the Inbox). [onPick] gets the tag, null for none.
  */
 @Composable
-private fun MakeTasksSheet(checklist: NoteChecklist, lists: List<TaskList>, onDismiss: () -> Unit, onPick: (String?, String) -> Unit) {
+private fun MakeTasksSheet(checklist: NoteChecklist, tags: List<String>, onDismiss: () -> Unit, onPick: (String?) -> Unit) {
     Sheet(onDismiss) { close ->
-        val pick = { id: String?, title: String ->
-            onPick(id, title)
+        val pick = { tag: String? ->
+            onPick(tag)
             close()
         }
-        Column(Modifier.padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
+        val suggested = normalizeTag(checklist.suggestedTitle)
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
             val items = if (checklist.count == 1u) "1 task" else "${checklist.count} tasks"
             Text(
-                "Make $items in",
+                "Make $items tagged",
                 style = Not.type.caption,
                 color = Not.colors.inkMuted,
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
             )
-            FolderRow(R.drawable.ic_add, "New list “${checklist.suggestedTitle}”", accent = true, onClick = { pick(null, checklist.suggestedTitle) })
-            FolderRow(R.drawable.ic_inbox, "Inbox", onClick = { pick(INBOX_ID, "Inbox") })
-            lists.forEach { list -> FolderRow(R.drawable.ic_list, list.title, onClick = { pick(list.id, list.title) }) }
+            if (suggested.isNotEmpty() && suggested !in tags) {
+                FolderRow(R.drawable.ic_add, "New tag #$suggested", accent = true, onClick = { pick(suggested) })
+            }
+            tags.forEach { tag -> FolderRow(R.drawable.ic_tag, "#$tag", onClick = { pick(tag) }) }
+            FolderRow(R.drawable.ic_inbox, "No tag (Inbox)", onClick = { pick(null) })
         }
     }
 }

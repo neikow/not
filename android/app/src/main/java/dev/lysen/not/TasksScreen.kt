@@ -54,7 +54,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.lysen.not.core.OutlineRow
 import dev.lysen.not.core.SyncState
 import dev.lysen.not.core.TaskItem
-import dev.lysen.not.core.TaskList
+import dev.lysen.not.core.TaskView
+import dev.lysen.not.core.TagInfo
 import dev.lysen.not.ui.Button
 import dev.lysen.not.ui.CardDialog
 import dev.lysen.not.ui.Divider
@@ -96,16 +97,22 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
     var showsLists by remember { mutableStateOf(false) }
     var composing by rememberSaveable { mutableStateOf(false) }
     var showsCompleted by rememberSaveable { mutableStateOf(false) }
-    var newList by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf<TaskList?>(null) }
-    var sharing by remember { mutableStateOf<TaskList?>(null) }
+    // A smart list being made (an empty one) or edited; its query may start from a tag.
+    var editingView by remember { mutableStateOf<ViewDraft?>(null) }
+    var renamingTag by remember { mutableStateOf<String?>(null) }
+    var sharing by remember { mutableStateOf<TaskView?>(null) }
+    var processing by rememberSaveable { mutableStateOf(false) }
+    var reviewing by rememberSaveable { mutableStateOf(false) }
+    var showsLogbook by rememberSaveable { mutableStateOf(false) }
     // Held without dragging: quick actions for that task.
     var held by remember { mutableStateOf<TaskItem?>(null) }
+    val calendar = rememberCalendarEvents(state.selectedViewId)
     val title = state.title
     val haptics = LocalHapticFeedback.current
     // The title is a long reach: tapping or holding Tasks in the tab bar opens the lists too.
     OnTabGesture { showsLists = true }
 
+    LaunchedEffect(Unit) { viewModel.reviewRequests.collect { reviewing = true } }
     // Destructive actions confirm after the fact, with Undo, instead of asking first.
     LaunchedEffect(Unit) {
         viewModel.undoables.collect { undoable ->
@@ -124,12 +131,10 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
             titleAccessory = { Icon(R.drawable.ic_expand_more, "Switch list", tint = Not.colors.inkFaint, size = 28.dp) },
             actions = {
                 SyncStatus(state.sync, onClick = onOpenSettings)
-                // Today and Upcoming have their own order: by date, then time.
-                state.selectedList?.takeUnless { state.isDateView }?.let { list ->
-                    SortMenu(list.sort) { viewModel.setSort(list.id, it) }
-                }
+                // Upcoming is always by date.
+                if (!state.isUpcoming) SortMenu(state.sort) { viewModel.setSort(state.selectedViewId, it) }
             },
-            header = { Subtitle(state) },
+            header = { Subtitle(state, onProcess = { processing = true }) },
             pull = PullAction("Lists", R.drawable.ic_list) { showsLists = true },
             // Swiping the title bar steps through Today, Upcoming and the lists, in the order the sheet shows them.
             onSwipe = { forward ->
@@ -141,35 +146,47 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
             next = neighbour(state, forward = true)?.second,
         ) {
             val outline = state.outline
+            if (state.earlier.isNotEmpty()) {
+                item(key = "earlier") {
+                    EarlierBanner(state.earlier.size, Modifier.animateItem()) { viewModel.moveToToday(state.earlier) }
+                }
+            }
+            // The day's calendar, read only, above what there is to do.
+            if (state.isToday) {
+                items(calendar.today(), key = { "event-${it.key}" }) { event -> EventRow(event, Modifier.animateItem()) }
+            }
             // Today's habits lead, as rows like the tasks under them.
             if (state.isToday) {
                 items(state.todayHabits, key = { "habit-${it.habit.id}" }) { summary ->
                     TodayHabitRow(summary, viewModel, Modifier.animateItem(), onOpen = { onOpenHabit(summary.habit.id) })
                 }
             }
-            if (outline.open.isEmpty() && !(state.isToday && state.todayHabits.isNotEmpty())) {
+            if (outline.open.isEmpty() && !(state.isToday && (state.todayHabits.isNotEmpty() || calendar.today().isNotEmpty()))) {
                 // Fades in once the last row has left, instead of popping in under it.
                 item(key = "empty") {
                     Box(Modifier.animateItem(fadeInSpec = tween(260, delayMillis = 180), fadeOutSpec = tween(120))) {
                     when {
                         state.isUpcoming ->
-                            EmptyState(R.drawable.ic_calendar, "Nothing coming up", "Tasks with a date after today show here, by day.")
+                            EmptyState(R.drawable.ic_calendar, "Nothing coming up", "Tasks starting or due after today show here, by day.")
                         state.isToday ->
-                            EmptyState(R.drawable.ic_today, "Nothing due today", "Add “tomorrow”, “fri 9am” or “every mon” to a task to see it here when it's due.")
+                            EmptyState(R.drawable.ic_today, "Nothing for today", "Add “today”, “fri 9am”, “by mon” or “every mon” to a task to see it here on the day.")
+                        state.isSomeday ->
+                            EmptyState(R.drawable.ic_someday, "Nothing for someday", "Park ideas and maybes here with “someday”, out of the way until you want them.")
                         outline.completed.isNotEmpty() ->
                             EmptyState(R.drawable.ic_check, "All done", "Everything in $title is checked off.", Modifier.padding(bottom = 24.dp))
-                        state.selectedListId == INBOX_ID ->
-                            EmptyState(R.drawable.ic_inbox, "Inbox zero", "Anything you jot down lands here first. Sort it into lists when you have a moment.")
-                        else -> EmptyState(R.drawable.ic_list, "Nothing in $title yet", "Tap + to add the first one.")
+                        state.isInbox ->
+                            EmptyState(R.drawable.ic_inbox, "Inbox zero", "Anything you jot down without a #tag lands here first.")
+                        else -> EmptyState(R.drawable.ic_list, "Nothing in $title yet", "Tap + to add the first one: it gets what this list shows.")
                     }
                     }
                 }
             }
             if (state.isUpcoming) {
-                byDay(outline.open).forEach { (label, rows) ->
+                byDay(outline.open, calendar).forEach { (label, rows, events) ->
                     item(key = "day-$label") { DayHeader(label, Modifier.animateItem()) }
+                    items(events, key = { "event-${it.key}" }) { event -> EventRow(event, Modifier.animateItem()) }
                     items(rows, key = { it.task.id }) { row ->
-                        TaskRow(row, viewModel, Modifier.animateItem(), listTitle = state.listTitle(row.task.listId), onHold = { held = row.task })
+                        TaskRow(row, viewModel, Modifier.animateItem(), hideTag = null, onHold = { held = row.task })
                     }
                 }
             } else items(reorder.items, key = { it.task.id }) { row ->
@@ -177,13 +194,11 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
                     row,
                     viewModel,
                     (if (reorder.isDragging(row)) Modifier else Modifier.animateItem())
-                        // Today gathers tasks from every list, so it has no order of its own.
-                        .reorderable(reorder, row, row.task.id, enabled = !state.isDateView && !row.done) {
+                        .reorderable(reorder, row, row.task.id, enabled = !row.done) {
                             startDrag(reorder, outline.open, row, viewModel) { held = row.task }
                         },
-                    listTitle = if (state.isToday) state.listTitle(row.task.listId) else null,
-                    // Today's rows don't drag, so holding them goes straight to the actions.
-                    onHold = if (state.isToday) ({ held = row.task }) else null,
+                    // The tag a view is about goes without saying on its rows.
+                    hideTag = state.selectedViewId.removePrefix("#").takeIf { state.isTag } ?: soleTag(state.selectedView?.query),
                     reorder = reorder,
                 )
             }
@@ -198,14 +213,14 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
                 }
                 if (showsCompleted) {
                     items(outline.completed, key = { it.task.id }) { row ->
-                        TaskRow(row, viewModel, Modifier.animateItem())
+                        TaskRow(row, viewModel, Modifier.animateItem(), hideTag = null)
                     }
                 }
             }
         }
 
         // The + beside the tab bar opens the composer above the keyboard.
-        AddAction("New task", enabled = !composing, holdLabel = "New list", onHold = { newList = true }) { composing = true }
+        AddAction("New task", enabled = !composing, holdLabel = "New list", onHold = { editingView = ViewDraft() }) { composing = true }
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
@@ -217,11 +232,13 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
                 TaskComposer(
                     when {
                         state.isToday -> "New task for today"
-                        state.isUpcoming -> "New task for tomorrow"
+                        state.isUpcoming -> "New task — say when, like “fri”"
+                        state.isSomeday -> "Someday…"
+                        state.isInbox -> "New task — try “call mum fri 6pm #home”"
                         else -> "New task in $title"
                     },
-                    state.lists,
                     onAdd = { viewModel.quickAdd(it.text, it.dismissed) },
+                    onPaste = { viewModel.quickAdd(it) },
                     onClose = { composing = false },
                 )
             }
@@ -239,40 +256,41 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
             state = state,
             onSelect = viewModel::select,
             onSearch = viewModel::search,
-            onReveal = viewModel::reveal,
-            onNewList = { newList = true },
-            onRename = { renaming = it },
+            onReveal = { viewModel.openTask(it.id) },
+            onNewList = { editingView = ViewDraft() },
+            onEdit = { editingView = ViewDraft(it.id, it.title, it.query) },
             onShare = { sharing = it },
-            onDelete = viewModel::deleteList,
+            onDelete = viewModel::deleteView,
+            onSaveTag = { editingView = ViewDraft(title = it.replaceFirstChar(Char::uppercase), query = "#$it") },
+            onRenameTag = { renamingTag = it },
+            onDeleteTag = viewModel::deleteTag,
+            onReview = { reviewing = true },
+            onLogbook = { showsLogbook = true },
             onDismiss = { showsLists = false },
         )
     }
-    if (newList) {
-        PromptDialog(
-            title = "New list",
-            confirm = "Create",
-            placeholder = "Groceries, Work, Trip…",
-            onConfirm = {
-                viewModel.addList(it)
-                newList = false
-                showsLists = false
-            },
-            onDismiss = { newList = false },
-        )
+    editingView?.let { draft ->
+        ViewEditor(draft, state, viewModel, onDone = {
+            editingView = null
+            showsLists = false
+        }, onDismiss = { editingView = null })
     }
-    sharing?.let { list -> ShareDialog(list, state, viewModel, onDismiss = { sharing = null }) }
-    renaming?.let { list ->
+    renamingTag?.let { tag ->
         PromptDialog(
-            title = "Rename list",
+            title = "Rename #$tag",
             confirm = "Rename",
-            initial = list.title,
+            initial = tag,
             onConfirm = {
-                viewModel.rename(list.id, it)
-                renaming = null
+                viewModel.renameTag(tag, it)
+                renamingTag = null
             },
-            onDismiss = { renaming = null },
+            onDismiss = { renamingTag = null },
         )
     }
+    sharing?.let { view -> ShareDialog(view, state, viewModel, onDismiss = { sharing = null }) }
+    if (processing) InboxFlow(viewModel, onDismiss = { processing = false })
+    if (reviewing) ReviewFlow(viewModel, onProcessInbox = { processing = true }, onDismiss = { reviewing = false })
+    if (showsLogbook) LogbookSheet(viewModel, onDismiss = { showsLogbook = false })
     state.error?.let {
         CardDialog(
             title = "Something went wrong",
@@ -294,38 +312,82 @@ private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>,
     reorder.start(
         row,
         shown = open.take(at + 1) + open.drop(end),
-        canSwap = { it.task.parentId == row.task.parentId && it.depth == row.depth },
+        // Top-level rows reorder within the view; subtasks among their siblings.
+        canSwap = { it.depth == row.depth && (row.depth == 0u || it.task.parentId == row.task.parentId) },
         depth = { it.depth.toInt() },
         onDrop = { order ->
             val i = order.indexOfFirst { it.task.id == row.task.id }
-            val next = order.drop(i + 1).firstOrNull { it.task.parentId == row.task.parentId && it.depth == row.depth }
+            val next = order.drop(i + 1).firstOrNull { it.depth == row.depth && (row.depth == 0u || it.task.parentId == row.task.parentId) }
             viewModel.moveBefore(row.task, next?.task?.id)
         },
         onHold = onHold,
     )
 }
 
-/** The id and title of the list before or after the shown one, in the lists sheet's order. */
+/** The id and title of the view before or after the shown one, in the lists sheet's order. */
 private fun neighbour(state: UiState, forward: Boolean): Pair<String, String>? {
-    val lists = listOf(TODAY_ID to "Today", UPCOMING_ID to "Upcoming") + state.lists.map { it.id to it.title }
-    val at = lists.indexOfFirst { it.first == state.selectedListId }
+    val views = state.views.map { it.id to it.title }
+    val at = views.indexOfFirst { it.first == state.selectedViewId }
     if (at < 0) return null
-    return lists.getOrNull(if (forward) at + 1 else at - 1)
+    return views.getOrNull(if (forward) at + 1 else at - 1)
 }
 
-/** "3 tasks · by due date"; keeps its line when there are none, so the list below doesn't jump. */
-/** Upcoming's groups: Tomorrow, then each day of the coming week by name, then Later. */
-private fun byDay(rows: List<OutlineRow>): List<Pair<String, List<OutlineRow>>> {
+/** The tag a smart list is about when it names just one (`#work`, `#work !1`). */
+private fun soleTag(query: String?): String? {
+    val tags = query.orEmpty().split(' ').filter { it.startsWith("#") }
+    return tags.singleOrNull()?.removePrefix("#")?.lowercase()
+}
+
+/** The date a task shows under in Upcoming: its start once it's ahead, else its deadline. */
+private fun upcomingDate(task: TaskItem): java.time.LocalDate? {
+    val today = today()
+    val date = task.start?.takeIf { it > today } ?: task.deadline
+    return date?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }
+}
+
+/** Upcoming's groups: Tomorrow, then each day of the coming week by name, then Later; with each day's events. */
+private fun byDay(rows: List<OutlineRow>, calendar: CalendarEvents): List<Triple<String, List<OutlineRow>, List<CalendarEvent>>> {
     val today = java.time.LocalDate.now()
-    return rows.groupBy { row ->
-        val due = runCatching { java.time.LocalDate.parse(row.task.due) }.getOrNull()
-        val days = due?.let { java.time.temporal.ChronoUnit.DAYS.between(today, it) } ?: Long.MAX_VALUE
-        when {
+    fun label(date: java.time.LocalDate?): String {
+        val days = date?.let { java.time.temporal.ChronoUnit.DAYS.between(today, it) } ?: Long.MAX_VALUE
+        return when {
             days == 1L -> "Tomorrow"
-            days < 7 -> due!!.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
+            days < 7 -> date!!.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
             else -> "Later"
         }
-    }.toList()
+    }
+    val tasks = rows.groupBy { row -> label(upcomingDate(row.task)) }
+    val events = calendar.week().groupBy { label(it.day) }
+    val order = (1..6).map { label(today.plusDays(it.toLong())) } + "Later"
+    return order.mapNotNull { day ->
+        val t = tasks[day].orEmpty()
+        val e = events[day].orEmpty()
+        if (t.isEmpty() && e.isEmpty()) null else Triple(day, t, e)
+    }
+}
+
+/** "3 from earlier days · Move to today": what slipped, dealt with in one tap. */
+@Composable
+private fun EarlierBanner(count: Int, modifier: Modifier, onMove: () -> Unit) {
+    val colors = Not.colors
+    Row(
+        modifier
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(colors.sunken)
+            .padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(R.drawable.ic_history, null, tint = colors.inkMuted, size = 20.dp)
+        Text(
+            if (count == 1) "1 from an earlier day" else "$count from earlier days",
+            style = Not.type.body,
+            color = colors.inkMuted,
+            modifier = Modifier.weight(1f).padding(start = 10.dp),
+        )
+        Button("Move to today", onMove, kind = ButtonKind.Quiet)
+    }
 }
 
 @Composable
@@ -339,24 +401,30 @@ private fun DayHeader(label: String, modifier: Modifier) {
 }
 
 @Composable
-private fun Subtitle(state: UiState) {
+private fun Subtitle(state: UiState, onProcess: () -> Unit) {
     val open = state.outline.open.count { it.depth == 0u }
-    val sort = state.selectedList?.sort?.takeUnless { state.isDateView || it == TaskSort.MANUAL }
-    Text(
-        (if (open == 1) "1 task" else "$open tasks") + (sort?.let { " · by ${it.label.lowercase()}" } ?: ""),
-        style = Not.type.body,
-        color = Not.colors.inkMuted,
-        modifier = Modifier.padding(top = 2.dp).alpha(if (open == 0) 0f else 1f),
-    )
+    val sort = state.sort.takeUnless { state.isUpcoming || it == TaskSort.MANUAL || (state.isToday && it == TaskSort.DUE) }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp).alpha(if (open == 0) 0f else 1f)) {
+        Text(
+            (if (open == 1) "1 task" else "$open tasks") + (sort?.let { " · by ${it.label.lowercase()}" } ?: ""),
+            style = Not.type.body,
+            color = Not.colors.inkMuted,
+        )
+        // One at a time through the Inbox: give each a day, a tag, or let it go.
+        if (state.isInbox && open > 0) {
+            Spacer(Modifier.width(10.dp))
+            Chip(R.drawable.ic_play, "Process", onClick = onProcess)
+        }
+    }
 }
 
-/** Swipe right to complete (or reopen), left to delete; tap for details. [listTitle] shows in Today. */
+/** Swipe right to complete (or reopen), left to delete; tap for details. [hideTag] goes unsaid. */
 @Composable
 private fun TaskRow(
     row: OutlineRow,
     viewModel: TasksViewModel,
     modifier: Modifier,
-    listTitle: String? = null,
+    hideTag: String?,
     onHold: (() -> Unit)? = null,
     reorder: ReorderState<OutlineRow>? = null,
 ) {
@@ -399,7 +467,7 @@ private fun TaskRow(
                     color = if (row.done) colors.inkFaint else colors.ink,
                     textDecoration = if (row.done) TextDecoration.LineThrough else null,
                 )
-                TaskMeta(row.task, done = row.done, listTitle = listTitle)
+                TaskMeta(row.task, done = row.done, hideTag = hideTag, subtasks = row.subtasks to row.subtasksDone)
                 val preview = row.task.notes.lineSequence().firstOrNull { it.isNotBlank() }
                 if (preview != null) Text(preview, style = Not.type.caption, color = colors.inkMuted, maxLines = 1)
             }
@@ -461,26 +529,50 @@ private fun TodayHabitRow(summary: HabitSummary, viewModel: TasksViewModel, modi
     }
 }
 
-/** "Tomorrow 9:00 ⟳ · Groceries" under a task's title: red once overdue, accent when due today. */
+/**
+ * "Tomorrow 9:00 ⟳ · Due Fri · 2/5 · #home" under a task's title. A deadline turns accent on the day and
+ * red once passed; a start date in the past shows faint (it's in Today anyway).
+ */
 @Composable
-private fun TaskMeta(task: TaskItem, done: Boolean, listTitle: String?) {
+fun TaskMeta(task: TaskItem, done: Boolean, hideTag: String? = null, subtasks: Pair<UInt, UInt> = 0u to 0u) {
     val colors = Not.colors
-    val due = task.due
-    if (due == null && listTitle == null) return
     val today = today()
-    val tint = when {
-        done || due == null -> colors.inkFaint
-        due < today -> colors.danger
-        due == today -> colors.accentInk
-        else -> colors.inkMuted
-    }
+    val tags = task.tags.filter { it != hideTag }
+    val (total, finished) = subtasks
+    if (task.start == null && task.deadline == null && !task.someday && tags.isEmpty() && total == 0u) return
+    val faint = colors.inkFaint
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (due != null) {
-            Text(scheduleLabel(due, task.dueTime, null) ?: due, style = Not.type.caption, color = tint, maxLines = 1)
-            if (task.repeat != null) Icon(R.drawable.ic_repeat, "Repeats", tint = tint, size = 13.dp)
+        val parts = mutableListOf<@Composable () -> Unit>()
+        task.start?.let { start ->
+            val tint = when {
+                done -> faint
+                start == today -> colors.accentInk
+                else -> colors.inkMuted
+            }
+            parts += {
+                Text(scheduleLabel(start, task.time, null) ?: start, style = Not.type.caption, color = tint, maxLines = 1)
+                if (task.repeat != null) Icon(R.drawable.ic_repeat, "Repeats", tint = tint, size = 13.dp)
+            }
         }
-        if (listTitle != null) {
-            Text(if (due != null) "· $listTitle" else listTitle, style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
+        if (task.someday) parts += { Text("Someday", style = Not.type.caption, color = faint, maxLines = 1) }
+        task.deadline?.let { deadline ->
+            val tint = when {
+                done -> faint
+                deadline < today -> colors.danger
+                deadline == today -> colors.accentInk
+                else -> colors.inkMuted
+            }
+            parts += {
+                Icon(R.drawable.ic_deadline, "Deadline", tint = tint, size = 13.dp)
+                Text(scheduleLabel(deadline, null, null) ?: deadline, style = Not.type.caption, color = tint, maxLines = 1)
+                if (task.repeat != null && task.start == null) Icon(R.drawable.ic_repeat, "Repeats", tint = tint, size = 13.dp)
+            }
+        }
+        if (total > 0u) parts += { Text("$finished/$total", style = Not.type.caption, color = faint, maxLines = 1) }
+        if (tags.isNotEmpty()) parts += { Text(tags.joinToString(" ") { "#$it" }, style = Not.type.caption, color = faint, maxLines = 1) }
+        parts.forEachIndexed { i, part ->
+            if (i > 0) Text("·", style = Not.type.caption, color = faint)
+            part()
         }
     }
 }
@@ -503,7 +595,7 @@ private fun CompletedHeader(count: Int, expanded: Boolean, onToggle: () -> Unit,
     }
 }
 
-/** Every list and a new one: what the drawer used to hold. */
+/** Every view, every tag, and the ways to make more: what the drawer used to hold. */
 @Composable
 private fun ListsSheet(
     state: UiState,
@@ -511,9 +603,14 @@ private fun ListsSheet(
     onSearch: (String) -> List<TaskItem>,
     onReveal: (TaskItem) -> Unit,
     onNewList: () -> Unit,
-    onRename: (TaskList) -> Unit,
-    onShare: (TaskList) -> Unit,
-    onDelete: (TaskList) -> Unit,
+    onEdit: (TaskView) -> Unit,
+    onShare: (TaskView) -> Unit,
+    onDelete: (TaskView) -> Unit,
+    onSaveTag: (String) -> Unit,
+    onRenameTag: (String) -> Unit,
+    onDeleteTag: (String) -> Unit,
+    onReview: () -> Unit,
+    onLogbook: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
@@ -532,73 +629,106 @@ private fun ListsSheet(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
             )
             if (query.isNotBlank()) {
-                val found = remember(query, state.lists, state.outline) { onSearch(query) }
+                val found = remember(query, state.views, state.outline) { onSearch(query) }
                 if (found.isEmpty()) {
                     Text("No tasks match “${query.trim()}”", style = Not.type.body, color = Not.colors.inkMuted, modifier = Modifier.padding(14.dp))
                 }
                 found.forEach { task ->
-                    SearchResult(task, state.listTitle(task.listId)) {
+                    SearchResult(task) {
                         onReveal(task)
                         close()
                     }
                 }
                 return@Column
             }
-            ListRow(
-                icon = R.drawable.ic_today,
-                title = "Today",
-                count = state.dueCount,
-                selected = state.isToday,
-                onClick = {
-                    onSelect(TODAY_ID)
-                    close()
-                },
-                menu = NoMenu,
-            )
-            ListRow(
-                icon = R.drawable.ic_calendar,
-                title = "Upcoming",
-                count = state.upcomingCount,
-                selected = state.isUpcoming,
-                onClick = {
-                    onSelect(UPCOMING_ID)
-                    close()
-                },
-                menu = NoMenu,
-            )
-            state.lists.forEach { list ->
+            fun pick(id: String) {
+                onSelect(id)
+                close()
+            }
+            state.views.filter { it.builtIn }.forEach { view ->
                 ListRow(
-                    icon = if (list.id == INBOX_ID) R.drawable.ic_inbox else R.drawable.ic_list,
-                    title = list.title,
-                    count = list.openCount.toInt(),
-                    selected = list.id == state.selectedListId,
-                    onClick = {
-                        onSelect(list.id)
-                        close()
-                    },
-                    // The inbox is where tasks land, so it can't be renamed or deleted.
-                    menu = if (list.id == INBOX_ID) NoMenu else {
-                        {
-                            ListMenu(
-                                onRename = { onRename(list) },
-                                onShare = { onShare(list) },
-                                onDelete = {
-                                    // Close so the Undo toast underneath shows.
-                                    close()
-                                    onDelete(list)
-                                },
-                            )
-                        }
+                    icon = builtInIcon(view.id),
+                    title = view.title,
+                    count = view.openCount.toInt(),
+                    selected = view.id == state.selectedViewId,
+                    onClick = { pick(view.id) },
+                    menu = NoMenu,
+                )
+            }
+            val saved = state.views.filter { !it.builtIn }
+            SectionLabel("Smart lists")
+            saved.forEach { view ->
+                ListRow(
+                    icon = R.drawable.ic_list,
+                    title = view.title,
+                    count = view.openCount.toInt(),
+                    selected = view.id == state.selectedViewId,
+                    onClick = { pick(view.id) },
+                    menu = {
+                        ListMenu(
+                            onEdit = { onEdit(view) },
+                            onShare = { onShare(view) },
+                            onDelete = {
+                                // Close so the Undo toast underneath shows.
+                                close()
+                                onDelete(view)
+                            },
+                        )
                     },
                 )
             }
-            ListRow(R.drawable.ic_add, "New list", accent = true, onClick = onNewList)
+            ListRow(R.drawable.ic_add, "New smart list", accent = true, onClick = onNewList)
+            if (state.tags.isNotEmpty()) {
+                SectionLabel("Tags")
+                state.tags.forEach { tag ->
+                    ListRow(
+                        icon = R.drawable.ic_tag,
+                        title = tag.name,
+                        count = tag.openCount.toInt(),
+                        selected = state.selectedViewId == "#${tag.name}",
+                        onClick = { pick("#${tag.name}") },
+                        menu = {
+                            TagMenu(
+                                saved = saved.any { soleTag(it.query) == tag.name },
+                                onSave = { onSaveTag(tag.name) },
+                                onRename = { onRenameTag(tag.name) },
+                                onDelete = {
+                                    close()
+                                    onDeleteTag(tag.name)
+                                },
+                            )
+                        },
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Divider(Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
+            ListRow(R.drawable.ic_review, "Weekly review", onClick = {
+                close()
+                onReview()
+            })
+            ListRow(R.drawable.ic_history, "Logbook", onClick = {
+                close()
+                onLogbook()
+            })
         }
     }
 }
 
 @Composable
-private fun SearchResult(task: TaskItem, listTitle: String, onClick: () -> Unit) {
+private fun SectionLabel(text: String) {
+    Text(text, style = Not.type.label, color = Not.colors.inkMuted, modifier = Modifier.padding(start = 14.dp, top = 16.dp, bottom = 4.dp))
+}
+
+fun builtInIcon(id: String): Int = when (id) {
+    TODAY_ID -> R.drawable.ic_today
+    UPCOMING_ID -> R.drawable.ic_calendar
+    SOMEDAY_ID -> R.drawable.ic_someday
+    else -> R.drawable.ic_inbox
+}
+
+@Composable
+private fun SearchResult(task: TaskItem, onClick: () -> Unit) {
     val colors = Not.colors
     val done = task.completedAt != null
     Row(
@@ -619,42 +749,13 @@ private fun SearchResult(task: TaskItem, listTitle: String, onClick: () -> Unit)
                 textDecoration = if (done) TextDecoration.LineThrough else null,
                 maxLines = 1,
             )
-            val due = task.due?.let { scheduleLabel(it, task.dueTime, null) }
-            Text(listOfNotNull(listTitle, due).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
-        }
-    }
-}
-
-/** What holding a task offers: move it to another list, or delete it. */
-@Composable
-private fun TaskActionsSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, onDismiss: () -> Unit) {
-    Sheet(onDismiss) { close ->
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
-            Text(task.title, style = Not.type.title, maxLines = 2, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 4.dp))
-            Text("Move to", style = Not.type.label, color = Not.colors.inkMuted, modifier = Modifier.padding(start = 14.dp, top = 8.dp, bottom = 4.dp))
-            // Subtasks move with their parent; on their own they only change place within it.
-            state.lists.forEach { list ->
-                ListRow(
-                    icon = if (list.id == INBOX_ID) R.drawable.ic_inbox else R.drawable.ic_list,
-                    title = list.title,
-                    selected = list.id == task.listId,
-                    onClick = {
-                        if (task.parentId == null) viewModel.move(task, list.id)
-                        close()
-                    },
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            ListRow(R.drawable.ic_delete, "Delete", onClick = {
-                close()
-                viewModel.delete(task)
-            })
+            TaskMeta(task, done)
         }
     }
 }
 
 @Composable
-private fun ListRow(
+internal fun ListRow(
     icon: Int,
     title: String,
     onClick: () -> Unit,
@@ -692,14 +793,14 @@ private fun ListRow(
 private val NoMenu: @Composable () -> Unit = { Spacer(Modifier.size(44.dp)) }
 
 @Composable
-private fun ListMenu(onRename: () -> Unit, onShare: () -> Unit, onDelete: () -> Unit) {
+private fun ListMenu(onEdit: () -> Unit, onShare: () -> Unit, onDelete: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(R.drawable.ic_more_vert, "List options", { open = true }, tint = Not.colors.inkFaint)
         Menu(open, onDismiss = { open = false }) {
-            MenuItem("Rename list", icon = R.drawable.ic_edit, onClick = {
+            MenuItem("Edit…", icon = R.drawable.ic_edit, onClick = {
                 open = false
-                onRename()
+                onEdit()
             })
             MenuItem("Share…", icon = R.drawable.ic_copy, onClick = {
                 open = false
@@ -713,10 +814,34 @@ private fun ListMenu(onRename: () -> Unit, onShare: () -> Unit, onDelete: () -> 
     }
 }
 
+@Composable
+private fun TagMenu(saved: Boolean, onSave: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(R.drawable.ic_more_vert, "Tag options", { open = true }, tint = Not.colors.inkFaint)
+        Menu(open, onDismiss = { open = false }) {
+            if (!saved) {
+                MenuItem("Make a smart list", icon = R.drawable.ic_list, onClick = {
+                    open = false
+                    onSave()
+                })
+            }
+            MenuItem("Rename tag", icon = R.drawable.ic_edit, onClick = {
+                open = false
+                onRename()
+            })
+            MenuItem("Remove from all tasks", icon = R.drawable.ic_delete, danger = true, onClick = {
+                open = false
+                onDelete()
+            })
+        }
+    }
+}
+
 private val TaskSort.label: String
     get() = when (this) {
         TaskSort.MANUAL -> "Manual"
-        TaskSort.DUE -> "Due date"
+        TaskSort.DUE -> "Date"
         TaskSort.PRIORITY -> "Priority"
         TaskSort.TITLE -> "Title"
     }
@@ -748,7 +873,7 @@ private fun SortMenu(sort: TaskSort, onSort: (TaskSort) -> Unit) {
  * Each link is read only or lets visitors tick off and add tasks; the sharer picks per link.
  */
 @Composable
-private fun ShareDialog(list: TaskList, state: UiState, viewModel: TasksViewModel, onDismiss: () -> Unit) {
+private fun ShareDialog(list: TaskView, state: UiState, viewModel: TasksViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val shares by viewModel.shares.collectAsStateWithLifecycle()
     LaunchedEffect(list.id) { if (state.syncInfo != null) viewModel.loadShares(list.id) }

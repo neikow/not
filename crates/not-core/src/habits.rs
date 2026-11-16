@@ -304,7 +304,11 @@ fn streaks(habit: &Habit, log: &BTreeMap<Date, u32>, today: Date) -> (u32, u32) 
     let mut start = period.start(first);
     let current = period.start(today);
     while start <= current {
-        let end = if start == current { today } else { period.next(start).add_days(-1) };
+        let end = if start == current {
+            today
+        } else {
+            period.next(start).add_days(-1)
+        };
         if period != Period::Day || scheduled(habit.days, start) {
             let total: u32 = log.range(start..=end).map(|(_, &c)| c).sum();
             if total >= habit.goal {
