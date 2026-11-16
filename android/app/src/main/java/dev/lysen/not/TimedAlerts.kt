@@ -12,6 +12,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import dev.lysen.not.core.HabitSummary
 import dev.lysen.not.core.NotException
+import androidx.glance.appwidget.updateAll
+import kotlinx.coroutines.launch
 import java.time.LocalDate
 
 /**
@@ -62,6 +64,15 @@ class TimedAlerts(private val app: NotApp) {
         val nudging = prefs.getStringSet(KEY_NUDGES, emptySet()).orEmpty()
         val wantShown = mutableSetOf<String>()
         val wantNudge = mutableSetOf<String>()
+        // Rings on the widget move while time counts toward a goal: redraw them now and then,
+        // without waking the phone (the number in the ring ticks by itself).
+        val counting = habits.any { s ->
+            val rule = s.habit.timed
+            val state = s.timed
+            rule != null && state?.since != null && state.on != rule.atMostOff
+        }
+        val tick = tickIntent()
+        if (counting) alarms.set(AlarmManager.RTC, now + TICK_MS, tick) else alarms.cancel(tick)
         for (summary in habits) {
             val id = summary.habit.id
             val rule = summary.habit.timed ?: continue
@@ -145,11 +156,12 @@ class TimedAlerts(private val app: NotApp) {
         val head = "${stateName(rule, state.on)} since ${clockText(since)}"
         // The running stretch moves the goal or eats the allowance at one minute per minute.
         val counts = state.on != rule.atMostOff
+        // Once today's goal is safe, the notification stops talking about it.
         val tail = when {
+            live.secured(now) -> null
             live.atMostOff && live.leftMs > 0 && counts -> "${durationText(live.leftMs)} left, until ${clockText(now + live.leftMs)}"
             live.atMostOff && live.leftMs <= 0 -> "${durationText(-live.leftMs)} over today"
-            !live.atMostOff && !live.met && counts -> "goal at ${clockText(now + live.leftMs)}"
-            !live.atMostOff && live.met -> "goal met"
+            !live.atMostOff && counts -> "goal at ${clockText(now + live.leftMs)}"
             else -> null
         }
         return NotificationCompat.Builder(app, CHANNEL_LIVE)
@@ -207,6 +219,25 @@ class TimedAlerts(private val app: NotApp) {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
+    private fun tickIntent(): PendingIntent = PendingIntent.getBroadcast(
+        app,
+        REQUEST_TICK,
+        Intent(app, TimedReceiver::class.java).setAction(ACTION_TICK),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    /** From the tick: redraw the widgets, which schedules the next tick if still counting. */
+    internal fun tick(done: () -> Unit) {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+            try {
+                dev.lysen.not.widget.TimedWidget().updateAll(app)
+                refresh()
+            } finally {
+                done()
+            }
+        }
+    }
+
     private fun liveId(habitId: String) = 0x7100_0000 or (habitId.hashCode() and 0xFFFFFF)
 
     private fun nudgeId(habitId: String) = 0x7200_0000 or (habitId.hashCode() and 0xFFFFFF)
@@ -216,6 +247,9 @@ class TimedAlerts(private val app: NotApp) {
         const val CHANNEL_NUDGE = "timed_nudge"
         internal const val ACTION_SWITCH = "dev.lysen.not.TIMED_SWITCH"
         internal const val ACTION_NUDGE = "dev.lysen.not.TIMED_NUDGE"
+        internal const val ACTION_TICK = "dev.lysen.not.TIMED_TICK"
+        private const val TICK_MS = 5 * 60_000L
+        private const val REQUEST_TICK = 0x7400_0000
         internal const val EXTRA_ID = "id"
         internal const val EXTRA_ON = "on"
         internal const val EXTRA_SINCE = "since"
@@ -230,6 +264,11 @@ class TimedAlerts(private val app: NotApp) {
 class TimedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val alerts = (context.applicationContext as NotApp).timedAlerts
+        if (intent.action == TimedAlerts.ACTION_TICK) {
+            val pending = goAsync()
+            alerts.tick { pending.finish() }
+            return
+        }
         val id = intent.getStringExtra(TimedAlerts.EXTRA_ID) ?: return
         when (intent.action) {
             TimedAlerts.ACTION_SWITCH -> alerts.switchTo(id, intent.getBooleanExtra(TimedAlerts.EXTRA_ON, true))

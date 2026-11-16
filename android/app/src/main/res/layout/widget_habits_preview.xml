@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- What the widget picker shows (Android 12+): a static stand-in for the Glance widget. -->
+<!-- What the widget picker shows (Android 12+): a static stand-in for the Glance widget.
+     RemoteViews inflates only widget-safe classes: spacers are FrameLayouts, never plain Views. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -30,7 +31,7 @@
             android:textColor="@color/widget_preview_faint"
             android:textSize="14sp" />
 
-        <View
+        <FrameLayout
             android:layout_width="0dp"
             android:layout_height="0dp"
             android:layout_weight="1" />

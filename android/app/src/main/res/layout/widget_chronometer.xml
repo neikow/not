@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The ring's center while time counts: the system ticks it, so the widget never wakes the phone. -->
+<Chronometer xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_chronometer"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:gravity="center"
+    android:maxLines="1"
+    android:textColor="@color/widget_preview_content"
+    android:textSize="14sp"
+    android:textStyle="bold" />

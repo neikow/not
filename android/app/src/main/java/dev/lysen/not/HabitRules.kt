@@ -164,3 +164,16 @@ fun timedStatus(rule: TimedRule, live: TimedLive, now: Long): String {
     }
     return "$head · $tail"
 }
+
+/** Local midnight ending the day that contains [at]. */
+fun endOfDay(at: Long): Long {
+    val zone = java.time.ZoneId.systemDefault()
+    return java.time.Instant.ofEpochMilli(at).atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+}
+
+/**
+ * Today's goal can't be missed any more: time on reached for "at least" habits; for "at most",
+ * even staying off until midnight ([dayEnd]) would keep within the allowance.
+ */
+fun TimedLive.secured(now: Long, dayEnd: Long = endOfDay(now)): Boolean =
+    tracked && if (atMostOff) countedMs + (dayEnd - now).coerceAtLeast(0) <= goalMs else countedMs >= goalMs

@@ -52,6 +52,7 @@ object WidgetColors {
     val accent = pick { accent }
     val onAccent = pick { onAccent }
     val accentInk = pick { accentInk }
+    val accentSoft = pick { accentSoft }
 }
 
 /** The widget's card: brand surface, the launcher's corner radius, room around the content. */

@@ -87,4 +87,19 @@ class TimedRulesTest {
         assertEquals("At most 2h off", timedGoalText(wear, 120u))
         assertEquals("30m on", timedGoalText(read, 30u))
     }
+
+    @Test
+    fun aGoalIsSecuredOnceItCantBeMissed() {
+        val h = 60 * min
+        // At least 30 min: secured the moment it's met.
+        val reading = summary(read, 30u, on = true, since = 0, onMs = 30 * min, offMs = 0).timedLive(0, 0)!!
+        assertTrue(reading.secured(now = 0, dayEnd = 10 * h))
+        assertFalse(summary(read, 30u, true, 0, 29 * min, 0).timedLive(0, 0)!!.secured(0, 10 * h))
+        // At most 2 h off with 1 h used: safe only once less than an hour of the day is left.
+        val wearing = summary(wear, 120u, on = true, since = 0, onMs = 20 * h, offMs = h).timedLive(0, 0)!!
+        assertFalse(wearing.secured(now = 0, dayEnd = 2 * h))
+        assertTrue(wearing.secured(now = 0, dayEnd = h))
+        assertFalse("over is never safe", summary(wear, 60u, false, 0, 0, 2 * h).timedLive(0, 0)!!.secured(0, 0))
+        assertFalse("untracked isn't won", summary(wear, 60u, false, null, 0, 0).timedLive(0, 0)!!.secured(0, 0))
+    }
 }
