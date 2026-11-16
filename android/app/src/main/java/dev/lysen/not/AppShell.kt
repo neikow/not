@@ -73,6 +73,13 @@ fun NotAppUi(
             onTabShown()
         }
     }
+    // A fresh install starts with a few first-run steps.
+    val app = LocalContext.current.applicationContext as NotApp
+    var firstRun by rememberSaveable { mutableStateOf(FirstRun.needed(app)) }
+    if (firstRun) {
+        Onboarding(tasks, onDone = { firstRun = false })
+        return
+    }
     if (showsSettings) {
         BackHandler { showsSettings = false }
         SettingsScreen(tasks, workouts, onBack = { showsSettings = false })

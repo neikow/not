@@ -558,7 +558,7 @@ private fun Labeled(label: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun PairForm(state: UiState, viewModel: TasksViewModel) {
+internal fun PairForm(state: UiState, viewModel: TasksViewModel, intro: Boolean = true) {
     var url by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var name by remember { mutableStateOf(viewModel.defaultDeviceName) }
@@ -566,7 +566,7 @@ private fun PairForm(state: UiState, viewModel: TasksViewModel) {
     var scanError by remember { mutableStateOf(false) }
     val colors = Not.colors
 
-    Text("Pair this device with your server to sync.", style = Not.type.body)
+    if (intro) Text("Pair this device with your server to sync.", style = Not.type.body)
     Button("Scan QR code", { scanning = true }, Modifier.fillMaxWidth(), enabled = !state.busy)
     if (scanError) Text("That QR code isn't a pairing code.", style = Not.type.caption, color = colors.danger)
 
