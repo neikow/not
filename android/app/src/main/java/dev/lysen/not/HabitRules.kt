@@ -177,3 +177,19 @@ fun endOfDay(at: Long): Long {
  */
 fun TimedLive.secured(now: Long, dayEnd: Long = endOfDay(now)): Boolean =
     tracked && if (atMostOff) countedMs + (dayEnd - now).coerceAtLeast(0) <= goalMs else countedMs >= goalMs
+
+/**
+ * When today's goal becomes [secured] if the habit stays in its current state ([on]): the moment
+ * time on reaches the goal, or for "at most" the moment what's left of the day fits in the
+ * allowance. Null when it already is, or can't become safe that way.
+ */
+fun TimedLive.securedAt(now: Long, dayEnd: Long = endOfDay(now)): Long? {
+    if (!tracked || secured(now, dayEnd)) return null
+    val counting = on != atMostOff
+    val at = when {
+        !atMostOff && counting -> now + leftMs
+        atMostOff && !counting -> dayEnd - leftMs
+        else -> return null
+    }
+    return at.takeIf { it in (now + 1)..dayEnd }
+}

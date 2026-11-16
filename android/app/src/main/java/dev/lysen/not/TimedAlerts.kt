@@ -71,17 +71,22 @@ class TimedAlerts(private val app: NotApp) {
             val state = s.timed
             rule != null && state?.since != null && state.on != rule.atMostOff
         }
-        val tick = tickIntent()
-        if (counting) alarms.set(AlarmManager.RTC, now + TICK_MS, tick) else alarms.cancel(tick)
+        // Next wake-up: the 5-minute redraw while counting, or sooner when a shown notification's
+        // goal becomes safe (it goes away then).
+        var nextTick = if (counting) now + TICK_MS else Long.MAX_VALUE
         for (summary in habits) {
             val id = summary.habit.id
             val rule = summary.habit.timed ?: continue
             val state = summary.timed ?: continue
             val since = state.since ?: continue
             if (state.on == rule.usualOn) continue
-            if (liveEnabled(id)) {
+            val timed = summary.timedLive(now, now)!!
+            // Once today's goal can't be missed, the notification has done its job; the stretch
+            // keeps counting in the app and widget.
+            if (liveEnabled(id) && !timed.secured(now)) {
                 wantShown += id
                 notify(liveId(id), live(summary, now))
+                timed.securedAt(now)?.let { nextTick = minOf(nextTick, it) }
             }
             if (rule.nudgeMinutes > 0u) {
                 val at = since + rule.nudgeMinutes.toLong() * 60_000
@@ -92,6 +97,8 @@ class TimedAlerts(private val app: NotApp) {
                 }
             }
         }
+        val tick = tickIntent()
+        if (nextTick == Long.MAX_VALUE) alarms.cancel(tick) else alarms.setExact(AlarmManager.RTC, nextTick, tick)
         for (id in shown - wantShown) NotificationManagerCompat.from(app).cancel(liveId(id))
         for (id in nudging - wantNudge) alarms.cancel(nudgeIntent(id, 0L))
         // A nudge whose stretch ended has nothing left to say.

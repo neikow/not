@@ -102,4 +102,21 @@ class TimedRulesTest {
         assertFalse("over is never safe", summary(wear, 60u, false, 0, 0, 2 * h).timedLive(0, 0)!!.secured(0, 0))
         assertFalse("untracked isn't won", summary(wear, 60u, false, null, 0, 0).timedLive(0, 0)!!.secured(0, 0))
     }
+
+    @Test
+    fun securedAtIsWhenTheGoalBecomesSafeWithoutAnotherSwitch() {
+        val h = 60 * min
+        // Reading 30 min, 20 done, running: safe in 10 minutes.
+        val reading = summary(read, 30u, on = true, since = 0, onMs = 20 * min, offMs = 0).timedLive(0, 0)!!
+        assertEquals(10 * min, reading.securedAt(now = 0, dayEnd = 10 * h))
+        // Stopped: it won't get there by itself.
+        assertNull(summary(read, 30u, false, 0, 20 * min, 0).timedLive(0, 0)!!.securedAt(0, 10 * h))
+        // Worn with 1 h of a 2 h allowance used: safe once only 1 h of the day is left.
+        val wearing = summary(wear, 120u, on = true, since = 0, onMs = 0, offMs = h).timedLive(0, 0)!!
+        assertEquals(9 * h, wearing.securedAt(now = 0, dayEnd = 10 * h))
+        // Paused, the allowance only shrinks.
+        assertNull(summary(wear, 120u, false, 0, 0, h).timedLive(0, 0)!!.securedAt(0, 10 * h))
+        // Already safe: nothing to wait for.
+        assertNull(summary(read, 30u, true, 0, 40 * min, 0).timedLive(0, 0)!!.securedAt(0, 10 * h))
+    }
 }
