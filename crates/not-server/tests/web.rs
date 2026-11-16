@@ -517,7 +517,9 @@ async fn notes_list_by_folder_and_render_as_escaped_markdown() {
             ),
         )
         .unwrap();
-    let pinned = phone.create_note(None, "Shopping\nmilk").unwrap();
+    let pinned = phone
+        .create_note(None, "Shopping\nmilk\n- [ ] eggs <b>\n- [x] bread")
+        .unwrap();
     phone.set_note_pinned(&pinned, true).unwrap();
     phone.create_note(None, "").unwrap();
     client.sync(&phone).await.unwrap();
@@ -531,6 +533,10 @@ async fn notes_list_by_folder_and_render_as_escaped_markdown() {
     );
     assert!(html[trips_at..].contains("Lisbon &lt;3"));
     assert!(html.contains("📌 Shopping"), "pinned");
+    assert!(
+        html.contains("<span>milk<br>☐ eggs &lt;b&gt;</span>"),
+        "previews keep their lines, two of them, escaped: {html}"
+    );
     assert!(html.contains("Untitled"), "an empty note");
     assert!(
         !html.contains("Empty folder"),

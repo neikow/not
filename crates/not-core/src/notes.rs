@@ -464,7 +464,10 @@ fn push_folders(all: &[Folder], parent: Option<&str>, depth: u32, out: &mut Vec<
     }
 }
 
-/// Title and preview: the first non-empty line and what follows it, without markdown markers.
+/// Title and preview: the first non-empty line, and the few lines after it without markdown
+/// markers. The preview keeps the note's line breaks (`\n`, at most [PREVIEW_LINES] lines);
+/// checklist items start with [UNCHECKED] or [CHECKED] and list items with "• ", so the apps can
+/// draw boxes and bullets. Empty items are left out.
 pub fn title_and_preview(body: &str) -> (String, String) {
     // Image and task block lines are markup only: they'd read as noise in a title or preview.
     let images: Vec<_> = crate::markdown::images(body).into_iter().map(|i| i.id).collect();
@@ -472,24 +475,70 @@ pub fn title_and_preview(body: &str) -> (String, String) {
         .lines()
         .filter(|l| !images.iter().any(|id| l.contains(id.as_str())))
         .filter(|l| crate::markdown::task_blocks(l).is_empty())
-        .map(|l| plain(&crate::checklist::split_link(l).0))
-        .filter(|l| !l.is_empty());
-    let title = lines.next().unwrap_or_default();
-    let mut preview = String::new();
+        .map(|l| crate::checklist::split_link(l).0);
+    let title = lines
+        .by_ref()
+        .map(|l| plain(&l))
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+    let mut preview: Vec<String> = Vec::new();
+    let mut chars = 0;
     for line in lines {
-        if !preview.is_empty() {
-            preview.push(' ');
-        }
-        preview.push_str(&line);
-        if preview.chars().count() >= PREVIEW_CHARS {
+        let Some(line) = preview_line(&line) else { continue };
+        chars += line.chars().count();
+        preview.push(line);
+        if preview.len() >= PREVIEW_LINES || chars >= PREVIEW_CHARS {
             break;
         }
     }
-    let preview = preview.chars().take(PREVIEW_CHARS).collect();
+    let preview = preview.join("\n").chars().take(PREVIEW_CHARS).collect();
     (title.chars().take(200).collect(), preview)
 }
 
-/// A line without leading block markers (`#`, `>`, list bullets, checkboxes) or emphasis markers.
+/// Starts a preview line that is an open checklist item.
+pub const UNCHECKED: &str = "☐ ";
+/// Starts a preview line that is a ticked checklist item.
+pub const CHECKED: &str = "☑ ";
+const PREVIEW_LINES: usize = 4;
+
+/// One line for the preview: a checklist item, a list item, or plain text; `None` when there's
+/// nothing to read (blank lines, empty items, rules).
+fn preview_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.chars().all(|c| matches!(c, '-' | '*' | '_' | ' ')) {
+        return None;
+    }
+    // "- [ ] x", "* [x] x", "1. [ ] x" and a bare "[ ] x" are checklist items.
+    let item = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+        .or_else(|| {
+            let digits = trimmed.find(|c: char| !c.is_ascii_digit()).filter(|&i| i > 0)?;
+            trimmed[digits..].strip_prefix(". ")
+        });
+    let candidate = item.unwrap_or(trimmed);
+    let check = [("[ ]", UNCHECKED), ("[x]", CHECKED), ("[X]", CHECKED)]
+        .into_iter()
+        .find_map(|(box_, mark)| {
+            let rest = candidate.strip_prefix(box_)?;
+            (rest.is_empty() || rest.starts_with(' ')).then_some((mark, rest))
+        });
+    if let Some((mark, rest)) = check {
+        let text = plain(rest);
+        return (!text.is_empty()).then(|| format!("{mark}{text}"));
+    }
+    let text = plain(trimmed);
+    if text.is_empty() {
+        return None;
+    }
+    Some(if item.is_some() && trimmed.starts_with(['-', '*', '+']) {
+        format!("• {text}")
+    } else {
+        text
+    })
+}
+
 fn plain(line: &str) -> String {
     let mut rest = line.trim();
     loop {
@@ -627,8 +676,25 @@ mod tests {
     fn titles_skip_markdown() {
         assert_eq!(
             title_and_preview("\n# Trip *plans*\n\n- [ ] book **hotel**\n> pack\n"),
-            ("Trip plans".into(), "book hotel pack".into())
+            ("Trip plans".into(), "☐ book hotel\npack".into())
         );
         assert_eq!(title_and_preview(""), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn previews_keep_lines_boxes_and_bullets() {
+        let (_, preview) = title_and_preview(
+            "Pancakes\nShopping\n- [ ] Flour\n- [x] Eggs\n- [ ]\n* [ ] Milk\n- Mix well\n1. Rest 10 min",
+        );
+        assert_eq!(
+            preview, "Shopping\n☐ Flour\n☑ Eggs\n☐ Milk",
+            "four lines, the empty item left out"
+        );
+        let (_, preview) = title_and_preview("List\n[ ] bare box\n---\n\n+ plus item\n2. [X] numbered");
+        assert_eq!(preview, "☐ bare box\n• plus item\n☑ numbered");
+        // Brackets that aren't a box stay text.
+        assert_eq!(title_and_preview("T\n[link] here").1, "[link] here");
+        // A checklist as the first line still gives a clean title.
+        assert_eq!(title_and_preview("- [ ] call mum\n- [ ] eggs").0, "call mum");
     }
 }

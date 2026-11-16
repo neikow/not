@@ -159,11 +159,39 @@ private fun NoteCard(note: NoteSummary, previews: Boolean) {
                 )
             }
             if (previews && note.preview.isNotEmpty()) {
-                Text(
-                    note.preview,
-                    maxLines = 2,
-                    style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.wsp),
-                )
+                // As written: line breaks kept, checklist items with a small box.
+                dev.lysen.not.previewLines(note.preview).take(3).forEach { line ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (line.box) {
+                            Box(GlanceModifier.size(12.dp), contentAlignment = Alignment.Center) {
+                                Image(
+                                    ImageProvider(if (line.checked) R.drawable.widget_box_done else R.drawable.widget_box),
+                                    contentDescription = if (line.checked) "Done" else null,
+                                    colorFilter = ColorFilter.tint(if (line.checked) WidgetColors.accent else WidgetColors.inkFaint),
+                                    modifier = GlanceModifier.size(12.dp),
+                                )
+                                if (line.checked) {
+                                    Image(
+                                        ImageProvider(R.drawable.ic_check),
+                                        contentDescription = null,
+                                        colorFilter = ColorFilter.tint(WidgetColors.onAccent),
+                                        modifier = GlanceModifier.size(9.dp),
+                                    )
+                                }
+                            }
+                            Spacer(GlanceModifier.width(6.dp))
+                        }
+                        Text(
+                            line.text,
+                            maxLines = 1,
+                            style = TextStyle(
+                                color = if (line.checked) WidgetColors.inkFaint else WidgetColors.inkMuted,
+                                fontSize = 13.wsp,
+                                textDecoration = if (line.checked) androidx.glance.text.TextDecoration.LineThrough else null,
+                            ),
+                        )
+                    }
+                }
             }
         }
     }

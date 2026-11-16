@@ -129,3 +129,20 @@ internal fun toggleBox(text: String, boxAt: Int, selStart: Int, selEnd: Int): Ch
     val p = listPrefix(text, lineStart)?.takeIf { it.isBox && boxAt == it.start + it.indent.length + 2 } ?: return null
     return Change(boxAt + 1, boxAt + 2, if (p.checked) " " else "x", selStart, selEnd)
 }
+
+// ---- previews ----
+
+/** Preview lines from the core start with these for checklist items (see `title_and_preview`). */
+const val PREVIEW_UNCHECKED = "☐ "
+const val PREVIEW_CHECKED = "☑ "
+
+/** One line of a note's preview: a checklist item (ticked or not) or text. */
+data class PreviewLine(val text: String, val box: Boolean, val checked: Boolean)
+
+fun previewLines(preview: String): List<PreviewLine> = preview.lines().filter { it.isNotBlank() }.map { line ->
+    when {
+        line.startsWith(PREVIEW_UNCHECKED) -> PreviewLine(line.removePrefix(PREVIEW_UNCHECKED), box = true, checked = false)
+        line.startsWith(PREVIEW_CHECKED) -> PreviewLine(line.removePrefix(PREVIEW_CHECKED), box = true, checked = true)
+        else -> PreviewLine(line, box = false, checked = false)
+    }
+}

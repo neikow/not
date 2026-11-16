@@ -44,6 +44,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.border
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -459,7 +461,7 @@ private fun NoteCard(
                 if (note.pinned) Icon(R.drawable.ic_pin, "Pinned", tint = colors.accentInk, size = 16.dp)
             }
             if (note.preview.isNotEmpty()) {
-                Text(note.preview, style = Not.type.body.merge(fontSize = Not.type.caption.fontSize.times(1.1f), lineHeight = Not.type.caption.lineHeight.times(1.1f)), color = colors.inkMuted, maxLines = 2)
+                NotePreview(note.preview, maxLines = 3)
             }
             Text(
                 listOfNotNull(edited(note.updatedAt), folder).joinToString(" · "),
@@ -804,3 +806,47 @@ private fun TextFieldBuffer.replaceChanged(new: String) {
 private fun edited(millis: Long): String =
     if (System.currentTimeMillis() - millis < DateUtils.MINUTE_IN_MILLIS) "just now"
     else DateUtils.getRelativeTimeSpanString(millis).toString()
+
+/**
+ * A note's first lines under its title, as written: line breaks kept, checklist items with a small
+ * box (ticked ones checked and faded), the rest as text.
+ */
+@Composable
+private fun NotePreview(preview: String, maxLines: Int) {
+    val colors = Not.colors
+    val style = Not.type.body.merge(fontSize = Not.type.caption.fontSize.times(1.1f), lineHeight = Not.type.caption.lineHeight.times(1.1f))
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        previewLines(preview).take(maxLines).forEach { line ->
+            if (line.box) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MiniBox(line.checked)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        line.text,
+                        style = style,
+                        color = if (line.checked) colors.inkFaint else colors.inkMuted,
+                        textDecoration = if (line.checked) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                        maxLines = 1,
+                    )
+                }
+            } else {
+                Text(line.text, style = style, color = colors.inkMuted, maxLines = 1)
+            }
+        }
+    }
+}
+
+/** A checklist box at text size: an outline, or mint with a check. */
+@Composable
+private fun MiniBox(checked: Boolean) {
+    val colors = Not.colors
+    Box(
+        Modifier
+            .size(13.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .then(if (checked) Modifier.background(colors.accent) else Modifier.border(1.5.dp, colors.inkFaint, RoundedCornerShape(4.dp))),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) Icon(R.drawable.ic_check, null, tint = colors.onAccent, size = 10.dp)
+    }
+}

@@ -303,7 +303,13 @@ async fn notes_page(State(state): State<AppState>, headers: HeaderMap) -> Respon
                 esc(&n.id),
                 if n.pinned { "📌 " } else { "" },
                 esc(if n.title.is_empty() { "Untitled" } else { &n.title }),
-                esc(&n.preview)
+                // Two lines as written; checklist marks (☐ ☑) come from the core.
+                n.preview
+                    .lines()
+                    .take(2)
+                    .map(esc)
+                    .collect::<Vec<_>>()
+                    .join("<br>")
             );
         }
         body.push_str("</ul>");

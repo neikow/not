@@ -124,7 +124,7 @@ private struct NoteRow: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(edited(note.updatedAt))
                     .foregroundStyle(.secondary)
-                Text(note.preview.isEmpty ? "No additional text" : note.preview)
+                NotePreviewLine(preview: note.preview)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
@@ -201,4 +201,24 @@ func edited(_ millis: Int64) -> String {
     return Calendar.current.isDateInToday(date)
         ? date.formatted(date: .omitted, time: .shortened)
         : date.formatted(date: .numeric, time: .omitted)
+}
+
+/// The first line of a note's preview; checklist items (marked by the core) get a box.
+struct NotePreviewLine: View {
+    let preview: String
+
+    var body: some View {
+        let line = preview.split(separator: "\n").first.map(String.init) ?? ""
+        if line.isEmpty {
+            Text("No additional text")
+        } else if line.hasPrefix("☐ ") {
+            Label { Text(line.dropFirst(2)) } icon: { Image(systemName: "square") }
+                .labelStyle(.titleAndIcon)
+        } else if line.hasPrefix("☑ ") {
+            Label { Text(line.dropFirst(2)).strikethrough() } icon: { Image(systemName: "checkmark.square.fill") }
+                .labelStyle(.titleAndIcon)
+        } else {
+            Text(line)
+        }
+    }
 }

@@ -22,7 +22,7 @@ fn notes_derive_title_and_sort_pinned_first() {
     store.set_note_pinned(&a, true).unwrap();
     let notes = store.notes(Some(&work)).unwrap();
     assert_eq!(titles(&notes), ["Standup", "Ideas"]);
-    assert_eq!(notes[0].preview, "ship notes");
+    assert_eq!(notes[0].preview, "☐ ship notes");
     assert_eq!(store.notes(None).unwrap().len(), 3);
     assert_eq!(store.folders().unwrap()[0].note_count, 2);
     assert_eq!(store.note_body(&a).unwrap(), "# Standup\n- [ ] ship notes");
