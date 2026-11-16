@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import dev.lysen.not.core.Habit
 import dev.lysen.not.core.HabitSummary
 import dev.lysen.not.core.NotException
+import dev.lysen.not.core.TimeSegment
+import dev.lysen.not.core.TimedRule
 import dev.lysen.not.core.everyDay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -29,6 +31,8 @@ data class HabitsState(
     /** On today's to-do and not done yet, for badges; counted on today even while a past day is shown. */
     val pending: Int = 0,
     val error: String? = null,
+    /** When [habits] was computed: timed habits keep counting from there until the next reload. */
+    val loadedAt: Long = nowMs(),
 ) {
     val openHabit: HabitSummary? get() = habits.firstOrNull { it.habit.id == openHabitId }
 
@@ -46,6 +50,10 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _undoables = Channel<Undoable>(Channel.CONFLATED)
     val undoables: Flow<Undoable> = _undoables.receiveAsFlow()
+
+    /** A timed habit was just switched: the screen offers "Earlier?" to backdate it. */
+    private val _switched = Channel<Switched>(Channel.CONFLATED)
+    val switched: Flow<Switched> = _switched.receiveAsFlow()
 
     init {
         viewModelScope.launch { app.changes.collect { reload() } }
@@ -74,6 +82,52 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
     fun add(title: String) {
         if (title.isNotBlank()) run { store.createHabit(title.trim(), 1u, everyDay()) }
     }
+
+    /** A timed habit, opened straight away to set its goal and rule. Starts as "at least 1 h on". */
+    fun addTimed(title: String) {
+        if (title.isBlank()) return
+        val id = run { store.createTimedHabit(title.trim(), 60u, everyDay(), TimedRule(atMostOff = false, usualOn = false, nudgeMinutes = 0u)) } ?: return
+        reload()
+        open(id)
+    }
+
+    /** Switches a timed habit now, then offers to say it happened earlier. */
+    fun switchNow(id: String, on: Boolean) {
+        val now = nowMs()
+        run { store.setHabitState(id, on, now, null, now) } ?: return
+        app.timedAlerts.refresh()
+        _switched.trySend(Switched(id, on))
+    }
+
+    /** It's been [on] since [from] (backdating a switch). */
+    fun switchSince(id: String, on: Boolean, from: Long) {
+        run { store.setHabitState(id, on, from.coerceAtMost(nowMs()), null, nowMs()) }
+        app.timedAlerts.refresh()
+    }
+
+    /**
+     * Edits one stretch of a timeline: its state and ends. Moving an end inward hands the freed
+     * time to the neighbour on that side, so shrinking a break gives the time back to "on".
+     * [end] null keeps the stretch running (the current one).
+     */
+    fun editStretch(id: String, old: TimeSegment?, prev: TimeSegment?, next: TimeSegment?, on: Boolean, start: Long, end: Long?) {
+        val now = nowMs()
+        if (old != null) {
+            if (start > old.start && prev != null) run { store.setHabitState(id, prev.on, old.start, start, now) } ?: return
+            if (end != null && end < old.end && next != null) run { store.setHabitState(id, next.on, end, old.end, now) } ?: return
+        }
+        run { store.setHabitState(id, on, start, end, now) }
+        app.timedAlerts.refresh()
+    }
+
+    fun updateTimed(habit: dev.lysen.not.core.Habit, title: String, minutes: UInt, days: UByte, rule: TimedRule) {
+        if (title.isNotBlank()) run { store.updateTimedHabit(habit.id, title.trim(), minutes, days, rule) }
+        app.timedAlerts.refresh()
+    }
+
+    /** The stretches of [date] (today: up to now). */
+    fun timeline(id: String, date: LocalDate): List<TimeSegment> =
+        run { store.habitTimeline(id, date.toString(), nowMs(), utcOffsetMinutes()) }.orEmpty()
 
     /** A check-in on the day shown until the goal is met, then back to zero. */
     fun toggle(id: String) {
@@ -109,7 +163,7 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
 
     /** Check-ins per day from [from] through today. */
     fun history(id: String, from: LocalDate): Map<LocalDate, UInt> =
-        (run { store.habitDays(id, from.toString(), today()) } ?: emptyList())
+        (run { store.habitDays(id, from.toString(), today(), nowMs(), utcOffsetMinutes()) } ?: emptyList())
             .associate { LocalDate.parse(it.date) to it.count }
 
     private fun today() = _state.value.today.toString()
@@ -117,10 +171,11 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
     private fun day() = _state.value.day.toString()
 
     private fun reload() {
-        val habits = run { store.habits(day()) } ?: return
-        val todays = if (_state.value.isToday) habits else run { store.habits(today()) } ?: return
+        val habits = run { store.habitsNow(day()) } ?: return
+        val todays = if (_state.value.isToday) habits else run { store.habitsNow(today()) } ?: return
         _state.update { s ->
             s.copy(
+                loadedAt = nowMs(),
                 habits = habits,
                 openHabitId = s.openHabitId.takeIf { id -> habits.any { it.habit.id == id } },
                 pending = todays.count { it.pending },
@@ -136,3 +191,5 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
             null
         }
 }
+
+data class Switched(val habitId: String, val on: Boolean)

@@ -86,6 +86,14 @@ private struct HabitRow: View {
     private var habit: Habit { summary.habit }
 
     var body: some View {
+        if habit.timed != nil {
+            TimedHabitRow(summary: summary, model: model)
+        } else {
+            countRow
+        }
+    }
+
+    private var countRow: some View {
         HStack(spacing: 12) {
             Button { model.toggleHabit(habit.id) } label: {
                 HabitRing(summary: summary)
@@ -123,7 +131,11 @@ struct HabitRing: View {
 
     var body: some View {
         let habit = summary.habit
-        if habit.isDaily {
+        if habit.timed != nil {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                TimedRingView(live: summary.timedLive(now: context.date, loadedAt: .now), size: size)
+            }
+        } else if habit.isDaily {
             CheckRing(count: summary.count, goal: habit.goal, due: summary.due, size: size)
         } else {
             CheckRing(count: summary.progress, goal: habit.goal, due: true, size: size, checkedToday: summary.count > 0)
@@ -244,6 +256,9 @@ private struct HabitDetail: View {
                     .onSubmit(saveTitle)
             }
 
+            if habit.timed != nil {
+                TimedDetailSections(model: model, summary: summary)
+            } else {
             Section("Today") {
                 HStack(spacing: 14) {
                     HabitRing(summary: summary, size: 36)
@@ -285,6 +300,7 @@ private struct HabitDetail: View {
                     WeekdayPicker(days: Binding(get: { habit.days }, set: { save(days: $0) }))
                 }
             }
+            }
 
             Section("Streak") {
                 LabeledContent("Current", value: streakText(summary.streak, habit.period))
@@ -309,12 +325,12 @@ private struct HabitDetail: View {
     private func saveTitle() {
         let trimmed = title.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, trimmed != habit.title, model.selectedHabit?.habit.id == habit.id else { return }
-        model.updateHabit(Habit(id: habit.id, title: trimmed, goal: habit.goal, days: habit.days, period: habit.period))
+        model.updateHabit(Habit(id: habit.id, title: trimmed, goal: habit.goal, days: habit.days, period: habit.period, timed: habit.timed))
     }
 
     private func save(goal: UInt32? = nil, days: UInt8? = nil, period: HabitPeriod? = nil) {
         model.updateHabit(Habit(id: habit.id, title: habit.title, goal: goal ?? habit.goal, days: days ?? habit.days,
-                                period: period ?? habit.period))
+                                period: period ?? habit.period, timed: habit.timed))
     }
 }
 
@@ -423,7 +439,7 @@ extension HabitSummary {
     var onToday: Bool { habit.isDaily ? due : due || count > 0 }
 
     /// Done as far as the day goes: the day's goal met, or for weekly and monthly ones, a check-in.
-    var doneToday: Bool { habit.isDaily ? count >= habit.goal : count > 0 || done }
+    var doneToday: Bool { habit.timed != nil ? done : habit.isDaily ? count >= habit.goal : count > 0 || done }
 
     /// On the day's to-do and not done yet: what badges count.
     var pending: Bool { onToday && !doneToday }

@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::Result;
 
 /// Bump when the read-model tables change; a mismatch triggers a full rebuild from the docs.
-pub const READ_MODEL_VERSION: i64 = 11;
+pub const READ_MODEL_VERSION: i64 = 12;
 
 /// Local update rows per doc before they are folded into a snapshot on open.
 const COMPACT_AFTER: i64 = 200;
@@ -53,6 +53,7 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
         DROP TABLE IF EXISTS task;
         DROP TABLE IF EXISTS habit;
         DROP TABLE IF EXISTS habit_log;
+        DROP TABLE IF EXISTS habit_switch;
         DROP TABLE IF EXISTS folder;
         DROP TABLE IF EXISTS note;
         DROP TABLE IF EXISTS workout;
@@ -82,8 +83,21 @@ pub fn ensure_read_model(db: &Connection) -> Result<bool> {
             goal     INTEGER NOT NULL,
             days     INTEGER NOT NULL,
             period   TEXT NOT NULL,
-            position TEXT NOT NULL
+            position TEXT NOT NULL,
+            -- Timed habits (goal in minutes): 1, else 0 and the rest unused.
+            timed       INTEGER NOT NULL DEFAULT 0,
+            at_most_off INTEGER NOT NULL DEFAULT 0,
+            usual_on    INTEGER NOT NULL DEFAULT 0,
+            nudge       INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE habit_switch (
+            habit_id TEXT NOT NULL,
+            key      TEXT NOT NULL,
+            at       INTEGER NOT NULL,
+            on_      INTEGER NOT NULL,
+            PRIMARY KEY (habit_id, key)
+        );
+        CREATE INDEX habit_switch_by_time ON habit_switch (habit_id, at);
         CREATE TABLE habit_log (
             habit_id TEXT NOT NULL,
             date     TEXT NOT NULL,

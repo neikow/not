@@ -2,6 +2,9 @@
 //! check-ins in `habit_log`, a map of counters keyed `habitId:YYYY-MM-DD`. Counters add up, so two
 //! devices checking in offline on the same day count twice, and unchecking on one device while the
 //! other checks in can't lose an increment.
+//!
+//! Timed habits (on/off with a goal in minutes) keep their switches in the habit's meta instead;
+//! see [`crate::timed`].
 
 use std::collections::BTreeMap;
 
@@ -11,6 +14,7 @@ use rusqlite::{Connection, params};
 use crate::date::Date;
 use crate::projection::{DELETED_AT, TITLE, meta_i64, meta_str};
 use crate::store::{Store, clean_title, now_millis};
+use crate::timed::{self, Clock, MINUTE, SWITCHES, Switch, TimedRule, TimedState};
 use crate::{Error, Result};
 
 /// Check-ins per period it takes to complete a habit.
@@ -19,6 +23,14 @@ const GOAL: &str = "goal";
 const PERIOD: &str = "period";
 /// Scheduled weekdays as a bit mask, bit 0 = Monday … bit 6 = Sunday.
 const DAYS: &str = "days";
+/// Timed habits: `"on"` (the goal is time on, the default) or `"off"` (a cap on time off).
+const AIM: &str = "aim";
+/// Timed habits: the state it's normally in, `"on"` or `"off"` (the default).
+const USUAL: &str = "usual";
+/// Timed habits: minutes out of the usual state before a reminder; absent or 0 for none.
+const NUDGE: &str = "nudge";
+/// Longest goal for a timed habit: a whole day.
+const MAX_MINUTES: u32 = 24 * 60;
 pub const EVERY_DAY: u8 = 0b111_1111;
 
 /// What a habit's goal counts over. Weeks run Monday to Sunday, months by the calendar.
@@ -79,6 +91,8 @@ pub struct Habit {
     /// scheduled; weekly and monthly ones take [`EVERY_DAY`].
     pub days: u8,
     pub period: Period,
+    /// Set for timed habits, whose `goal` is minutes per day (always daily).
+    pub timed: Option<TimedRule>,
 }
 
 /// A habit as of a given day, for the habits screen.
@@ -100,6 +114,10 @@ pub struct HabitSummary {
     pub best_streak: u32,
     /// Check-ins on the 7 days ending with that day, oldest first.
     pub week: Vec<u32>,
+    /// Timed habits: the state that day. Their `count`, `progress` and `week` are the minutes
+    /// that count toward the goal (time on, or time off for "at most" habits), and `done` says
+    /// the day's goal is met (for "at most" habits: still within the allowance).
+    pub timed: Option<TimedState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,12 +142,64 @@ impl Store {
         })
     }
 
+    /// A timed habit: on or off, with a goal of `minutes` per scheduled day.
+    pub fn create_timed_habit(&self, title: &str, minutes: u32, days: u8, rule: TimedRule) -> Result<String> {
+        let title = clean_title(title)?;
+        validate_timed(minutes, days)?;
+        self.transact(|| {
+            let id = self.habits.create(TreeParentId::Root)?;
+            let meta = self.habits.get_meta(id)?;
+            meta.insert(TITLE, title)?;
+            meta.insert(GOAL, i64::from(minutes))?;
+            meta.insert(DAYS, i64::from(days))?;
+            write_rule(&meta, &rule)?;
+            // Created once, here: two devices creating it concurrently would lose one's switches.
+            meta.insert_container(SWITCHES, LoroMap::new())?;
+            Ok(id.to_string())
+        })
+    }
+
+    /// Edits a timed habit's title, goal (minutes), weekdays and rule. Its switches stay.
+    pub fn update_timed_habit(
+        &self,
+        id: &str,
+        title: &str,
+        minutes: u32,
+        days: u8,
+        rule: TimedRule,
+    ) -> Result<()> {
+        let title = clean_title(title)?;
+        validate_timed(minutes, days)?;
+        let id = self.timed_node(id)?;
+        self.transact(|| {
+            let meta = self.habits.get_meta(id)?;
+            if meta_str(&meta, TITLE).as_deref() != Some(title.as_str()) {
+                meta.insert(TITLE, title)?;
+            }
+            if meta_i64(&meta, GOAL) != Some(i64::from(minutes)) {
+                meta.insert(GOAL, i64::from(minutes))?;
+            }
+            if meta_i64(&meta, DAYS) != Some(i64::from(days)) {
+                meta.insert(DAYS, i64::from(days))?;
+            }
+            if rule_of(&meta) != Some(rule) {
+                write_rule(&meta, &rule)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn update_habit(&self, id: &str, title: &str, goal: u32, days: u8, period: Period) -> Result<()> {
         let title = clean_title(title)?;
         validate(goal, days)?;
         // A goal over the week or month can be met on any day.
         let days = if period == Period::Day { days } else { EVERY_DAY };
         let id = self.habit_node(id)?;
+        if is_timed(&self.habits.get_meta(id)?) {
+            return Err(Error::Invalid(
+                "edit a timed habit with update_timed_habit".into(),
+            ));
+        }
         self.transact(|| {
             let meta = self.habits.get_meta(id)?;
             // Only what changed, so concurrent edits of different fields both survive.
@@ -177,6 +247,9 @@ impl Store {
     /// Returns the new count.
     pub fn log_habit(&self, id: &str, date: &str, delta: i64) -> Result<u32> {
         let id = self.habit_node(id)?;
+        if is_timed(&self.habits.get_meta(id)?) {
+            return Err(Error::Invalid("a timed habit is switched, not checked in".into()));
+        }
         let date = Date::parse(date)?;
         self.transact(|| {
             let counter = self.habit_log.ensure_mergeable_counter(&log_key(id, date))?;
@@ -191,9 +264,14 @@ impl Store {
 
     /// One tap on a habit. Daily: a check-in until the day's goal is met, then back to zero.
     /// Weekly and monthly: the day's check-in, or taking it back.
+    /// A timed habit flips now instead (and returns 0).
     pub fn toggle_habit(&self, id: &str, date: &str) -> Result<u32> {
         let node = self.habit_node(id)?;
         let meta = self.habits.get_meta(node)?;
+        if is_timed(&meta) {
+            self.switch_habit_now(id)?;
+            return Ok(0);
+        }
         let goal = match period_of(&meta) {
             Period::Day => meta_i64(&meta, GOAL).unwrap_or(1),
             Period::Week | Period::Month => 1,
@@ -202,13 +280,20 @@ impl Store {
         self.log_habit(id, date, if count >= goal { -count } else { 1 })
     }
 
-    /// Habits in user order as of `date` (the user's today).
+    /// Habits in user order as of `date`, timed ones measured in UTC up to now. Apps use
+    /// [`Store::habits_at`].
     pub fn habits(&self, date: &str) -> Result<Vec<HabitSummary>> {
+        self.habits_at(date, Clock::utc_now())
+    }
+
+    /// Habits in user order as of `date` (the user's today); timed habits as of `clock`.
+    pub fn habits_at(&self, date: &str, clock: Clock) -> Result<Vec<HabitSummary>> {
         let date = Date::parse(date)?;
         let inner = self.lock();
-        let mut stmt = inner
-            .db
-            .prepare_cached("SELECT id, title, goal, days, period FROM habit ORDER BY position, id")?;
+        let mut stmt = inner.db.prepare_cached(
+            "SELECT id, title, goal, days, period, timed, at_most_off, usual_on, nudge
+             FROM habit ORDER BY position, id",
+        )?;
         let habits = stmt
             .query_map([], |r| {
                 Ok(Habit {
@@ -217,12 +302,27 @@ impl Store {
                     goal: r.get(2)?,
                     days: r.get(3)?,
                     period: Period::parse(&r.get::<_, String>(4)?),
+                    timed: r
+                        .get::<_, bool>(5)?
+                        .then_some(())
+                        .map(|_| -> rusqlite::Result<_> {
+                            Ok(TimedRule {
+                                at_most_off: r.get(6)?,
+                                usual_on: r.get(7)?,
+                                nudge_minutes: r.get(8)?,
+                            })
+                        })
+                        .transpose()?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         habits
             .into_iter()
             .map(|habit| {
+                if let Some(rule) = habit.timed {
+                    let switches = load_switches(&inner.db, &habit.id)?;
+                    return Ok(timed_summary(habit, rule, &switches, date, clock));
+                }
                 let log = load_log(&inner.db, &habit.id)?;
                 let at = |d: Date| log.get(&d).copied().unwrap_or(0);
                 let (streak, best_streak) = streaks(&habit, &log, date);
@@ -244,15 +344,53 @@ impl Store {
                     streak,
                     best_streak,
                     habit,
+                    timed: None,
                 })
             })
             .collect()
     }
 
-    /// Days in `from..=to` with at least one check-in.
+    /// Days in `from..=to` with at least one check-in; timed habits measured in UTC (apps use
+    /// [`Store::habit_days_at`]).
     pub fn habit_days(&self, id: &str, from: &str, to: &str) -> Result<Vec<HabitDay>> {
+        self.habit_days_at(id, from, to, Clock::utc_now())
+    }
+
+    /// Days in `from..=to` with at least one check-in, or for timed habits, with tracked time:
+    /// `count` is then the minutes that count toward the goal.
+    pub fn habit_days_at(&self, id: &str, from: &str, to: &str, clock: Clock) -> Result<Vec<HabitDay>> {
         let (from, to) = (Date::parse(from)?, Date::parse(to)?);
         let inner = self.lock();
+        let rule: Option<TimedRule> = inner
+            .db
+            .query_row(
+                "SELECT timed, at_most_off, usual_on, nudge FROM habit WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(r.get::<_, bool>(0)?.then_some(TimedRule {
+                        at_most_off: r.get(1)?,
+                        usual_on: r.get(2)?,
+                        nudge_minutes: r.get(3)?,
+                    }))
+                },
+            )
+            .unwrap_or(None);
+        if let Some(rule) = rule {
+            let switches = load_switches(&inner.db, id)?;
+            let mut out = Vec::new();
+            let mut day = from;
+            while day <= to {
+                let state = timed::day_state(&switches, clock.day_start(day), clock.now_ms);
+                if state.on_ms + state.off_ms > 0 {
+                    out.push(HabitDay {
+                        date: day.to_string(),
+                        count: timed::counted_minutes(&rule, &state),
+                    });
+                }
+                day = day.add_days(1);
+            }
+            return Ok(out);
+        }
         Ok(load_log(&inner.db, id)?
             .range(from..=to)
             .map(|(d, &count)| HabitDay {
@@ -262,7 +400,7 @@ impl Store {
             .collect())
     }
 
-    fn habit_node(&self, id: &str) -> Result<TreeID> {
+    pub(crate) fn habit_node(&self, id: &str) -> Result<TreeID> {
         let node = TreeID::try_from(id).map_err(|_| Error::Invalid(format!("bad id {id:?}")))?;
         if !self.habits.contains(node) || !is_alive(&self.habits, node) {
             return Err(Error::NotFound(id.to_owned()));
@@ -283,6 +421,108 @@ fn validate(goal: u32, days: u8) -> Result<()> {
         return Err(Error::Invalid("pick at least one weekday".into()));
     }
     Ok(())
+}
+
+fn validate_timed(minutes: u32, days: u8) -> Result<()> {
+    if minutes == 0 || minutes > MAX_MINUTES {
+        return Err(Error::Invalid(
+            "a timed goal is between 1 minute and 24 hours".into(),
+        ));
+    }
+    validate(1, days)
+}
+
+fn is_timed(meta: &LoroMap) -> bool {
+    matches!(
+        meta.get(SWITCHES),
+        Some(ValueOrContainer::Container(Container::Map(_)))
+    )
+}
+
+fn rule_of(meta: &LoroMap) -> Option<TimedRule> {
+    is_timed(meta).then(|| TimedRule {
+        at_most_off: meta_str(meta, AIM).as_deref() == Some("off"),
+        usual_on: meta_str(meta, USUAL).as_deref() == Some("on"),
+        nudge_minutes: meta_i64(meta, NUDGE)
+            .unwrap_or(0)
+            .clamp(0, i64::from(MAX_MINUTES)) as u32,
+    })
+}
+
+/// Only what changed, so concurrent edits of different fields both survive.
+fn write_rule(meta: &LoroMap, rule: &TimedRule) -> Result<()> {
+    let aim = if rule.at_most_off { "off" } else { "on" };
+    if meta_str(meta, AIM).as_deref() != Some(aim) {
+        meta.insert(AIM, aim)?;
+    }
+    let usual = if rule.usual_on { "on" } else { "off" };
+    if meta_str(meta, USUAL).as_deref() != Some(usual) {
+        meta.insert(USUAL, usual)?;
+    }
+    if meta_i64(meta, NUDGE) != Some(i64::from(rule.nudge_minutes)) {
+        meta.insert(NUDGE, i64::from(rule.nudge_minutes))?;
+    }
+    Ok(())
+}
+
+/// A timed habit as of `date`: that day's state, the minutes that count for the last 7 days,
+/// and streaks of met scheduled days since tracking started.
+fn timed_summary(
+    habit: Habit,
+    rule: TimedRule,
+    switches: &[Switch],
+    date: Date,
+    clock: Clock,
+) -> HabitSummary {
+    let state_of = |d: Date| timed::day_state(switches, clock.day_start(d), clock.now_ms);
+    let today = state_of(date);
+    let counted = timed::counted_minutes(&rule, &today);
+    let (mut run, mut best) = (0, 0);
+    if let Some(first) = switches.first() {
+        // The local day tracking started on.
+        let epoch = Date::from_ymd(1970, 1, 1).expect("valid");
+        let local = first.at + i64::from(clock.offset_minutes) * MINUTE;
+        let mut day = epoch.add_days(local.div_euclid(timed::DAY));
+        while day <= date {
+            if scheduled(habit.days, day) {
+                if timed::met(&rule, habit.goal, &state_of(day)) {
+                    run += 1;
+                    best = u32::max(best, run);
+                } else if day != date {
+                    // Today is still open.
+                    run = 0;
+                }
+            }
+            day = day.add_days(1);
+        }
+    }
+    HabitSummary {
+        count: counted,
+        progress: counted,
+        done: timed::met(&rule, habit.goal, &today),
+        due: scheduled(habit.days, date),
+        week: (0..7)
+            .rev()
+            .map(|back| timed::counted_minutes(&rule, &state_of(date.add_days(-back))))
+            .collect(),
+        streak: run,
+        best_streak: best,
+        timed: Some(today),
+        habit,
+    }
+}
+
+pub(crate) fn load_switches(db: &Connection, habit_id: &str) -> Result<Vec<Switch>> {
+    let mut stmt =
+        db.prepare_cached("SELECT key, at, on_ FROM habit_switch WHERE habit_id = ?1 ORDER BY at, key")?;
+    let rows = stmt.query_map([habit_id], |r| {
+        Ok(Switch {
+            key: r.get(0)?,
+            at: r.get(1)?,
+            on: r.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 fn log_key(id: TreeID, date: Date) -> String {
@@ -355,22 +595,39 @@ fn is_alive(tree: &LoroTree, id: TreeID) -> bool {
 /// Rewrites the `habit` table from the tree.
 pub fn project_habits(tree: &LoroTree, db: &Connection) -> Result<()> {
     db.execute("DELETE FROM habit", [])?;
+    db.execute("DELETE FROM habit_switch", [])?;
     let mut insert = db.prepare_cached(
-        "INSERT INTO habit (id, title, goal, days, period, position) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO habit (id, title, goal, days, period, position, timed, at_most_off, usual_on, nudge)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
+    let mut insert_switch =
+        db.prepare_cached("INSERT INTO habit_switch (habit_id, key, at, on_) VALUES (?1, ?2, ?3, ?4)")?;
     for id in tree.roots() {
         if !is_alive(tree, id) {
             continue;
         }
         let meta = tree.get_meta(id)?;
+        let rule = rule_of(&meta);
         insert.execute(params![
             id.to_string(),
             meta_str(&meta, TITLE).unwrap_or_default(),
             meta_i64(&meta, GOAL).unwrap_or(1),
             meta_i64(&meta, DAYS).unwrap_or(i64::from(EVERY_DAY)),
-            period_of(&meta).as_str(),
+            // Timed habits are always daily.
+            if rule.is_some() {
+                "day"
+            } else {
+                period_of(&meta).as_str()
+            },
             tree.fractional_index(id).unwrap_or_default(),
+            rule.is_some(),
+            rule.is_some_and(|r| r.at_most_off),
+            rule.is_some_and(|r| r.usual_on),
+            rule.map_or(0, |r| r.nudge_minutes),
         ])?;
+        for s in timed::switches_of(&meta) {
+            insert_switch.execute(params![id.to_string(), s.key, s.at, s.on])?;
+        }
     }
     Ok(())
 }

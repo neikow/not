@@ -429,6 +429,60 @@ pub struct Habit {
     /// Scheduled weekdays: bit 0 = Monday … bit 6 = Sunday. All of them for weekly and monthly habits.
     pub days: u8,
     pub period: HabitPeriod,
+    /// Set for timed habits: `goal` is then minutes per day.
+    pub timed: Option<TimedRule>,
+}
+
+/// How a timed habit is judged and worded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct TimedRule {
+    /// The goal caps time off ("at most 2 h off") instead of asking for time on.
+    pub at_most_off: bool,
+    /// Normally on (worn, fasting): offer Pause/Resume and watch the time off. Normally off
+    /// (reading): Start/Stop, and watch the time on.
+    pub usual_on: bool,
+    /// Minutes out of the usual state before a reminder; 0 for none.
+    pub nudge_minutes: u32,
+}
+
+impl From<TimedRule> for not_core::TimedRule {
+    fn from(r: TimedRule) -> Self {
+        Self {
+            at_most_off: r.at_most_off,
+            usual_on: r.usual_on,
+            nudge_minutes: r.nudge_minutes,
+        }
+    }
+}
+
+impl From<not_core::TimedRule> for TimedRule {
+    fn from(r: not_core::TimedRule) -> Self {
+        Self {
+            at_most_off: r.at_most_off,
+            usual_on: r.usual_on,
+            nudge_minutes: r.nudge_minutes,
+        }
+    }
+}
+
+/// A timed habit on one day, up to now when that day is today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct TimedState {
+    /// On at the end of the day (or now); false before tracking starts.
+    pub on: bool,
+    /// Unix millis the current stretch started; `None` before the first switch.
+    pub since: Option<i64>,
+    /// Millis on and off that day; untracked time is neither.
+    pub on_ms: i64,
+    pub off_ms: i64,
+}
+
+/// One stretch of a day's timeline, in Unix millis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct TimeSegment {
+    pub start: i64,
+    pub end: i64,
+    pub on: bool,
 }
 
 /// A habit as of one day (the user's today).
@@ -448,6 +502,10 @@ pub struct HabitSummary {
     pub best_streak: u32,
     /// Check-ins of the 7 days ending that day, oldest first.
     pub week: Vec<u32>,
+    /// Timed habits: the state that day. `count`, `progress` and `week` are then the minutes
+    /// that count toward the goal (on, or off for "at most" habits); `done` = goal met (for
+    /// "at most": still within the allowance).
+    pub timed: Option<TimedState>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -1016,24 +1074,113 @@ impl NotStore {
     }
 
     /// One tap: a check-in until the goal is met, then back to zero. Returns the new count.
+    /// A timed habit flips now (returns 0).
     pub fn toggle_habit(&self, id: String, date: String) -> Result<u32, NotError> {
         Ok(self.store.toggle_habit(&id, &date)?)
     }
 
-    pub fn habits(&self, date: String) -> Result<Vec<HabitSummary>, NotError> {
+    /// A timed habit with a goal of `minutes` per scheduled day.
+    pub fn create_timed_habit(
+        &self,
+        title: String,
+        minutes: u32,
+        days: u8,
+        rule: TimedRule,
+    ) -> Result<String, NotError> {
         Ok(self
             .store
-            .habits(&date)?
+            .create_timed_habit(&title, minutes, days, rule.into())?)
+    }
+
+    pub fn update_timed_habit(
+        &self,
+        id: String,
+        title: String,
+        minutes: u32,
+        days: u8,
+        rule: TimedRule,
+    ) -> Result<(), NotError> {
+        Ok(self
+            .store
+            .update_timed_habit(&id, &title, minutes, days, rule.into())?)
+    }
+
+    /// A timed habit was on (or off) from `from` until `to`, or from `from` on when `to` is
+    /// `None`: a tap (`from` = now), backdating ("since 15 min ago") or a timeline fix. Unix
+    /// millis; `now` is the device's clock. One undo step.
+    pub fn set_habit_state(
+        &self,
+        id: String,
+        on: bool,
+        from: i64,
+        to: Option<i64>,
+        now: i64,
+    ) -> Result<(), NotError> {
+        Ok(self.store.set_habit_state(&id, on, from, to, now)?)
+    }
+
+    /// The tracked stretches of `date`, up to `now_ms` when it's today. `utc_offset_minutes`
+    /// places the local day (UTC+1 = 60).
+    pub fn habit_timeline(
+        &self,
+        id: String,
+        date: String,
+        now_ms: i64,
+        utc_offset_minutes: i32,
+    ) -> Result<Vec<TimeSegment>, NotError> {
+        let clock = not_core::Clock {
+            now_ms,
+            offset_minutes: utc_offset_minutes,
+        };
+        Ok(self
+            .store
+            .habit_timeline(&id, &date, clock)?
+            .into_iter()
+            .map(|s| TimeSegment {
+                start: s.start,
+                end: s.end,
+                on: s.on,
+            })
+            .collect())
+    }
+
+    /// Habits as of `date`; timed ones up to `now_ms`, with local days placed by
+    /// `utc_offset_minutes` (UTC+1 = 60).
+    pub fn habits(
+        &self,
+        date: String,
+        now_ms: i64,
+        utc_offset_minutes: i32,
+    ) -> Result<Vec<HabitSummary>, NotError> {
+        let clock = not_core::Clock {
+            now_ms,
+            offset_minutes: utc_offset_minutes,
+        };
+        Ok(self
+            .store
+            .habits_at(&date, clock)?
             .into_iter()
             .map(HabitSummary::from)
             .collect())
     }
 
-    /// Days in `from..=to` with check-ins, for history grids.
-    pub fn habit_days(&self, id: String, from: String, to: String) -> Result<Vec<HabitDay>, NotError> {
+    /// Days in `from..=to` with check-ins (timed habits: with tracked time, `count` in
+    /// minutes), for history grids.
+    pub fn habit_days(
+        &self,
+        id: String,
+        from: String,
+        to: String,
+        now_ms: i64,
+        utc_offset_minutes: i32,
+    ) -> Result<Vec<HabitDay>, NotError> {
+        let clock = not_core::Clock {
+            now_ms,
+            offset_minutes: utc_offset_minutes,
+        };
         Ok(self
             .store
-            .habit_days(&id, &from, &to)?
+            .habit_days_at(&id, &from, &to, clock)?
             .into_iter()
             .map(|d| HabitDay {
                 date: d.date,
@@ -1667,6 +1814,7 @@ impl From<not_core::HabitSummary> for HabitSummary {
                 goal: s.habit.goal,
                 days: s.habit.days,
                 period: s.habit.period.into(),
+                timed: s.habit.timed.map(Into::into),
             },
             count: s.count,
             progress: s.progress,
@@ -1675,6 +1823,12 @@ impl From<not_core::HabitSummary> for HabitSummary {
             streak: s.streak,
             best_streak: s.best_streak,
             week: s.week,
+            timed: s.timed.map(|t| TimedState {
+                on: t.on,
+                since: t.since,
+                on_ms: t.on_ms,
+                off_ms: t.off_ms,
+            }),
         }
     }
 }

@@ -186,7 +186,7 @@ class Reminders(private val app: NotApp) {
     }
 
     internal fun showHabits() {
-        val left = runCatching { app.store.habits(LocalDate.now().toString()) }.getOrNull().orEmpty()
+        val left = runCatching { app.store.habitsNow(LocalDate.now().toString()) }.getOrNull().orEmpty()
             .filter { it.due && !it.done }
         if (left.isNotEmpty()) {
             notify(

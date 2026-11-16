@@ -252,3 +252,47 @@ fn undo_and_redo_cross_the_boundary() {
             .is_empty()
     );
 }
+
+#[test]
+fn timed_habits_switch_and_report_in_local_days() {
+    let db = TempDb::new("timed");
+    let store = NotStore::new(db.path()).unwrap();
+    let rule = not_ffi::TimedRule {
+        at_most_off: true,
+        usual_on: true,
+        nudge_minutes: 30,
+    };
+    let id = store
+        .create_timed_habit("Retainer".into(), 120, not_ffi::every_day(), rule)
+        .unwrap();
+    // 2026-11-08 07:00 and 12:00 in UTC+1.
+    let seven = 1_794_117_600_000 + 6 * 3_600_000;
+    let noon = seven + 5 * 3_600_000;
+    store
+        .set_habit_state(id.clone(), true, seven, None, seven)
+        .unwrap();
+    store
+        .set_habit_state(id.clone(), false, noon, None, noon)
+        .unwrap();
+
+    let now = noon + 20 * 60_000;
+    let h = store.habits(TODAY.into(), now, 60).unwrap().remove(0);
+    assert_eq!(h.habit.timed, Some(rule));
+    let state = h.timed.unwrap();
+    assert_eq!(
+        (state.on, state.since, state.off_ms),
+        (false, Some(noon), 20 * 60_000)
+    );
+    assert_eq!(h.count, 20);
+    let segments = store.habit_timeline(id.clone(), TODAY.into(), now, 60).unwrap();
+    assert_eq!(segments.len(), 2);
+    assert!(segments[0].on && !segments[1].on);
+    let days = store
+        .habit_days(id.clone(), "2026-11-01".into(), TODAY.into(), now, 60)
+        .unwrap();
+    assert_eq!(days.len(), 1);
+    assert!(matches!(
+        store.log_habit(id, TODAY.into(), 1),
+        Err(NotError::Invalid { .. })
+    ));
+}

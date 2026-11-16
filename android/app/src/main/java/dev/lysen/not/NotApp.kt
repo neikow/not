@@ -11,6 +11,7 @@ import dev.lysen.not.widget.NextWidget
 import dev.lysen.not.widget.NoteWidget
 import dev.lysen.not.widget.NotesWidget
 import dev.lysen.not.widget.TasksWidget
+import dev.lysen.not.widget.TimedWidget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -63,6 +64,9 @@ class NotApp : Application() {
 
     val reminders: Reminders by lazy { Reminders(this) }
 
+    /** Live notifications and reminders for timed habits (this phone only). */
+    val timedAlerts: TimedAlerts by lazy { TimedAlerts(this) }
+
     /** Saved places and the tasks to remind about there (this phone only). */
     val places: Places by lazy { Places(this) }
 
@@ -78,11 +82,16 @@ class NotApp : Application() {
         // Widgets whose session ended need a nudge to re-render; coalesce bursts like a big pull.
         scope.launch {
             changes.drop(1).debounce(300).collect {
-                listOf(TasksWidget(), NextWidget(), HabitsWidget(), NotesWidget(), NoteWidget()).forEach { it.updateAll(this@NotApp) }
+                listOf(TasksWidget(), NextWidget(), HabitsWidget(), TimedWidget(), NotesWidget(), NoteWidget()).forEach { it.updateAll(this@NotApp) }
             }
         }
         // Alarms follow the tasks: a new time, a completion, a pull from another device.
-        scope.launch { changes.debounce(1000).collect { reminders.reschedule() } }
+        scope.launch {
+            changes.debounce(1000).collect {
+                reminders.reschedule()
+                timedAlerts.refresh()
+            }
+        }
     }
 
     fun clearSyncState() {

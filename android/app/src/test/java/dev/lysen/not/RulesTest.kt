@@ -13,7 +13,7 @@ import org.junit.Test
 class RulesTest {
     private fun summary(period: HabitPeriod, goal: UInt, count: UInt, due: Boolean, done: Boolean = false) =
         HabitSummary(
-            habit = Habit("1@1", "Run", goal, 0x7Fu, period),
+            habit = Habit("1@1", "Run", goal, 0x7Fu, period, null),
             count = count,
             progress = count,
             done = done,
@@ -21,6 +21,7 @@ class RulesTest {
             streak = 0u,
             bestStreak = 0u,
             week = emptyList(),
+            timed = null,
         )
 
     @Test

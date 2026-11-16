@@ -5,6 +5,7 @@ import dev.lysen.not.isDaily
 import dev.lysen.not.onToday
 import dev.lysen.not.periodName
 import dev.lysen.not.streakText
+import dev.lysen.not.habitsNow
 
 import android.content.Context
 import androidx.compose.runtime.Composable
@@ -68,7 +69,7 @@ class HabitsWidget : GlanceAppWidget() {
             // All habits; the widget lists the ones due today.
             val all = remember(version, today) {
                 try {
-                    app.store.habits(today.toString())
+                    app.store.habitsNow(today.toString())
                 } catch (e: NotException) {
                     logLoadFailure("habits", e)
                     emptyList()
@@ -129,8 +130,10 @@ private fun HabitsWidgetContent(habits: List<HabitSummary>, hasAny: Boolean) {
 @Composable
 private fun HabitRow(summary: HabitSummary) {
     val habit = summary.habit
+    val rule = habit.timed
     val done = summary.doneToday
-    val started = summary.count > 0u && !done
+    // Timed: "started" = out of the usual state right now (paused, or running).
+    val started = if (rule != null) summary.timed?.let { it.since != null && it.on != rule.usualOn } == true else summary.count > 0u && !done
     Row(
         GlanceModifier
             .fillMaxWidth()
@@ -153,7 +156,7 @@ private fun HabitRow(summary: HabitSummary) {
                     colorFilter = ColorFilter.tint(WidgetColors.onAccent),
                     modifier = GlanceModifier.size(18.dp),
                 )
-            } else if (started) {
+            } else if (started && rule == null) {
                 Text(
                     summary.count.toString(),
                     style = TextStyle(color = WidgetColors.accentInk, fontSize = 12.sp, fontWeight = FontWeight.Bold),
@@ -169,6 +172,10 @@ private fun HabitRow(summary: HabitSummary) {
             )
             val details = listOfNotNull(
                 when {
+                    rule != null -> summary.timed?.let { t ->
+                        if (t.since == null) "Not started — tap to ${dev.lysen.not.switchLabel(rule, false).lowercase()}"
+                        else "${dev.lysen.not.stateName(rule, t.on)} since ${dev.lysen.not.clockText(t.since!!)}"
+                    }
                     !habit.isDaily -> "${summary.progress} of ${habit.goal} this ${periodName(habit.period)}"
                     habit.goal > 1u -> "${summary.count} of ${habit.goal}"
                     else -> null

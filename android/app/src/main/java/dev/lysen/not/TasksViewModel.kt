@@ -407,7 +407,7 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         val viewId = _state.value.selectedViewId
         val outline = run { store.viewOutline(viewId, today()) } ?: return
         val archive = run { store.archive() }.orEmpty()
-        val habits = if (viewId == TODAY_ID) run { store.habits(today()) }.orEmpty().filter { it.onToday } else emptyList()
+        val habits = if (viewId == TODAY_ID) run { store.habitsNow(today()) }.orEmpty().filter { it.onToday } else emptyList()
         _state.update { s ->
             // The open task may have been deleted on another device.
             val open = s.openTask?.let { runCatching { store.taskById(it.id) }.getOrNull() }

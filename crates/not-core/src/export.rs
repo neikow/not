@@ -47,6 +47,24 @@ impl Store {
             .habits(&today.to_string())?
             .into_iter()
             .map(|h| {
+                if let Some(rule) = h.habit.timed {
+                    let switches: Vec<Value> = self
+                        .habit_switches(&h.habit.id)?
+                        .into_iter()
+                        .map(|(at, on)| json!({ "at": at, "on": on }))
+                        .collect();
+                    return Ok(json!({
+                        "id": h.habit.id,
+                        "title": h.habit.title,
+                        "kind": "timed",
+                        "goal_minutes": h.habit.goal,
+                        "aim": if rule.at_most_off { "at most off" } else { "at least on" },
+                        "usual": if rule.usual_on { "on" } else { "off" },
+                        "nudge_minutes": rule.nudge_minutes,
+                        "weekdays": h.habit.days,
+                        "switches": switches,
+                    }));
+                }
                 let days: Vec<Value> = self
                     .habit_days(&h.habit.id, "2000-01-01", &today.to_string())?
                     .into_iter()

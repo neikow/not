@@ -85,6 +85,8 @@ final class AppModel {
 
     /// Habits as of `today`.
     private(set) var habits: [HabitSummary] = []
+    /// When `habits` was computed: timed habits keep counting from there until the next reload.
+    private(set) var habitsLoadedAt = Date()
     var selectedHabitID: String?
     /// The user's local date; habits are checked in on it.
     private(set) var today = AppModel.dayString(.now)
@@ -176,6 +178,12 @@ final class AppModel {
             if let read = addHabit("Read") { toggleHabit(read) }
             _ = addHabit("Stretch")
             _ = addHabit("Water")
+            let rule = TimedRule(atMostOff: true, usualOn: true, nudgeMinutes: 30)
+            if let wear = run({ try store.createTimedHabit(title: "Wear retainer", minutes: 120, days: everyDay(), rule: rule) }) {
+                let now = Self.nowMs()
+                run { try store.setHabitState(id: wear, on: true, from: now - 5 * 3_600_000, to: nil, now: now) }
+                run { try store.setHabitState(id: wear, on: false, from: now - 25 * 60_000, to: nil, now: now) }
+            }
             for body in [
                 "Trip to Lisbon\nPastéis de Belém, tram 28\n\n## Days\n1. Alfama\n2. Belém",
                 "Pancakes\nFor Sunday breakfast\n- [ ] Flour\n- [x] Eggs\n- [ ] Milk\n\n- butter\n- **maple** syrup",
@@ -579,13 +587,30 @@ final class AppModel {
     }
 
     func updateHabit(_ habit: Habit) {
-        run { try store.updateHabit(id: habit.id, title: habit.title, goal: habit.goal, days: habit.days, period: habit.period) }
+        run {
+            if let rule = habit.timed {
+                try store.updateTimedHabit(id: habit.id, title: habit.title, minutes: habit.goal, days: habit.days, rule: rule)
+            } else {
+                try store.updateHabit(id: habit.id, title: habit.title, goal: habit.goal, days: habit.days, period: habit.period)
+            }
+        }
     }
 
     /// A check-in until the goal is met, then back to zero.
     func toggleHabit(_ id: String) {
         run { _ = try store.toggleHabit(id: id, date: today) }
     }
+
+    /// A timed habit: on (or off) from now.
+    func switchHabit(_ id: String, on: Bool) {
+        let now = Self.nowMs()
+        run { try store.setHabitState(id: id, on: on, from: now, to: nil, now: now) }
+    }
+
+    static func nowMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+
+    /// Minutes east of UTC right now (UTC+1 = 60), how the core places local days.
+    static func utcOffsetMinutes() -> Int32 { Int32(TimeZone.current.secondsFromGMT() / 60) }
 
     func logHabit(_ id: String, _ delta: Int64) {
         run { _ = try store.logHabit(id: id, date: today, delta: delta) }
@@ -604,7 +629,7 @@ final class AppModel {
 
     /// Check-ins per day (`YYYY-MM-DD`) from `from` through today.
     func habitHistory(_ id: String, from: Date) -> [String: UInt32] {
-        let days = run { try store.habitDays(id: id, from: Self.dayString(from), to: today) } ?? []
+        let days = run { try store.habitDays(id: id, from: Self.dayString(from), to: today, nowMs: Self.nowMs(), utcOffsetMinutes: Self.utcOffsetMinutes()) } ?? []
         return Dictionary(uniqueKeysWithValues: days.map { ($0.date, $0.count) })
     }
 
@@ -672,7 +697,7 @@ final class AppModel {
 
     /// Titles of habits due on `day` and not done yet.
     func reminderHabitsLeft(on day: String) -> [String] {
-        (run { try store.habits(date: day) } ?? []).filter { $0.due && !$0.done }.map(\.habit.title)
+        (run { try store.habits(date: day, nowMs: Self.nowMs(), utcOffsetMinutes: Self.utcOffsetMinutes()) } ?? []).filter { $0.due && !$0.done }.map(\.habit.title)
     }
 
     /// From a notification's Done button.
@@ -1000,7 +1025,8 @@ final class AppModel {
     }
 
     private func reloadHabits() {
-        habits = run { try store.habits(date: today) } ?? []
+        habits = run { try store.habits(date: today, nowMs: Self.nowMs(), utcOffsetMinutes: Self.utcOffsetMinutes()) } ?? []
+        habitsLoadedAt = Date()
         if selectedHabit == nil { selectedHabitID = nil }
     }
 

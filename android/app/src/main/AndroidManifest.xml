@@ -84,6 +84,10 @@
             android:name=".RestTimerReceiver"
             android:exported="false" />
 
+        <receiver
+            android:name=".TimedReceiver"
+            android:exported="false" />
+
         <service
             android:name=".RestTimerService"
             android:exported="false"
@@ -136,6 +140,27 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".widget.TimedWidgetConfigActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Not.Translucent">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+        <receiver
+            android:name=".widget.TimedWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_timed">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/timed_widget_info" />
+        </receiver>
         <receiver
             android:name=".widget.HabitsWidgetReceiver"
             android:exported="true"

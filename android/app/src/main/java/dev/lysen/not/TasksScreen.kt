@@ -486,6 +486,7 @@ private fun TodayHabitRow(summary: HabitSummary, viewModel: TasksViewModel, modi
     val colors = Not.colors
     val habit = summary.habit
     val done = summary.doneToday
+    if (habit.timed != null) return TodayTimedRow(summary, viewModel, modifier, onOpen)
     SwipeRow(
         start = SwipeAction(R.drawable.ic_check, colors.accent, colors.onAccent) {
             if (done) return@SwipeAction
@@ -526,6 +527,37 @@ private fun TodayHabitRow(summary: HabitSummary, viewModel: TasksViewModel, modi
                 }
             }
         }
+    }
+}
+
+/** A timed habit on Today: its ring, where it stands (counting live), and its switch. */
+@Composable
+private fun TodayTimedRow(summary: HabitSummary, viewModel: TasksViewModel, modifier: Modifier, onOpen: () -> Unit) {
+    val colors = Not.colors
+    val haptics = LocalHapticFeedback.current
+    val rule = summary.habit.timed ?: return
+    val loadedAt = androidx.compose.runtime.remember(summary) { nowMs() }
+    val now = rememberNow()
+    val live = summary.timedLive(now, loadedAt) ?: return
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(colors.background)
+            .pressable(onOpen, pressedScale = 0.985f, onClickLabel = "Open habit")
+            .heightIn(min = 56.dp)
+            .padding(start = 22.dp, end = 20.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        TimedRing(live, 24.dp)
+        Column(Modifier.weight(1f)) {
+            Text(summary.habit.title, style = Not.type.body, color = colors.ink, maxLines = 1)
+            Text(timedStatus(rule, live, now), style = Not.type.caption, color = if (live.atMostOff && live.leftMs < 0) colors.danger else colors.inkFaint, maxLines = 1)
+        }
+        SwitchPill(rule, live.on, live.tracked, onSwitch = {
+            haptics.performHapticFeedback(if (live.on) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
+            viewModel.toggleHabit(summary.habit.id)
+        }, onLongPress = onOpen)
     }
 }
 

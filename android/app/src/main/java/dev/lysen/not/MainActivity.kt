@@ -103,6 +103,31 @@ class MainActivity : ComponentActivity() {
             notes.seedDemo()
             requestedTab.value = Tab.Notes
         }
+        // `--ez seedTimed true`: a worn habit with breaks today and a reading timer; once only.
+        if (intent.getBooleanExtra("seedTimed", false)) {
+            seedTimed()
+            requestedTab.value = Tab.Habits
+        }
+        if (intent.getStringExtra("pinWidget") == "timed") {
+            lifecycleScope.launch { Shortcuts.requestWidget(this@MainActivity, dev.lysen.not.widget.TimedWidgetReceiver::class.java) }
+        }
+    }
+
+    private fun seedTimed() {
+        val store = (application as NotApp).store
+        if (store.habitsNow(today()).any { it.habit.timed != null }) return
+        val now = nowMs()
+        val midnight = java.time.LocalDate.now().atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val h = 3_600_000L
+        val wear = store.createTimedHabit("Wear retainer", 120u, dev.lysen.not.core.everyDay(), dev.lysen.not.core.TimedRule(atMostOff = true, usualOn = true, nudgeMinutes = 30u))
+        // On since yesterday evening, a lunch break, and off for the last 25 minutes.
+        store.setHabitState(wear, true, midnight - 3 * h, null, now)
+        val lunch = (midnight + 12 * h).coerceAtMost(now - 2 * h)
+        store.setHabitState(wear, false, lunch, lunch + 40 * 60_000, now)
+        store.setHabitState(wear, false, now - 25 * 60_000, null, now)
+        val read = store.createTimedHabit("Read", 30u, dev.lysen.not.core.everyDay(), dev.lysen.not.core.TimedRule(atMostOff = false, usualOn = false, nudgeMinutes = 0u))
+        store.setHabitState(read, true, midnight - 3 * h, midnight - 3 * h + 35 * 60_000, now)
+        (application as NotApp).timedAlerts.setLive(wear, true)
     }
 
     companion object {

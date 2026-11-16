@@ -93,10 +93,20 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val toasts = remember { ToastState() }
     var composing by rememberSaveable { mutableStateOf(false) }
+    var timedKind by rememberSaveable { mutableStateOf(false) }
+    // "It happened earlier": the timed habit and the state to backdate.
+    var earlier by remember { mutableStateOf<Switched?>(null) }
 
     LaunchedEffect(Unit) {
         viewModel.undoables.collect { undoable ->
             if (toasts.show(undoable.message, action = "Undo")) viewModel.undo()
+        }
+    }
+    // After a switch, a moment to say it really happened a while ago.
+    LaunchedEffect(Unit) {
+        viewModel.switched.collect { switched ->
+            val rule = state.habits.firstOrNull { it.habit.id == switched.habitId }?.habit?.timed ?: return@collect
+            if (toasts.show(stateName(rule, switched.on), action = "Earlier?")) earlier = switched
         }
     }
     AddAction("New habit", enabled = !composing) { composing = true }
@@ -126,17 +136,17 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
                 }
             }
             items(reorder.items, key = { it.habit.id }) { summary ->
-                HabitRow(
-                    summary,
-                    state.day,
-                    viewModel,
-                    (if (reorder.isDragging(summary)) Modifier else Modifier.animateItem())
-                        .reorderable(reorder, summary, summary.habit.id) {
-                            reorder.start(summary, canSwap = { true }, onDrop = { order ->
-                                viewModel.move(summary.habit.id, order.indexOfFirst { it.habit.id == summary.habit.id })
-                            })
-                        },
-                )
+                val modifier = (if (reorder.isDragging(summary)) Modifier else Modifier.animateItem())
+                    .reorderable(reorder, summary, summary.habit.id) {
+                        reorder.start(summary, canSwap = { true }, onDrop = { order ->
+                            viewModel.move(summary.habit.id, order.indexOfFirst { it.habit.id == summary.habit.id })
+                        })
+                    }
+                if (summary.habit.isTimed) {
+                    TimedRow(summary, state, viewModel, onEarlier = { on -> earlier = Switched(summary.habit.id, on) }, modifier)
+                } else {
+                    HabitRow(summary, state.day, viewModel, modifier)
+                }
             }
         }
         Column(
@@ -146,11 +156,39 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
                 .padding(bottom = if (WindowInsets.isImeVisible) 8.dp else LocalBottomBarHeight.current + 8.dp),
         ) {
             ToastHost(toasts, Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp))
-            if (composing) Composer("New habit", onAdd = viewModel::add, onClose = { composing = false })
+            if (composing) {
+                KindPicker(timedKind, onChange = { timedKind = it }, Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp))
+                Composer(
+                    if (timedKind) "New timed habit, like “Wear retainer”" else "New habit",
+                    onAdd = {
+                        if (timedKind) {
+                            viewModel.addTimed(it)
+                            composing = false
+                        } else {
+                            viewModel.add(it)
+                        }
+                    },
+                    onClose = { composing = false },
+                )
+            }
         }
     }
 
-    state.openHabit?.let { HabitSheet(it, state.day, state.today, viewModel, onDismiss = { viewModel.open(null) }) }
+    state.openHabit?.let {
+        if (it.habit.isTimed) {
+            TimedSheet(it, state, viewModel, onDismiss = { viewModel.open(null) }, onEarlier = { on -> earlier = Switched(it.habit.id, on) })
+        } else {
+            HabitSheet(it, state.day, state.today, viewModel, onDismiss = { viewModel.open(null) })
+        }
+    }
+    earlier?.let { switched ->
+        val rule = state.habits.firstOrNull { it.habit.id == switched.habitId }?.habit?.timed
+        if (rule == null) {
+            earlier = null
+        } else {
+            SinceSheet(rule, switched.on, onPick = { viewModel.switchSince(switched.habitId, switched.on, it) }, onDismiss = { earlier = null })
+        }
+    }
     state.error?.let {
         CardDialog(
             title = "Something went wrong",
@@ -365,7 +403,7 @@ private fun WeekStrip(summary: HabitSummary, day: LocalDate) {
 }
 
 @Composable
-private fun DayDot(count: UInt, goal: UInt, scheduled: Boolean, size: Dp, ringed: Boolean = false) {
+internal fun DayDot(count: UInt, goal: UInt, scheduled: Boolean, size: Dp, ringed: Boolean = false) {
     val colors = Not.colors
     val fill = when {
         count >= goal -> colors.accent
@@ -390,7 +428,7 @@ private fun HabitSheet(summary: HabitSummary, day: LocalDate, today: LocalDate, 
     val colors = Not.colors
     var title by remember(habit.id) { mutableStateOf(habit.title) }
     fun save(goal: UInt = habit.goal, days: UByte = habit.days, period: HabitPeriod = habit.period) =
-        viewModel.update(Habit(habit.id, title.ifBlank { habit.title }, goal, days, period))
+        viewModel.update(Habit(habit.id, title.ifBlank { habit.title }, goal, days, period, habit.timed))
 
     Sheet(onDismiss = {
         if (title.isNotBlank() && title != habit.title) save()
@@ -438,7 +476,7 @@ private fun HabitSheet(summary: HabitSummary, day: LocalDate, today: LocalDate, 
                 )
             }
 
-            Section("Goal") {
+            HabitSection("Goal") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(goalText(habit.goal, habit.period), style = Not.type.body, modifier = Modifier.weight(1f))
                     Stepper(
@@ -454,14 +492,14 @@ private fun HabitSheet(summary: HabitSummary, day: LocalDate, today: LocalDate, 
             }
 
             // Only daily habits keep to weekdays; a week's or month's goal takes any day.
-            if (habit.isDaily) Section("Repeat") { WeekdayPicker(habit.days, onChange = { save(days = it) }) }
+            if (habit.isDaily) HabitSection("Repeat") { WeekdayPicker(habit.days, onChange = { save(days = it) }) }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Stat("Current streak", streakText(summary.streak, habit.period), Modifier.weight(1f))
                 Stat("Best", streakText(summary.bestStreak, habit.period), Modifier.weight(1f))
             }
 
-            Section("Last 15 weeks") { HistoryGrid(summary, today, viewModel, weeks = 15) }
+            HabitSection("Last 15 weeks") { HistoryGrid(summary, today, viewModel, weeks = 15) }
 
             Button("Delete habit", {
                 close()
@@ -472,7 +510,7 @@ private fun HabitSheet(summary: HabitSummary, day: LocalDate, today: LocalDate, 
 }
 
 @Composable
-private fun Section(label: String, content: @Composable () -> Unit) {
+internal fun HabitSection(label: String, content: @Composable () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(label, style = Not.type.label, color = Not.colors.inkMuted)
         content()
@@ -480,7 +518,7 @@ private fun Section(label: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun Stepper(
+internal fun Stepper(
     onMinus: () -> Unit,
     onPlus: () -> Unit,
     minusLabel: String,
@@ -497,7 +535,7 @@ private fun Stepper(
 }
 
 @Composable
-private fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
+internal fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
     Column(modifier.clip(RoundedCornerShape(20.dp)).background(Not.colors.background).padding(16.dp)) {
         Text(value, style = Not.type.title)
         Text(label, style = Not.type.caption, color = Not.colors.inkMuted)
@@ -507,7 +545,7 @@ private fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
 
 /** Seven round toggles, Monday first. At least one day stays selected. */
 @Composable
-private fun WeekdayPicker(days: UByte, onChange: (UByte) -> Unit) {
+internal fun WeekdayPicker(days: UByte, onChange: (UByte) -> Unit) {
     val colors = Not.colors
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         DayOfWeek.entries.forEach { day ->
@@ -581,7 +619,7 @@ private fun HistoryGrid(summary: HabitSummary, today: LocalDate, viewModel: Habi
     }
 }
 
-private fun isScheduled(days: UByte, day: DayOfWeek) = days.toInt() and (1 shl day.ordinal) != 0
+internal fun isScheduled(days: UByte, day: DayOfWeek) = days.toInt() and (1 shl day.ordinal) != 0
 
 internal fun scheduleText(habit: Habit, summary: HabitSummary): String {
     if (!habit.isDaily) return "${goalText(habit.goal, habit.period)} · ${summary.progress} so far"
@@ -593,4 +631,29 @@ internal fun scheduleText(habit: Habit, summary: HabitSummary): String {
             .joinToString { it.getDisplayName(TextStyle.SHORT, Locale.getDefault()) }
     }
     return if (habit.goal > 1u) "$days · ${habit.goal}×" else days
+}
+
+/** Check-ins or timed, for the habit about to be added. */
+@Composable
+private fun KindPicker(timed: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    val colors = Not.colors
+    Row(
+        modifier.clip(CircleShape).background(colors.surface).padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        listOf(false to "Check-ins", true to "Timed").forEach { (kind, label) ->
+            val on = kind == timed
+            val bg by animateColorAsState(if (on) colors.accent else Color.Transparent, label = "kind")
+            Row(
+                Modifier.clip(CircleShape).background(bg)
+                    .pressable({ onChange(kind) }, role = Role.RadioButton, pressedScale = 0.94f)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(if (kind) R.drawable.ic_timer else R.drawable.ic_check, null, tint = if (on) colors.onAccent else colors.inkMuted, size = 16.dp)
+                Text(label, style = Not.type.label, color = if (on) colors.onAccent else colors.inkMuted)
+            }
+        }
+    }
 }

@@ -5,6 +5,11 @@
     <string name="widget_next_description">The next task due, to tick off from the home screen</string>
     <string name="widget_tasks_description">Open tasks of one list, with checkboxes and quick add</string>
     <string name="widget_habits">Habits</string>
+    <string name="widget_timed">Timed habit</string>
+    <string name="widget_timed_description">One timed habit: today\'s time and a button to pause or start it</string>
+    <string name="widget_preview_timed_title">Wear retainer</string>
+    <string name="widget_preview_timed_state">Paused since 14:20</string>
+    <string name="widget_preview_timed_button">Resume</string>
     <string name="widget_habits_description">Today\'s habits; tap one to check in</string>
     <string name="widget_notes">Notes</string>
     <string name="widget_notes_description">Pinned and recent notes of a folder, with new note</string>
