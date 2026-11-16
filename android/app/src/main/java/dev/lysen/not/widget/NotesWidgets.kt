@@ -67,6 +67,8 @@ private val LINE = ActionParameters.Key<Int>("line")
 
 /** Pinned, then recently edited notes of one folder (or all); tap opens one, + writes a new one. */
 class NotesWidget : GlanceAppWidget() {
+    override val sizeMode = androidx.glance.appwidget.SizeMode.Exact
+
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as NotApp
         provideContent { WidgetLookProvider {
@@ -112,7 +114,17 @@ private fun NotesWidgetContent(content: NotesContent, previews: Boolean) {
         if (content.notes.isEmpty()) {
             WidgetEmpty(R.drawable.ic_note, "No notes yet", "Tap + to write one.", open)
         } else {
-            WidgetItems(content.notes, { it.id.hashCode().toLong() }) { NoteCard(it, previews) }
+            if (androidx.glance.LocalSize.current.width >= 300.dp) {
+                // Wide: two columns of cards.
+                WidgetItems(content.notes.chunked(2), { it.first().id.hashCode().toLong() }) { pair ->
+                    Row(GlanceModifier.fillMaxWidth()) {
+                        Box(GlanceModifier.defaultWeight().padding(end = 3.dp)) { NoteCard(pair[0], previews) }
+                        Box(GlanceModifier.defaultWeight().padding(start = 3.dp)) { pair.getOrNull(1)?.let { NoteCard(it, previews) } }
+                    }
+                }
+            } else {
+                WidgetItems(content.notes, { it.id.hashCode().toLong() }) { NoteCard(it, previews) }
+            }
         }
     }
 }

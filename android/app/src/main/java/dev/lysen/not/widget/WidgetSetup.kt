@@ -161,6 +161,14 @@ enum class WidgetKind(val title: String, val receiver: Class<*>) {
 class WidgetSetupActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Debug builds: `--es sizes Timed` shows that widget at every common size, for checking layouts.
+        if (dev.lysen.not.BuildConfig.DEBUG) {
+            intent.getStringExtra("sizes")?.let { name ->
+                val kind = WidgetKind.valueOf(name)
+                setContent { NotTheme { SizeGallery(kind) } }
+                return
+            }
+        }
         val widgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
         // Backing out cancels placing the widget, or leaves a configured one unchanged.
         setResult(RESULT_CANCELED, result(widgetId))
@@ -394,3 +402,26 @@ fun WidgetLook.asPreferences(): Preferences = emptyPreferences().toMutablePrefer
 
 /** Reads a look back from [asPreferences]-shaped keys. */
 fun Preferences.asLook(): WidgetLook = lookOver(WidgetLook())
+
+/** Debug only: one widget at the sizes launchers commonly give, from 1×1 to 4×3. */
+@Composable
+private fun SizeGallery(kind: WidgetKind) {
+    val sizes = listOf(
+        "1×1" to DpSize(70.dp, 70.dp),
+        "2×1" to DpSize(140.dp, 70.dp),
+        "4×1" to DpSize(320.dp, 70.dp),
+        "2×2" to DpSize(150.dp, 180.dp),
+        "3×2" to DpSize(250.dp, 180.dp),
+        "4×2" to DpSize(330.dp, 190.dp),
+        "4×3" to DpSize(330.dp, 270.dp),
+    )
+    Column(
+        Modifier.fillMaxSize().background(Not.colors.background).statusBarsPadding().verticalScroll(rememberScrollState()).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        sizes.forEach { (label, size) ->
+            Text(label, style = Not.type.label, color = Not.colors.inkMuted)
+            WidgetPreview(kind, null, size, emptyPreferences(), Modifier.fillMaxWidth())
+        }
+    }
+}

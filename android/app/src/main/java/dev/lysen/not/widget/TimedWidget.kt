@@ -61,6 +61,7 @@ import dev.lysen.not.clockText
 import dev.lysen.not.core.HabitSummary
 import dev.lysen.not.core.NotException
 import dev.lysen.not.core.NotStore
+import dev.lysen.not.core.TimeSegment
 import dev.lysen.not.core.TimedRule
 import dev.lysen.not.durationText
 import dev.lysen.not.habitsNow
@@ -102,7 +103,10 @@ class TimedWidget : GlanceAppWidget() {
                     null
                 }
             }
-            TimedContent(summary)
+            val segments = remember(version, summary?.habit?.id, today) {
+                summary?.let { runCatching { app.store.habitTimeline(it.habit.id, today.toString(), nowMs(), dev.lysen.not.utcOffsetMinutes()) }.getOrNull() }.orEmpty()
+            }
+            TimedContent(summary, segments)
         } }
     }
 }
@@ -128,91 +132,255 @@ class SwitchTimedHabit : ActionCallback {
 }
 
 @Composable
-private fun TimedContent(summary: HabitSummary?) {
+private fun TimedContent(summary: HabitSummary?, segments: List<TimeSegment>) {
     val context = LocalContext.current
     val open = actionStartActivity(MainActivity.openTab(context, Tab.Habits))
+    val size = LocalSize.current
     WidgetSurface {
         if (summary == null) {
-            WidgetEmpty(R.drawable.ic_timer, "No timed habit", "Long-press to pick one, or add one in Habits.", open)
+            WidgetEmpty(R.drawable.ic_timer, "No timed habit", if (size.height < 100.dp) null else "Long-press to pick one, or add one in Habits.", open)
             return@WidgetSurface
         }
-        val rule = summary.habit.timed!!
         val now = nowMs()
-        val live = summary.timedLive(now, now)!!
-        val secured = live.secured(now)
         val prefs = currentState<androidx.datastore.preferences.core.Preferences>()
-        val showsLeft = TimedOptions.showsLeft(prefs, live.atMostOff)
-        val showDetail = TimedOptions.detail.isOn(prefs)
-        val size = LocalSize.current
-        val compact = size.height < 150.dp
-        // The ring fills the widget's height (less the card's padding), up to 40% of its width.
-        val ring = minOf(size.height - 28.dp, size.width * 0.4f, 120.dp).coerceAtLeast(52.dp)
+        val live = summary.timedLive(now, now)!!
+        val t = Timed(
+            summary = summary,
+            rule = summary.habit.timed!!,
+            live = live,
+            now = now,
+            secured = live.secured(now),
+            showsLeft = TimedOptions.showsLeft(prefs, live.atMostOff),
+            showDetail = TimedOptions.detail.isOn(prefs),
+        )
+        // One layout per shape: a lone ring (1×1), a strip (one row tall), a stack (narrow),
+        // the ring beside text and button (3×2), and with room to spare, the day's timeline.
+        when {
+            size.width < 130.dp && size.height < 130.dp -> TimedTiny(t)
+            size.height < 100.dp -> TimedStrip(t, open)
+            size.width < 200.dp -> TimedStack(t, open)
+            else -> TimedBeside(t, open, timeline = if (size.width >= 290.dp && size.height >= 170.dp) segments else null)
+        }
+    }
+}
 
-        // Ring on the left, everything else stacked beside it, centered: no dead space between
-        // the text and the button, whatever the widget's size.
-        Row(
-            GlanceModifier.fillMaxSize().padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(GlanceModifier.size(ring).clickable(open), contentAlignment = Alignment.Center) {
-                if (secured) {
-                    // Done for the day: a solid mint disc with a check, like a ticked habit.
-                    Box(GlanceModifier.fillMaxSize().cornerRadius(ring / 2).background(WidgetColors.accent), contentAlignment = Alignment.Center) {
-                        Image(
-                            ImageProvider(R.drawable.ic_check),
-                            contentDescription = "Goal met",
-                            colorFilter = ColorFilter.tint(WidgetColors.onAccent),
-                            modifier = GlanceModifier.size(ring * 0.5f),
-                        )
-                    }
-                } else {
-                    Image(
-                        ImageProvider(ringBitmap(LocalWidgetLook.current.palette(context), live, (ring.value * 3).toInt(), showsLeft)),
-                        contentDescription = null,
-                        modifier = GlanceModifier.fillMaxSize(),
-                    )
-                    RingCenter(rule, live, compact = ring < 80.dp, showsLeft = showsLeft)
-                }
+/** What every layout needs about the habit right now. */
+private class Timed(
+    val summary: HabitSummary,
+    val rule: TimedRule,
+    val live: TimedLive,
+    val now: Long,
+    val secured: Boolean,
+    val showsLeft: Boolean,
+    val showDetail: Boolean,
+) {
+    val switch get() = actionRunCallback<SwitchTimedHabit>(actionParametersOf(SWITCH_ID to summary.habit.id, SWITCH_ON to !live.on))
+}
+
+/** The ring, or once the day is won a mint disc with a check, with its number inside. */
+@Composable
+private fun TimedRingBox(t: Timed, ring: androidx.compose.ui.unit.Dp, modifier: GlanceModifier = GlanceModifier) {
+    val context = LocalContext.current
+    Box(modifier.size(ring), contentAlignment = Alignment.Center) {
+        if (t.secured) {
+            Box(GlanceModifier.fillMaxSize().cornerRadius(ring / 2).background(WidgetColors.accent), contentAlignment = Alignment.Center) {
+                Image(
+                    ImageProvider(R.drawable.ic_check),
+                    contentDescription = "Goal met",
+                    colorFilter = ColorFilter.tint(WidgetColors.onAccent),
+                    modifier = GlanceModifier.size(ring * 0.5f),
+                )
             }
+        } else {
+            Image(
+                ImageProvider(ringBitmap(LocalWidgetLook.current.palette(context), t.live, (ring.value * 3).toInt(), t.showsLeft)),
+                contentDescription = null,
+                modifier = GlanceModifier.fillMaxSize(),
+            )
+            RingCenter(t.rule, t.live, compact = ring < 80.dp, showsLeft = t.showsLeft)
+        }
+    }
+}
+
+/** Title, where it stands, and (room permitting) the detail and streak lines. */
+@Composable
+private fun TimedLines(t: Timed, lines: Int, center: Boolean = false) {
+    val align = if (center) TextAlign.Center else TextAlign.Start
+    Text(
+        t.summary.habit.title,
+        maxLines = 1,
+        style = TextStyle(color = WidgetColors.ink, fontSize = 16.wsp, fontWeight = FontWeight.Bold, textAlign = align),
+    )
+    if (lines < 2) return
+    if (t.secured) {
+        Text(
+            if (t.live.atMostOff) "Goal safe for today" else "Goal met today",
+            maxLines = 1,
+            style = TextStyle(color = WidgetColors.accentInk, fontSize = 14.wsp, fontWeight = FontWeight.Bold, textAlign = align),
+        )
+    } else {
+        Text(
+            headline(t.rule, t.live),
+            maxLines = 1,
+            style = TextStyle(
+                color = if (t.live.on == t.rule.usualOn) WidgetColors.inkMuted else WidgetColors.accentInk,
+                fontSize = 14.wsp,
+                fontWeight = FontWeight.Medium,
+                textAlign = align,
+            ),
+        )
+    }
+    if (lines < 3 || !t.showDetail) return
+    val third = if (t.secured) {
+        if (t.live.atMostOff) "Only ${durationText(t.live.countedMs)} ${stateName(t.rule, false).lowercase()}" else "${durationText(t.live.countedMs)} today"
+    } else {
+        detail(t.rule, t.live, t.now)
+    }
+    third?.let { Text(it, maxLines = 1, style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.wsp, textAlign = align)) }
+    if (lines >= 4 && t.secured && t.summary.streak > 1u) {
+        Text("${t.summary.streak}-day streak", maxLines = 1, style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.wsp, textAlign = align))
+    }
+}
+
+/** 1×1: just the ring, and the whole widget is the switch. */
+@Composable
+private fun TimedTiny(t: Timed) {
+    val size = LocalSize.current
+    val ring = (minOf(size.width, size.height) - 16.dp).coerceAtLeast(36.dp)
+    Box(GlanceModifier.fillMaxSize().clickable(t.switch), contentAlignment = Alignment.Center) {
+        TimedRingBox(t, ring)
+    }
+}
+
+/** One row tall: small ring, title and state, a compact switch on the end. */
+@Composable
+private fun TimedStrip(t: Timed, open: androidx.glance.action.Action) {
+    val size = LocalSize.current
+    Row(GlanceModifier.fillMaxSize().padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        TimedRingBox(t, (size.height - 16.dp).coerceIn(32.dp, 56.dp), GlanceModifier.clickable(open))
+        Spacer(GlanceModifier.width(10.dp))
+        if (size.width < 190.dp) {
+            // 2×1: no room for words; the ring and the switch.
+            Spacer(GlanceModifier.defaultWeight())
+        } else {
+            Column(GlanceModifier.defaultWeight().clickable(open)) { TimedLines(t, lines = if (size.height < 70.dp) 1 else 2) }
+        }
+        if (size.width >= 200.dp) {
+            Spacer(GlanceModifier.width(8.dp))
+            Box(GlanceModifier.width(if (size.width >= 260.dp) 112.dp else 52.dp)) { SwitchButton(t, compact = true, iconOnly = size.width < 260.dp) }
+        } else {
+            // Too narrow for a button: tapping the ring area opens, the rest switches.
+            Spacer(GlanceModifier.width(4.dp))
+            val loud = !t.secured && (!t.live.tracked || t.live.on != t.rule.usualOn)
+            Box(GlanceModifier.size(40.dp).cornerRadius(20.dp).background(if (loud) WidgetColors.accent else WidgetColors.sunken).clickable(t.switch), contentAlignment = Alignment.Center) {
+                Image(
+                    ImageProvider(if (t.live.on) R.drawable.ic_pause else R.drawable.ic_play),
+                    contentDescription = switchLabel(t.rule, t.live.on),
+                    colorFilter = ColorFilter.tint(if (loud) WidgetColors.onAccent else WidgetColors.ink),
+                    modifier = GlanceModifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+/** Narrow and tall (2×2): the ring on top, a line or two, the switch at the bottom. */
+@Composable
+private fun TimedStack(t: Timed, open: androidx.glance.action.Action) {
+    val size = LocalSize.current
+    // Room left for two lines and the button decides the ring.
+    val ring = minOf(size.height - 122.dp, size.width - 24.dp, 110.dp).coerceAtLeast(40.dp)
+    Column(
+        GlanceModifier.fillMaxSize().padding(bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        TimedRingBox(t, ring, GlanceModifier.clickable(open))
+        Spacer(GlanceModifier.height(6.dp))
+        Column(GlanceModifier.fillMaxWidth().clickable(open), horizontalAlignment = Alignment.CenterHorizontally) {
+            TimedLines(t, lines = if (size.height >= 200.dp) 3 else 2, center = true)
+        }
+        Spacer(GlanceModifier.height(8.dp))
+        SwitchButton(t, compact = true)
+    }
+}
+
+/**
+ * 3×2 and up: the ring fills the height on the left, text and the switch stacked beside it; with
+ * room to spare, the day's [timeline] runs underneath.
+ */
+@Composable
+private fun TimedBeside(t: Timed, open: androidx.glance.action.Action, timeline: List<TimeSegment>?) {
+    val size = LocalSize.current
+    val compact = size.height < 150.dp
+    val tall = size.height >= 240.dp
+    val timelineHeight = if (timeline != null) (if (tall) 46.dp else 30.dp) else 0.dp
+    val ring = minOf(size.height - 28.dp - timelineHeight, size.width * 0.36f, if (tall) 150.dp else 120.dp).coerceAtLeast(52.dp)
+    Column(GlanceModifier.fillMaxSize().padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 8.dp)) {
+        Row(GlanceModifier.fillMaxWidth().defaultWeight(), verticalAlignment = Alignment.CenterVertically) {
+            TimedRingBox(t, ring, GlanceModifier.clickable(open))
             Spacer(GlanceModifier.width(14.dp))
             Column(GlanceModifier.defaultWeight(), verticalAlignment = Alignment.CenterVertically) {
                 Column(GlanceModifier.fillMaxWidth().clickable(open)) {
-                    Text(
-                        summary.habit.title,
-                        maxLines = 1,
-                        style = TextStyle(color = WidgetColors.ink, fontSize = 16.wsp, fontWeight = FontWeight.Bold),
-                    )
-                    if (secured) {
-                        Text(
-                            if (live.atMostOff) "Goal safe for today" else "Goal met today",
-                            maxLines = 1,
-                            style = TextStyle(color = WidgetColors.accentInk, fontSize = 14.wsp, fontWeight = FontWeight.Bold),
-                        )
-                        Text(
-                            if (live.atMostOff) "Only ${durationText(live.countedMs)} ${stateName(rule, false).lowercase()}" else "${durationText(live.countedMs)} today",
-                            maxLines = 1,
-                            style = TextStyle(color = WidgetColors.inkMuted, fontSize = 13.wsp),
-                        )
-                        if (!compact && showDetail) {
-                            Text(
-                                if (summary.streak > 1u) "${summary.streak}-day streak" else "Well done",
-                                maxLines = 1,
-                                style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.wsp),
-                            )
-                        }
-                    } else {
-                        Text(
-                            headline(rule, live),
-                            maxLines = 1,
-                            style = TextStyle(color = if (live.on == rule.usualOn) WidgetColors.inkMuted else WidgetColors.accentInk, fontSize = 14.wsp, fontWeight = FontWeight.Medium),
-                        )
-                        detail(rule, live, now)?.takeIf { showDetail }?.let {
-                            Text(it, maxLines = if (compact) 1 else 2, style = TextStyle(color = WidgetColors.inkFaint, fontSize = 13.wsp))
-                        }
-                    }
+                    TimedLines(t, lines = if (compact) 3 else 4)
                 }
                 Spacer(GlanceModifier.height(if (compact) 6.dp else 10.dp))
-                SwitchButton(summary, rule, live, secured, compact)
+                SwitchButton(t, compact)
+            }
+        }
+        if (timeline != null) {
+            Spacer(GlanceModifier.height(10.dp))
+            DayBar(t, timeline, size.width - 28.dp, hours = tall)
+        }
+    }
+}
+
+/** The day from midnight to midnight: on in mint, the unusual state amber, a tick at now. */
+@Composable
+private fun DayBar(t: Timed, segments: List<TimeSegment>, width: androidx.compose.ui.unit.Dp, hours: Boolean) {
+    val context = LocalContext.current
+    val colors = LocalWidgetLook.current.palette(context)
+    val pxW = (width.value * 3).toInt().coerceAtLeast(30)
+    val pxH = 36
+    val bitmap = Bitmap.createBitmap(pxW, pxH, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    val start = java.time.LocalDate.now().atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+    val day = 24 * 3_600_000f
+    paint.color = colors.sunken.toArgb()
+    canvas.drawRoundRect(RectF(0f, 0f, pxW.toFloat(), pxH.toFloat()), 12f, 12f, paint)
+    for (s in segments) {
+        val x0 = pxW * ((s.start - start) / day)
+        val x1 = pxW * ((s.end - start) / day)
+        paint.color = when {
+            s.on -> colors.accent.toArgb()
+            s.on == t.rule.usualOn -> colors.inkFaint.copy(alpha = 0.45f).toArgb()
+            else -> 0xFFE29A2D.toInt()
+        }
+        canvas.drawRect(x0, 0f, maxOf(x1, x0 + 2f), pxH.toFloat(), paint)
+    }
+    paint.color = colors.ink.toArgb()
+    val x = pxW * ((t.now - start) / day)
+    canvas.drawRect(x - 2f, 0f, x + 2f, pxH.toFloat(), paint)
+    Column(GlanceModifier.fillMaxWidth()) {
+        Image(ImageProvider(bitmap), contentDescription = "Today's timeline", modifier = GlanceModifier.width(width).height(12.dp).cornerRadius(6.dp))
+        if (hours) {
+            Row(GlanceModifier.width(width).padding(top = 3.dp)) {
+                listOf("0", "6", "12", "18", "24").forEachIndexed { i, h ->
+                    Text(
+                        h,
+                        style = TextStyle(
+                            color = WidgetColors.inkFaint,
+                            fontSize = 10.wsp,
+                            textAlign = when (i) {
+                                0 -> TextAlign.Start
+                                4 -> TextAlign.End
+                                else -> TextAlign.Center
+                            },
+                        ),
+                        modifier = GlanceModifier.defaultWeight(),
+                    )
+                }
             }
         }
     }
@@ -220,9 +388,11 @@ private fun TimedContent(summary: HabitSummary?) {
 
 /** The one thing to do, under the text: the usual state's action in mint; quiet once the day is won. */
 @Composable
-private fun SwitchButton(summary: HabitSummary, rule: TimedRule, live: TimedLive, secured: Boolean, compact: Boolean) {
+private fun SwitchButton(t: Timed, compact: Boolean, iconOnly: Boolean = false) {
+    val rule = t.rule
+    val live = t.live
     val goingUsual = live.tracked && live.on != rule.usualOn
-    val loud = !secured && (goingUsual || !live.tracked)
+    val loud = !t.secured && (goingUsual || !live.tracked)
     val fg = if (loud) WidgetColors.onAccent else WidgetColors.ink
     Row(
         GlanceModifier
@@ -230,18 +400,20 @@ private fun SwitchButton(summary: HabitSummary, rule: TimedRule, live: TimedLive
             .height(if (compact) 36.dp else 42.dp)
             .cornerRadius(21.dp)
             .background(if (loud) WidgetColors.accent else WidgetColors.sunken)
-            .clickable(actionRunCallback<SwitchTimedHabit>(actionParametersOf(SWITCH_ID to summary.habit.id, SWITCH_ON to !live.on))),
+            .clickable(t.switch),
         verticalAlignment = Alignment.CenterVertically,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Image(
             ImageProvider(if (live.on) R.drawable.ic_pause else R.drawable.ic_play),
-            contentDescription = null,
+            contentDescription = if (iconOnly) switchLabel(rule, live.on) else null,
             colorFilter = ColorFilter.tint(fg),
             modifier = GlanceModifier.size(18.dp),
         )
-        Spacer(GlanceModifier.width(6.dp))
-        Text(switchLabel(rule, live.on), style = TextStyle(color = fg, fontSize = 15.wsp, fontWeight = FontWeight.Bold))
+        if (!iconOnly) {
+            Spacer(GlanceModifier.width(6.dp))
+            Text(switchLabel(rule, live.on), maxLines = 1, style = TextStyle(color = fg, fontSize = 15.wsp, fontWeight = FontWeight.Bold))
+        }
     }
 }
 

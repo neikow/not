@@ -44,6 +44,8 @@ import dev.lysen.not.today
  * upcoming one. Small enough for a corner of the home screen; tick it and the next one shows.
  */
 class NextWidget : GlanceAppWidget() {
+    override val sizeMode = androidx.glance.appwidget.SizeMode.Exact
+
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as NotApp
         provideContent { WidgetLookProvider {
@@ -54,18 +56,24 @@ class NextWidget : GlanceAppWidget() {
         } }
     }
 
-    private class Next(val task: TaskItem, val more: Int, val today: Boolean)
+    /** [tasks]: what's next, today's first; the first [dueToday] of them are due today. */
+    private class Next(val tasks: List<TaskItem>, val dueToday: Int) {
+        val task get() = tasks.first()
+        val today get() = dueToday > 0
+        val more get() = (dueToday - 1).coerceAtLeast(0)
+    }
 
     /** [days]: how many days past today an upcoming task may start; null for any. */
     private fun load(app: NotApp, days: Int?): Next? = try {
         fun top(view: String) = app.store.viewOutline(view, today()).open.filter { it.depth == 0u }.map { it.task }
         val due = top(TODAY_ID)
         val horizon = days?.let { java.time.LocalDate.now().plusDays(it.toLong()).toString() }
-        val pick = due.firstOrNull() ?: top(UPCOMING_ID).firstOrNull { t ->
+        val later = top(UPCOMING_ID).filter { t ->
             val at = t.start ?: t.deadline
             horizon == null || (at != null && at <= horizon)
         }
-        pick?.let { task -> Next(task, more = (due.size - 1).coerceAtLeast(0), today = due.isNotEmpty()) }
+        val tasks = (due + later).distinctBy { it.id }.take(8)
+        tasks.takeIf { it.isNotEmpty() }?.let { Next(it, dueToday = due.size) }
     } catch (e: NotException) {
         logLoadFailure("next", e)
         null
@@ -78,6 +86,12 @@ class NextWidget : GlanceAppWidget() {
         WidgetSurface {
             if (next == null) {
                 WidgetEmpty(R.drawable.ic_check, "All clear", "Nothing coming up.", open)
+                return@WidgetSurface
+            }
+            // Taller than a cell: the next few, today's first.
+            val size = androidx.glance.LocalSize.current
+            if (size.height >= 120.dp && next.tasks.size > 1) {
+                NextList(next, open)
                 return@WidgetSurface
             }
             // Check on the left, three short lines beside it: fits a 2×1 cell.
@@ -108,6 +122,39 @@ class NextWidget : GlanceAppWidget() {
                         next.more.takeIf { it > 0 }?.let { "+$it today" },
                     ).joinToString(" · ")
                     Text(meta, maxLines = 1, style = TextStyle(color = WidgetColors.inkMuted, fontSize = 12.wsp))
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun NextList(next: Next, open: androidx.glance.action.Action) {
+        val size = androidx.glance.LocalSize.current
+        val fit = ((size.height - 36.dp) / 46.dp).toInt().coerceIn(2, 8)
+        Column(GlanceModifier.fillMaxSize()) {
+            Text(
+                if (next.today) "Up next" else "Coming up",
+                maxLines = 1,
+                style = TextStyle(color = WidgetColors.accentInk, fontSize = 12.wsp, fontWeight = FontWeight.Medium),
+                modifier = GlanceModifier.padding(start = 8.dp, top = 6.dp, bottom = 2.dp).clickable(open),
+            )
+            next.tasks.take(fit).forEachIndexed { i, task ->
+                Row(GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    WidgetCheck(
+                        checked = false,
+                        onClick = actionRunCallback<CompleteTask>(actionParametersOf(TASK_ID to task.id)),
+                        size = 20.dp,
+                        label = "Complete ${task.title}",
+                    )
+                    Spacer(GlanceModifier.width(4.dp))
+                    Column(GlanceModifier.defaultWeight().padding(vertical = 4.wdp).clickable(open)) {
+                        Text(task.title, maxLines = 1, style = TextStyle(color = WidgetColors.ink, fontSize = 14.wsp, fontWeight = FontWeight.Medium))
+                        val meta = listOfNotNull(
+                            if (i >= next.dueToday) scheduleLabel(task.start ?: task.deadline, task.time, null) else task.time?.let { scheduleLabel(task.start, it, null) },
+                            task.tags.firstOrNull()?.let { "#$it" },
+                        ).joinToString(" · ")
+                        if (meta.isNotEmpty()) Text(meta, maxLines = 1, style = TextStyle(color = WidgetColors.inkMuted, fontSize = 12.wsp))
+                    }
                 }
             }
         }

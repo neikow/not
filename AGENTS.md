@@ -93,6 +93,10 @@ Every feature and every bug fix comes with tests; nothing merges with `make chec
   UTF-16 offsets, observers, a store on disk).
 - Android: JVM tests in `android/app/src/test` for Kotlin logic that doesn't call the core (the native
   library isn't loaded there). Anything else worth testing belongs in the core.
+- Widgets: debug builds render one widget at every common size, from 1×1 to 4×3:
+  `adb shell am start -S -n dev.lysen.not/.widget.WidgetSetupActivity --es sizes Timed` (any
+  `WidgetKind` name). Glance rows and columns hold at most 10 children, and widget picker
+  previews (res/layout/widget_*_preview.xml) may only use RemoteViews classes (a test checks).
 - UI changes: verify on the emulator (screenshots) and in a separate Mac instance with a scratch data
   dir (`-dataDir <dir> -seedDemo YES -show <page>` in DEBUG builds). Don't automate the user's own
   Mac or phone.
