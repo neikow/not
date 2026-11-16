@@ -296,3 +296,24 @@ fn timed_habits_switch_and_report_in_local_days() {
         Err(NotError::Invalid { .. })
     ));
 }
+
+#[test]
+fn trash_restores_and_empties() {
+    let db = TempDb::new("trash");
+    let store = NotStore::new(db.path()).unwrap();
+    let id = store
+        .add_task(not_ffi::inbox_id(), "oops".into(), TODAY.into())
+        .unwrap();
+    store.delete_item(id.clone()).unwrap();
+    let trash = store.trash().unwrap();
+    assert_eq!(trash.len(), 1);
+    assert_eq!(
+        (trash[0].kind, trash[0].title.as_str()),
+        (not_ffi::TrashKind::Task, "oops")
+    );
+    store.restore_from_trash(id.clone()).unwrap();
+    assert!(store.trash().unwrap().is_empty());
+    store.delete_item(id).unwrap();
+    assert_eq!(store.empty_trash().unwrap(), 1);
+    assert_eq!(store.purge_trash(i64::MAX / 2).unwrap(), 0);
+}

@@ -17,6 +17,7 @@ mod storage;
 mod store;
 mod sync;
 mod timed;
+mod trash;
 mod views;
 mod workouts;
 
@@ -36,6 +37,7 @@ pub use sync::{Credentials, Outgoing};
 #[cfg(feature = "net")]
 pub use sync::{DeviceInfo, LiveSync, PairingCode, SyncClient, SyncReport, SyncStatus};
 pub use timed::{Clock, Segment, TimedRule, TimedState};
+pub use trash::{TRASH_DAYS, TrashItem, TrashKind};
 pub use views::{TagInfo, View};
 pub use workouts::{
     DONE_MARK, ExerciseLog, SetLine, Workout, WorkoutExercise, WorkoutSummary, expand_sets, parse_sets,

@@ -80,6 +80,7 @@ private enum class SettingsPage(val title: String, val icon: Int) {
     Sync("Sync", R.drawable.ic_sync),
     Reminders("Reminders", R.drawable.ic_schedule),
     Archive("Archive", R.drawable.ic_history),
+    Trash("Trash", R.drawable.ic_delete),
     Backup("Export and backup", R.drawable.ic_copy),
     Widgets("Widgets", R.drawable.ic_add_task),
     Workouts("Workouts", R.drawable.ic_fitness),
@@ -126,6 +127,7 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
                     }
                     SettingsPage.Reminders -> item(key = "reminders") { RemindersPage() }
                     SettingsPage.Archive -> archivePage(state, tasks, toasts)
+                    SettingsPage.Trash -> trashPage(toasts)
                     SettingsPage.Backup -> item(key = "backup") { BackupPage(toasts) }
                     SettingsPage.Widgets -> item(key = "widgets") { WidgetsPage() }
                     SettingsPage.Workouts -> item(key = "workouts") { WorkoutsPage(workouts) }
@@ -155,6 +157,7 @@ private fun summary(page: SettingsPage, state: UiState): String = when (page) {
         1 -> "1 task done over a day ago"
         else -> "$n tasks done over a day ago"
     }
+    SettingsPage.Trash -> "Deleted items, kept ${dev.lysen.not.core.trashDays()} days"
     SettingsPage.Backup -> "Everything as JSON, or a backup file to restore"
     SettingsPage.Widgets -> "Look, home screen widgets, quick add"
     SettingsPage.Workouts -> "Rest timer, import from text"
@@ -751,4 +754,96 @@ private fun WidgetLookDefaults() {
             Text("Each widget can change these in its own setup: long-press it on the home screen.", style = Not.type.caption, color = Not.colors.inkMuted)
         }
     }
+}
+
+/**
+ * What was deleted, newest first: tap the arrow to put it back, swipe it away to delete it for
+ * good (Undo in the toast). Everything goes by itself after 30 days.
+ */
+private fun LazyListScope.trashPage(toasts: ToastState) {
+    item(key = "trash") {
+        val context = LocalContext.current
+        val app = context.applicationContext as NotApp
+        val scope = rememberCoroutineScope()
+        val colors = Not.colors
+        val version by app.changes.collectAsState()
+        val items = remember(version) { runCatching { app.store.trash() }.getOrDefault(emptyList()) }
+        fun undoToast(message: String) = scope.launch { if (toasts.show(message, action = "Undo")) runCatching { app.store.undo() } }
+        Column {
+            if (items.isEmpty()) {
+                EmptyState(R.drawable.ic_delete, "Trash is empty", "Deleted tasks, notes, habits and workouts wait here for ${dev.lysen.not.core.trashDays()} days.")
+                return@Column
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Items go for good after ${dev.lysen.not.core.trashDays()} days.", style = Not.type.caption, color = colors.inkMuted, modifier = Modifier.weight(1f))
+                Button("Empty", {
+                    val n = runCatching { app.store.emptyTrash() }.getOrDefault(0u).toInt()
+                    if (n > 0) undoToast(if (n == 1) "1 item deleted for good" else "$n items deleted for good")
+                }, kind = ButtonKind.Quiet, icon = R.drawable.ic_delete)
+            }
+            items.forEach { item ->
+                key(item.id) {
+                    SwipeRow(
+                        start = null,
+                        end = SwipeAction(R.drawable.ic_delete, colors.danger, Color.White, dismisses = true) {
+                            runCatching { app.store.deleteForever(item.id) }
+                            undoToast("Deleted for good")
+                        },
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().background(colors.background).heightIn(min = 60.dp).padding(start = 20.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Icon(trashIcon(item.kind), null, tint = colors.inkFaint, size = 20.dp)
+                            Column(Modifier.weight(1f)) {
+                                Text(item.title.ifEmpty { "Untitled" }, style = Not.type.body, maxLines = 1)
+                                val now = System.currentTimeMillis()
+                                val ago = if (now - item.deletedAt < 60_000) "just now" else DateUtils.getRelativeTimeSpanString(item.deletedAt, now, DateUtils.MINUTE_IN_MILLIS)
+                                Text(
+                                    listOfNotNull(trashKindName(item.kind), "deleted $ago", insideText(item)).joinToString(" · "),
+                                    style = Not.type.caption,
+                                    color = colors.inkFaint,
+                                    maxLines = 1,
+                                )
+                            }
+                            IconButton(R.drawable.ic_undo, "Restore", {
+                                runCatching { app.store.restoreFromTrash(item.id) }
+                                undoToast("Restored")
+                            }, tint = colors.accentInk)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun trashIcon(kind: dev.lysen.not.core.TrashKind) = when (kind) {
+    dev.lysen.not.core.TrashKind.TASK -> R.drawable.ic_task_alt
+    dev.lysen.not.core.TrashKind.NOTE -> R.drawable.ic_note
+    dev.lysen.not.core.TrashKind.FOLDER -> R.drawable.ic_folder
+    dev.lysen.not.core.TrashKind.HABIT -> R.drawable.ic_repeat
+    dev.lysen.not.core.TrashKind.WORKOUT, dev.lysen.not.core.TrashKind.EXERCISE -> R.drawable.ic_fitness
+}
+
+private fun trashKindName(kind: dev.lysen.not.core.TrashKind) = when (kind) {
+    dev.lysen.not.core.TrashKind.TASK -> "Task"
+    dev.lysen.not.core.TrashKind.NOTE -> "Note"
+    dev.lysen.not.core.TrashKind.FOLDER -> "Folder"
+    dev.lysen.not.core.TrashKind.HABIT -> "Habit"
+    dev.lysen.not.core.TrashKind.WORKOUT -> "Workout"
+    dev.lysen.not.core.TrashKind.EXERCISE -> "Exercise"
+}
+
+private fun insideText(item: dev.lysen.not.core.TrashItem): String? {
+    val n = item.inside.toInt()
+    if (n == 0) return null
+    val what = when (item.kind) {
+        dev.lysen.not.core.TrashKind.TASK -> if (n == 1) "subtask" else "subtasks"
+        dev.lysen.not.core.TrashKind.FOLDER -> if (n == 1) "item" else "items"
+        dev.lysen.not.core.TrashKind.WORKOUT -> if (n == 1) "exercise" else "exercises"
+        else -> if (n == 1) "item" else "items"
+    }
+    return "with $n $what"
 }

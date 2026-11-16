@@ -109,6 +109,12 @@ pub struct ParsedTask {
     pub tokens: Vec<ParsedToken>,
 }
 
+/// Days an item waits in the trash before it goes for good.
+#[uniffi::export]
+pub fn trash_days() -> u32 {
+    not_core::TRASH_DAYS as u32
+}
+
 /// Habit `days` mask for a daily habit. Bit 0 = Monday … bit 6 = Sunday.
 #[uniffi::export]
 pub fn every_day() -> u8 {
@@ -475,6 +481,28 @@ pub struct TimedState {
     /// Millis on and off that day; untracked time is neither.
     pub on_ms: i64,
     pub off_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TrashKind {
+    Task,
+    Note,
+    Folder,
+    Habit,
+    Workout,
+    Exercise,
+}
+
+/// Something deleted, waiting in the trash.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TrashItem {
+    pub id: String,
+    pub kind: TrashKind,
+    pub title: String,
+    /// Unix millis.
+    pub deleted_at: i64,
+    /// Deleted along with it: subtasks, a folder's notes, a workout's exercises.
+    pub inside: u32,
 }
 
 /// One stretch of a day's timeline, in Unix millis.
@@ -1593,6 +1621,49 @@ impl NotStore {
             open: rows(outline.open),
             completed: rows(outline.completed),
         })
+    }
+
+    // ---- trash ----
+
+    /// What was deleted, newest first; a folder lists once, not each of its notes.
+    pub fn trash(&self) -> Result<Vec<TrashItem>, NotError> {
+        Ok(self
+            .store
+            .trash()?
+            .into_iter()
+            .map(|i| TrashItem {
+                id: i.id,
+                kind: match i.kind {
+                    not_core::TrashKind::Task => TrashKind::Task,
+                    not_core::TrashKind::Note => TrashKind::Note,
+                    not_core::TrashKind::Folder => TrashKind::Folder,
+                    not_core::TrashKind::Habit => TrashKind::Habit,
+                    not_core::TrashKind::Workout => TrashKind::Workout,
+                    not_core::TrashKind::Exercise => TrashKind::Exercise,
+                },
+                title: i.title,
+                deleted_at: i.deleted_at,
+                inside: i.inside,
+            })
+            .collect())
+    }
+
+    pub fn restore_from_trash(&self, id: String) -> Result<(), NotError> {
+        Ok(self.store.restore_from_trash(&id)?)
+    }
+
+    /// Undoable until the app closes.
+    pub fn delete_forever(&self, id: String) -> Result<(), NotError> {
+        Ok(self.store.delete_forever(&id)?)
+    }
+
+    pub fn empty_trash(&self) -> Result<u32, NotError> {
+        Ok(self.store.empty_trash()?)
+    }
+
+    /// Deletes for good what's been in the trash over 30 days; call now and then (Unix millis).
+    pub fn purge_trash(&self, now_ms: i64) -> Result<u32, NotError> {
+        Ok(self.store.purge_trash(now_ms)?)
     }
 
     // ---- export ----

@@ -79,6 +79,8 @@ class NotApp : Application() {
     override fun onCreate() {
         super.onCreate()
         SyncWorker.schedulePeriodic(this)
+        // What's been in the trash for 30 days goes for good, on every device (idempotent).
+        scope.launch { runCatching { store.purgeTrash(System.currentTimeMillis()) } }
         // Widgets whose session ended need a nudge to re-render; coalesce bursts like a big pull.
         scope.launch {
             changes.drop(1).debounce(300).collect {
