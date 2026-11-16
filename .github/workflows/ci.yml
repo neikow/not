@@ -51,7 +51,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
 
       - name: Build Rust core and Kotlin bindings
         run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" ./scripts/build-android.sh
