@@ -147,6 +147,8 @@ final class AppModel {
         let store = store
         NoteImageCache.shared.load = { id in (try? store.image(id: id)).flatMap { $0 } }
         selectedListID = inboxID
+        // What's been in the trash for 30 days goes for good (every device doing it is harmless).
+        _ = try? store.purgeTrash(nowMs: Self.nowMs())
         reload()
 
         let defaults = UserDefaults.standard
@@ -207,7 +209,14 @@ final class AppModel {
             }
         }
         switch defaults.string(forKey: "show") {
-        case "habits": selection = .habits
+        case "habits":
+            selection = .habits
+            // `-habit <title>` opens that habit's inspector.
+            let all = run { try store.habits(date: today, nowMs: Self.nowMs(), utcOffsetMinutes: Self.utcOffsetMinutes()) } ?? []
+            if let title = defaults.string(forKey: "habit"), let h = all.first(where: { $0.habit.title == title }) {
+                selectedHabitID = h.habit.id
+                showsInspector = true
+            }
         case "today": selection = .today
         case "workouts":
             selection = .workouts
@@ -600,6 +609,36 @@ final class AppModel {
     func toggleHabit(_ id: String) {
         run { _ = try store.toggleHabit(id: id, date: today) }
     }
+
+    /// A timed habit, starting as "at least 1 h on, normally off"; the inspector sets the rest.
+    func addTimedHabit(_ title: String) -> String? {
+        guard !title.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let rule = TimedRule(atMostOff: false, usualOn: false, nudgeMinutes: 0)
+        return run { try store.createTimedHabit(title: title, minutes: 60, days: everyDay(), rule: rule) }
+    }
+
+    /// It's been on (or off) since `from`, or from `from` until `to`: backdating and timeline fixes.
+    func setHabitState(_ id: String, on: Bool, from: Date, to: Date? = nil) {
+        let now = Self.nowMs()
+        let ms = { (d: Date) in Int64(d.timeIntervalSince1970 * 1000) }
+        run { try store.setHabitState(id: id, on: on, from: min(ms(from), now), to: to.map(ms), now: now) }
+    }
+
+    /// The stretches of today, up to now.
+    func habitTimeline(_ id: String) -> [TimeSegment] {
+        run { try store.habitTimeline(id: id, date: today, nowMs: Self.nowMs(), utcOffsetMinutes: Self.utcOffsetMinutes()) } ?? []
+    }
+
+    // ---- trash ----
+
+    var trash: [TrashItem] { run { try store.trash() } ?? [] }
+
+    func restoreFromTrash(_ id: String) { run { try store.restoreFromTrash(id: id) } }
+
+    func deleteForever(_ id: String) { run { try store.deleteForever(id: id) } }
+
+    @discardableResult
+    func emptyTrash() -> UInt32 { run { try store.emptyTrash() } ?? 0 }
 
     /// A timed habit: on (or off) from now.
     func switchHabit(_ id: String, on: Bool) {

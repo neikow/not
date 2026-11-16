@@ -4,6 +4,8 @@ import SwiftUI
 struct HabitsView: View {
     @Bindable var model: AppModel
     @State private var draft = ""
+    /// What the add field makes: check-ins, or a timed habit.
+    @State private var timed = false
     @FocusState private var addFieldFocused: Bool
 
     var body: some View {
@@ -31,16 +33,26 @@ struct HabitsView: View {
             Image(systemName: "plus.circle.fill")
                 .foregroundStyle(.tint)
                 .imageScale(.large)
-            TextField("New habit", text: $draft)
+            TextField(timed ? "New timed habit, like “Wear retainer”" : "New habit", text: $draft)
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .focused($addFieldFocused)
                 .onSubmit {
-                    if let id = model.addHabit(draft) {
+                    if let id = timed ? model.addTimedHabit(draft) : model.addHabit(draft) {
                         model.selectedHabitID = id
+                        // A timed habit's goal and rule are set next, in the inspector.
+                        if timed { model.showsInspector = true }
                     }
                     draft = ""
                 }
+            Picker("Kind", selection: $timed) {
+                Label("Check-ins", systemImage: "checkmark.circle").tag(false)
+                Label("Timed", systemImage: "timer").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Check-ins count taps; timed habits switch on and off with a daily goal in time")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
@@ -62,6 +74,17 @@ struct HabitsView: View {
                 Button("Show Info") {
                     model.selectedHabitID = id
                     model.showsInspector = true
+                }
+                if let summary = model.habits.first(where: { $0.habit.id == id }), let rule = summary.habit.timed {
+                    let on = summary.timed?.on ?? false
+                    Button(switchLabel(rule, on: on)) { model.switchHabit(id, on: !on) }
+                    Menu("\(stateName(rule, on: !on)) Since") {
+                        ForEach([5, 15, 30, 60], id: \.self) { minutes in
+                            Button("\(minutes) Minutes Ago") {
+                                model.setHabitState(id, on: !on, from: Date.now.addingTimeInterval(Double(-minutes * 60)))
+                            }
+                        }
+                    }
                 }
                 Divider()
                 Button("Delete", role: .destructive) { model.deleteHabit(id) }

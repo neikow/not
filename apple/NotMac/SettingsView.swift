@@ -13,6 +13,9 @@ struct SettingsView: View {
             Tab("Archive", systemImage: "archivebox") {
                 ArchiveSettings(model: model)
             }
+            Tab("Trash", systemImage: "trash") {
+                TrashSettings(model: model)
+            }
             Tab("Workouts", systemImage: "dumbbell") {
                 WorkoutSettings(model: model)
             }
@@ -40,6 +43,72 @@ struct SettingsView: View {
 }
 
 /// Tasks done over a day ago, out of their lists' way. ⌘Z undoes a restore or delete.
+/// What was deleted, newest first; it goes for good after 30 days.
+private struct TrashSettings: View {
+    let model: AppModel
+
+    var body: some View {
+        // Bumped on every store change, so the list follows deletes made anywhere.
+        let _ = model.imageVersion
+        let items = model.trash
+        Form {
+            Section {
+                if items.isEmpty {
+                    Text("Deleted tasks, notes, habits and workouts wait here for \(trashDays()) days.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(items, id: \.id) { item in
+                    HStack {
+                        Image(systemName: icon(item.kind)).foregroundStyle(.secondary).frame(width: 18)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title.isEmpty ? "Untitled" : item.title)
+                            Text(detail(item)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Put Back") { model.restoreFromTrash(item.id) }
+                        Button(role: .destructive) { model.deleteForever(item.id) } label: { Image(systemName: "trash.slash") }
+                            .buttonStyle(.borderless)
+                            .help("Delete for good (⌘Z undoes it until you quit)")
+                    }
+                }
+            } footer: {
+                if !items.isEmpty {
+                    HStack {
+                        Text("Items go for good after \(trashDays()) days.").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Empty Trash", role: .destructive) { model.emptyTrash() }
+                    }
+                }
+            }
+        }
+        .frame(minHeight: 320)
+    }
+
+    private func icon(_ kind: TrashKind) -> String {
+        switch kind {
+        case .task: "checkmark.circle"
+        case .note: "note.text"
+        case .folder: "folder"
+        case .habit: "repeat"
+        case .workout, .exercise: "dumbbell"
+        }
+    }
+
+    private func detail(_ item: TrashItem) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(item.deletedAt) / 1000)
+        let kind = switch item.kind {
+        case .task: "Task"
+        case .note: "Note"
+        case .folder: "Folder"
+        case .habit: "Habit"
+        case .workout: "Workout"
+        case .exercise: "Exercise"
+        }
+        let inside = item.inside > 0 ? "with \(item.inside) inside" : nil
+        return [kind, "deleted " + date.formatted(.relative(presentation: .named)), inside].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
 private struct ArchiveSettings: View {
     let model: AppModel
 
