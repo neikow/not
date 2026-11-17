@@ -130,8 +130,10 @@ store (`webpki-roots`). No platform verifier means no JNI setup on Android and n
 the trade-off is that the server needs a publicly trusted certificate (Tailscale/Caddy/Let's Encrypt are
 fine; a private CA is not, yet).
 
-Compaction (planned): a client uploads a snapshot `PUT /v1/docs/<doc>/snapshot?upto=<seq>`; the server
-drops older updates for that doc and serves the snapshot to clients whose cursor is behind it.
+Compaction: past 2000 workspace rows, a push sets off a background compaction on the server. The rows
+up to what its replica has merged become one Loro snapshot row that keeps the last row's seq; devices
+behind it import the snapshot (a merge, like any update) and devices past it never see it, so the
+protocol is unchanged. `not-server compact` runs it on demand ([ADR 0016](adr/0016-encryption-at-rest-not-end-to-end.md)).
 
 Encoding: JSON with base64 payloads for now (easy to debug, web-friendly); can move to a binary framing
 without changing the model.
@@ -139,11 +141,13 @@ without changing the model.
 ## Server
 
 - One container: `not-server` binary + SQLite volume. Litestream optional for continuous backup.
+- At rest, the log and the replica are encrypted with SQLCipher when `NOT_DB_KEY` is set; the apps'
+  databases stay plain SQLite ([ADR 0016](adr/0016-encryption-at-rest-not-end-to-end.md)).
 - Single user, no secrets in the environment. Devices pair with one-time codes and get revocable
   per-device tokens (stored hashed). The first code comes from the CLI on the host
   (`not-server pair`); paired devices mint more. See [ADR 0006](adr/0006-device-pairing.md).
 - CLI: `not-server [serve]`, `pair [public URL]` (prints a QR code when the URL is known),
-  `devices`, `revoke <id>`.
+  `devices`, `revoke <id>`, `compact`.
 - Runs behind the user's reverse proxy or Tailscale; TLS is terminated there.
 
 ## Reminders and notifications
@@ -169,10 +173,10 @@ never moves backwards, so a worker and live sync running at once are harmless.
 
 | macOS | Android |
 |---|---|
-| Menu bar extra ✅ (quick add, open tasks of a chosen list); global hotkey → quick-add panel with natural-language parsing | Glance tasks widget ✅ (any list, checkboxes, + opens a quick-add dialog); habits widget ✅ (check in from the home screen); notes widget ✅ (folder, + new note) and single-note widget ✅ (tickable checklists); later today list |
+| Menu bar extra ✅ (quick add, open tasks of a chosen list); global hotkey → quick-add panel (planned) | Widgets ✅: tasks, up next, habits, timed habit, notes, one note; each with a setup screen (content and look, live preview) and layouts by size |
 | Raycast extension over a local unix socket (add, search, today, check habit, new note) | Quick Settings tile ✅ and app-icon shortcut ✅ → quick-add dialog |
-| Local notifications with actions | Share target → task or note |
-| `not://` URL scheme, App Intents (Shortcuts), Core Spotlight indexing | Notification actions, app shortcuts |
+| Local notifications with actions | Share target ✅ → task or note (text, links, pictures) |
+| `not://` URL scheme ✅; App Intents (Shortcuts), Core Spotlight indexing (planned) | Notification actions ✅, app shortcuts ✅, live notification for timed habits ✅ |
 | Later (needs paid Apple Developer account): WidgetKit widgets, share extension, notarized builds | |
 
 ## Web companion
@@ -184,13 +188,12 @@ an IndexedDB cache. Online-first; no parity goal.
 
 | Phase | Scope |
 |---|---|
-| P0 spike ✅ | core (tasks in Loro + read model), relay server, live sync, uniffi → minimal SwiftUI + Compose apps, verified Mac ⇄ Android end to end incl. offline edits |
-| P0.5 ✅ | Built-in Inbox, device pairing with per-device tokens, revocation |
-| P1 (in progress) | ✅ Android tasks widget (with picker preview), quick add from widget / QS tile / app shortcut, app icons (Mac: Icon Composer / Liquid Glass), Mac menu bar extra, background sync, QR pairing; core UX: notes, subtasks, rename, reorder, completed section, undo, soft delete, keyboard flow (Mac), swipe actions + drawer + settings screen (Android); quick-add parser (English + French: dates, times, repeats, `#list`, `!priority`, live highlight + chips), due dates, priorities, recurrence (RRULE subset; completing logs a copy and moves the task on), Today. Next: reminders, hotkey panel, Raycast |
-| P1 | Reminders, hotkey panel, Raycast, Upcoming view |
-| P2 ✅ | Notes: folders, pinning, search, live-styled markdown editors (core span highlighter) on Mac + Android |
-| P3 ✅ | Habits: check-ins, goals, weekday schedules, streaks, history grid (Mac + Android) |
-| P4 | Web companion, TickTick CSV import, compaction |
+| P0–P0.5 ✅ | Core, relay server, live sync, uniffi, Mac + Android apps; Inbox, device pairing, revocation |
+| P1 ✅ | Quick add (English + French), start dates and deadlines, repeats, Today / Upcoming / Someday, tags and smart lists (ADR 0014), reminders, Android widgets and Quick Settings tile, Mac menu bar extra, undo, archive, trash, share target, first run |
+| P2 ✅ | Notes: folders, pinning, search, live-styled markdown, checklists, pictures |
+| P3 ✅ | Habits: check-ins, goals per day / week / month, streaks, history; timed habits (ADR 0015) with widget, live notification and reminders |
+| P4 ✅ | Workouts; web companion and shared lists (ADR 0009); log compaction and encryption at rest (ADR 0016); signed APK releases for Obtainium; Mac app build on demand |
+| Next | Mac global hotkey panel, Raycast extension, Shortcuts / Spotlight, end-to-end encryption (ADR 0016), instant push on Android (ntfy) |
 
 ## Decision records
 

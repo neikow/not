@@ -1,4 +1,6 @@
 FROM rust:1.99-slim-trixie AS build
+# The server's SQLCipher builds its own OpenSSL.
+RUN apt-get update && apt-get install -y --no-install-recommends perl make && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rustfmt.toml ./
 COPY crates crates

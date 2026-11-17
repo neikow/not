@@ -681,14 +681,11 @@ fn lists_become_tags_and_saved_views() {
         "same ids, so share links and widgets keep working"
     );
     assert_eq!(open(&s, GROCERIES), ["milk", "oat", "eggs"], "the list's order");
-    let done: Vec<_> = s
-        .view_outline(GROCERIES, today())
-        .unwrap()
-        .completed
-        .into_iter()
-        .map(|r| r.task.title)
-        .collect();
-    assert_eq!(done, ["bread"]);
+    // Completed, and tagged like the list it was in. (Whether it still shows under the view or has
+    // moved to the archive depends on how long ago the fixture was made, so that's not asserted.)
+    let bread = find(&s, "bread");
+    assert!(bread.completed_at.is_some());
+    assert_eq!(bread.tags, ["groceries"]);
     // Due dates became start dates, so a task due later waits in Upcoming until then.
     assert_eq!(open(&s, WORK), ["agenda"]);
     assert_eq!(find(&s, "report").start.as_deref(), Some("2026-11-13"));

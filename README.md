@@ -62,5 +62,8 @@ Scan the QR code with the Android app (Sync → Scan QR code), or enter the serv
 Set `NOT_PUBLIC_URL` in the environment to skip the URL argument. Further devices get codes from a paired one (Add device) or
 from `not-server pair` again. `not-server devices` and `not-server revoke <id>` manage them from the host.
 
-Data lives in the `not-data` volume (`/data/not.db`). Put the server behind your reverse proxy or Tailscale
+Data lives in the `not-data` volume (`/data/not.db`). Set `NOT_DB_KEY` (e.g. in `.env`) to encrypt it at
+rest; an existing plain database is encrypted on the next start. Keep the key safe: without it the
+server's copy can't be read (devices still hold everything and can re-upload to a fresh server).
+The sync log is compacted into a snapshot as it grows (`not-server compact` does it on demand). Put the server behind your reverse proxy or Tailscale
 for TLS: the apps only trust publicly trusted certificates.

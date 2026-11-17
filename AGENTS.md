@@ -22,24 +22,28 @@ crates/
     src/schedule.rs    Start/deadline/someday, RRULE subset, due labels
     src/projection.rs  Loro → SQLite read model
     src/notes.rs, checklist.rs, markdown.rs, images.rs   Notes, checklists, editor spans, blobs
-    src/habits.rs, workouts.rs, catalog.rs               Habits, workouts, exercise catalogue
+    src/habits.rs, timed.rs, workouts.rs, catalog.rs     Habits (check-ins and timed), workouts, exercise catalogue
+    src/trash.rs       Deleted items: list, restore, delete for good, 30-day purge
     src/export.rs      JSON export, backup/restore
     src/sync.rs        SyncClient, LiveSync (push/pull/WebSocket)
     tests/             Integration tests, one file per area; tests/common = in-memory server log;
                        tests/fixtures = backups made by older versions (migration tests)
   not-protocol/    Wire types shared by core and server (also pairing links)
   not-server/      axum + SQLite relay: /v1 sync API, pairing, devices, blobs, shares; embeds a
-                   not-core replica for the web pages (src/web.rs). Binary: serve | pair | devices | revoke
+                   not-core replica for the web pages (src/web.rs) and log compaction; SQLCipher at
+                   rest with NOT_DB_KEY. Binary: serve | pair | devices | revoke | compact
   not-ffi/         uniffi surface (`NotStore`, `StoreObserver`, records) for Swift and Kotlin.
                    Strings for dates (`YYYY-MM-DD`), UTF-16 offsets for text ranges.
   uniffi-bindgen/  Bindings generator used by scripts/
 apple/             macOS SwiftUI app (xcodegen `project.yml`); NotCore = SwiftPM wrapper of the
                    generated xcframework + Swift bindings
-android/           Compose app. Own design system in ui/ (no Material 3). widget/ = Glance widgets.
+android/           Compose app. Own design system in ui/ (no Material 3). widget/ = Glance widgets
+                   (one setup activity for all, looks and options, layouts by size).
                    core/ (generated Kotlin bindings) and jniLibs/ are build outputs, not sources
 scripts/           build-apple.sh, build-android.sh (core + bindings), fetch-exercises.sh
 docs/              architecture.md, adr/NNNN-*.md
-.github/workflows/ CI: tests on every push/PR, signed APK release on main
+.github/workflows/ ci.yml: tests on every push/PR, signed APK release on main;
+                   mac.yml: build and attach the Mac app, run by hand
 ```
 
 ## Where code goes
@@ -55,7 +59,9 @@ docs/              architecture.md, adr/NNNN-*.md
   SharedPreferences / UserDefaults.
 - Deletes are soft (`deleted_at`) so undo and concurrent edits work (ADR 0007). Write only the fields
   that changed, so concurrent edits of different fields both survive.
-- The server never interprets synced data, except through its replica for the web pages and shares.
+- The server never interprets synced data, except through its replica for the web pages, shares and
+  log compaction. Only the server links SQLCipher (`bundled-sqlcipher-vendored-openssl`); keep it
+  out of not-core/not-ffi so the apps stay on plain SQLite.
 - A decision that changes the model or a user-visible behaviour gets an ADR in docs/adr/ (next
   number, short: context, decision, consequences), and docs/architecture.md is updated.
 

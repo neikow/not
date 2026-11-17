@@ -26,7 +26,9 @@ web:
 environment:
   NOT_DB        database path (default /data/not.db)
   NOT_ADDR      listen address (default 0.0.0.0:8080)
-  NOT_PUBLIC_URL  URL devices use to reach this server, for pairing QR codes";
+  NOT_PUBLIC_URL  URL devices use to reach this server, for pairing QR codes
+  NOT_DB_KEY    encrypts the databases at rest (or NOT_DB_KEY_FILE: a file holding it);
+                an existing plain database is encrypted on first start with a key";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -60,6 +62,23 @@ async fn main() -> ExitCode {
 
 type CliResult = Result<(), Box<dyn std::error::Error>>;
 
+/// The databases, encrypted at rest when `NOT_DB_KEY` (or a file named by `NOT_DB_KEY_FILE`) gives
+/// a key. Losing the key loses the data: keep it with your backups.
+fn open_state(db_path: &str) -> Result<AppState, Box<dyn std::error::Error>> {
+    let key = match (std::env::var("NOT_DB_KEY"), std::env::var("NOT_DB_KEY_FILE")) {
+        (Ok(key), _) => Some(key),
+        (_, Ok(file)) => Some(
+            std::fs::read_to_string(&file)
+                .map_err(|e| format!("NOT_DB_KEY_FILE {file}: {e}"))?
+                .trim()
+                .to_owned(),
+        ),
+        _ => None,
+    }
+    .filter(|k| !k.is_empty());
+    Ok(AppState::open_with_key(db_path, key.as_deref())?)
+}
+
 async fn serve(db_path: &str) -> CliResult {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
@@ -69,7 +88,7 @@ async fn serve(db_path: &str) -> CliResult {
         .parse()
         .map_err(|e| format!("NOT_ADDR must be host:port: {e}"))?;
 
-    let state = AppState::open(db_path)?;
+    let state = open_state(db_path)?;
     if state.devices()?.is_empty() {
         tracing::info!("no devices paired yet: run `not-server pair` to get a pairing code");
     }
@@ -84,7 +103,7 @@ async fn serve(db_path: &str) -> CliResult {
 }
 
 fn pair(db_path: &str, public_url: Option<String>) -> CliResult {
-    let code = AppState::open(db_path)?.create_pairing_code()?;
+    let code = open_state(db_path)?.create_pairing_code()?;
     println!("Pairing code: {}", code.code);
     println!(
         "Valid for {} minutes, for one device. In the app: Settings → Sync → Pair.",
@@ -109,7 +128,7 @@ fn pair(db_path: &str, public_url: Option<String>) -> CliResult {
 
 /// Folds the log into a snapshot now (the server also does it by itself as the log grows).
 fn compact(db_path: &str) -> CliResult {
-    match AppState::open(db_path)?.compact()? {
+    match open_state(db_path)?.compact()? {
         Some(c) => println!(
             "Compacted {} log rows ({} KB) into one snapshot ({} KB).",
             c.rows,
@@ -122,7 +141,7 @@ fn compact(db_path: &str) -> CliResult {
 }
 
 fn devices(db_path: &str) -> CliResult {
-    let devices = AppState::open(db_path)?.devices()?;
+    let devices = open_state(db_path)?.devices()?;
     if devices.is_empty() {
         println!("No devices paired. Run `not-server pair`.");
         return Ok(());
@@ -148,7 +167,7 @@ fn devices(db_path: &str) -> CliResult {
 
 fn revoke(db_path: &str, id: &str) -> CliResult {
     let id: i64 = id.parse().map_err(|_| format!("not a device id: {id}"))?;
-    if !AppState::open(db_path)?.revoke(id)? {
+    if !open_state(db_path)?.revoke(id)? {
         return Err(format!("no device {id}").into());
     }
     println!("Revoked device {id}.");

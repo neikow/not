@@ -7,6 +7,8 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       # URL devices use to reach the server; lets `not-server pair` print a QR code.
       NOT_PUBLIC_URL: ${NOT_PUBLIC_URL:-}
+      # Encrypts the databases at rest. Keep the key with your backups: without it the data is lost.
+      NOT_DB_KEY: ${NOT_DB_KEY:-}
     volumes:
       - not-data:/data
     ports:

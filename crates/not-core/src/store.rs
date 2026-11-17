@@ -194,6 +194,16 @@ impl Store {
         Self::from_connection(Connection::open(path)?)
     }
 
+    /// [`Store::open`] for a database encrypted with `key` (SQLCipher, in builds that have it:
+    /// the server's). A plain SQLite build would ignore the key, so only the server calls this.
+    pub fn open_with_key(path: impl AsRef<Path>, key: &str) -> Result<Self> {
+        let db = Connection::open(path)?;
+        db.pragma_update(None, "key", key)?;
+        // A wrong key (or a plain file) only shows on the first read.
+        db.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
+        Self::from_connection(db)
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         Self::from_connection(Connection::open_in_memory()?)
     }

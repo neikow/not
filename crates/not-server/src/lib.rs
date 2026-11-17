@@ -71,17 +71,36 @@ pub struct AppState {
 impl AppState {
     /// The replica lives next to the log, in `<db>-replica`.
     pub fn open(db_path: impl AsRef<Path>) -> rusqlite::Result<Self> {
+        Self::open_with_key(db_path, None)
+    }
+
+    /// [`AppState::open`], with both files encrypted at rest under `key` (SQLCipher) when one is
+    /// given. A log that is still plain is encrypted in place the first time; the replica, being
+    /// a copy of the log, is rebuilt instead.
+    pub fn open_with_key(db_path: impl AsRef<Path>, key: Option<&str>) -> rusqlite::Result<Self> {
         let path = db_path.as_ref();
         let replica_path = path.with_file_name(format!(
             "{}-replica",
             path.file_name().map_or("not.db".into(), |n| n.to_string_lossy())
         ));
-        let replica = not_core::Store::open(&replica_path)
-            .map_err(
-                |e| tracing::error!(error = %e, path = %replica_path.display(), "can't open the web replica"),
-            )
-            .ok();
-        Self::new(Connection::open(path)?, replica)
+        let db = match key {
+            Some(key) => open_encrypted(path, key)?,
+            None => Connection::open(path)?,
+        };
+        let replica = match key {
+            Some(key) => not_core::Store::open_with_key(&replica_path, key).or_else(|_| {
+                // Plain (from before the key) or unreadable: it's only a copy, start it over.
+                tracing::info!(path = %replica_path.display(), "rebuilding the web replica, encrypted");
+                remove_db_files(&replica_path);
+                not_core::Store::open_with_key(&replica_path, key)
+            }),
+            None => not_core::Store::open(&replica_path),
+        }
+        .map_err(
+            |e| tracing::error!(error = %e, path = %replica_path.display(), "can't open the web replica"),
+        )
+        .ok();
+        Self::new(db, replica)
     }
 
     pub fn in_memory() -> rusqlite::Result<Self> {
@@ -764,6 +783,55 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         tracing::error!(error = %self.0, "storage error");
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    }
+}
+
+/// Opens the log encrypted with `key`; a log that is still plain SQLite is encrypted in place
+/// first (into a new file that then takes its place, so a crash halfway leaves the old one).
+fn open_encrypted(path: &Path, key: &str) -> rusqlite::Result<Connection> {
+    let readable = |db: &Connection| db.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()));
+    let db = Connection::open(path)?;
+    db.pragma_update(None, "key", key)?;
+    if readable(&db).is_ok() {
+        return Ok(db);
+    }
+    drop(db);
+    // Plain? Then it opens without a key.
+    let plain = Connection::open(path)?;
+    if readable(&plain).is_err() {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+            Some(format!("{} doesn't open with this key", path.display())),
+        ));
+    }
+    tracing::info!(path = %path.display(), "encrypting the database");
+    plain.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+    let encrypted = path.with_extension("encrypting");
+    remove_db_files(&encrypted);
+    plain.execute(
+        "ATTACH DATABASE ?1 AS encrypted KEY ?2",
+        rusqlite::params![encrypted.to_string_lossy(), key],
+    )?;
+    plain.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))?;
+    plain.execute("DETACH DATABASE encrypted", [])?;
+    drop(plain);
+    remove_db_files(path);
+    std::fs::rename(&encrypted, path).map_err(|e| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            Some(e.to_string()),
+        )
+    })?;
+    let db = Connection::open(path)?;
+    db.pragma_update(None, "key", key)?;
+    readable(&db)?;
+    Ok(db)
+}
+
+/// A database file and its WAL companions.
+fn remove_db_files(path: &Path) {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
 }
 
