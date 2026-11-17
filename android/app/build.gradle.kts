@@ -47,6 +47,18 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all {
+                // The core's host build, from scripts/build-android.sh (or `cargo build -p not-ffi --release`).
+                it.systemProperty("jna.library.path", rootProject.file("../target/release").absolutePath)
+                // Robolectric's Android framework reaches into JDK internals.
+                it.jvmArgs("--add-exports=java.base/jdk.internal.ref=ALL-UNNAMED", "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED")
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -73,4 +85,12 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.19.1@aar")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    // Screen tests on the JVM: Robolectric runs the app, Compose drives the UI, and the real Rust
+    // core runs from its host build (target/release), loaded by JNA's desktop jar.
+    testImplementation("org.robolectric:robolectric:4.18")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.test:core-ktx:1.7.0")
+    testImplementation("net.java.dev.jna:jna:5.19.1")
+    testImplementation("androidx.work:work-testing:2.12.0")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

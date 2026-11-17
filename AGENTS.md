@@ -91,8 +91,12 @@ Every feature and every bug fix comes with tests; nothing merges with `make chec
   and pair real `SyncClient`s against a server on a random port. Check escaping of user text.
 - FFI: `crates/not-ffi/tests/ffi.rs` covers the app-facing surface (string dates, error mapping,
   UTF-16 offsets, observers, a store on disk).
-- Android: JVM tests in `android/app/src/test` for Kotlin logic that doesn't call the core (the native
-  library isn't loaded there). Anything else worth testing belongs in the core.
+- Android logic: JVM tests in `android/app/src/test` for Kotlin rules that don't need the core.
+- Android screens: `android/app/src/test/.../screens` run the whole app under Robolectric with
+  Compose UI tests, on the **real Rust core** (its host build in `target/release`, which
+  `scripts/build-android.sh` makes; JNA's desktop jar loads it). Use `TestApp` (WorkManager's test
+  version), `NotAppUi` with real view models, and fresh data per test. Add one for every new screen
+  flow: a click path and what the store holds afterwards.
 - Widgets: debug builds render one widget at every common size, from 1×1 to 4×3:
   `adb shell am start -S -n dev.lysen.not/.widget.WidgetSetupActivity --es sizes Timed` (any
   `WidgetKind` name). Glance rows and columns hold at most 10 children, and widget picker

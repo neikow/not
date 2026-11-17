@@ -29,7 +29,7 @@ import java.io.File
  * Owns the process-wide store so the activity, widgets and background sync share one replica, and
  * starts live sync as soon as anything opens it.
  */
-class NotApp : Application() {
+open class NotApp : Application() {
     private val _changes = MutableStateFlow(0L)
 
     /** Bumped on every change to the store (local or pulled): re-query what is on screen. */
