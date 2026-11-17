@@ -1,0 +1,31 @@
+# Production stack for Portainer (Stacks → Add stack → Web editor). The image is built and pushed
+# by CI on every green push to main; CI then calls the stack webhook so Portainer pulls :latest.
+#
+# Stack environment variables to set in Portainer:
+#   NOT_DB_KEY   encrypts the databases at rest (e.g. `openssl rand -hex 32`). Keep a copy with
+#                your backups: without it the data cannot be read.
+#
+# Nginx Proxy Manager: proxy host not.lysen.dev → http://not-server:8080, Websockets Support on
+# (live sync uses a WebSocket), SSL with Let's Encrypt + Force SSL.
+#
+# Pairing a device: docker exec -it not-server not-server pair
+services:
+  not-server:
+    image: ghcr.io/neikow/not-server:latest
+    container_name: not-server
+    restart: unless-stopped
+    environment:
+      RUST_LOG: info
+      NOT_PUBLIC_URL: https://not.lysen.dev
+      NOT_DB_KEY: ${NOT_DB_KEY:?set NOT_DB_KEY in the stack environment}
+    volumes:
+      - not-data:/data
+    networks:
+      - nginx
+
+volumes:
+  not-data:
+
+networks:
+  nginx:
+    external: true

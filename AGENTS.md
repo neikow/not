@@ -42,7 +42,8 @@ android/           Compose app. Own design system in ui/ (no Material 3). widget
                    core/ (generated Kotlin bindings) and jniLibs/ are build outputs, not sources
 scripts/           build-apple.sh, build-android.sh (core + bindings), fetch-exercises.sh
 docs/              architecture.md, adr/NNNN-*.md
-.github/workflows/ ci.yml: tests on every push/PR, signed APK release on main;
+deploy/            portainer-stack.yml: production server stack (ghcr image, `nginx` network)
+.github/workflows/ ci.yml: tests on every push/PR, signed APK release + server image on main;
                    mac.yml: build and attach the Mac app, run by hand
 ```
 
@@ -126,6 +127,15 @@ over the previous one.
   token with read access to it (Obtainium settings → GitHub personal access token).
 - Renaming the workflow file resets the run number: bump versions past the last release if you do.
 - Local builds keep versionCode 1 and the debug key, so they don't install over a release build.
+
+## Server deploy (ghcr, Portainer)
+
+On a green push to `main`, CI's `server-image` job builds the Dockerfile and pushes
+`ghcr.io/neikow/not-server:latest` (and `:0.1.<run number>`), then POSTs the Portainer stack
+webhook (`PORTAINER_WEBHOOK_URL` secret; skipped with a warning if unset). The stack is
+`deploy/portainer-stack.yml`: no published ports, joins the external `nginx` network, and Nginx
+Proxy Manager forwards `not.lysen.dev` to `http://not-server:8080` with WebSockets on. `NOT_DB_KEY`
+lives in the stack's environment in Portainer; keep a copy with the backups.
 
 ## Gotchas
 
