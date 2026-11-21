@@ -33,8 +33,11 @@ val HabitSummary.pending: Boolean get() = onToday && !doneToday
  * [doneToday] as of [now], for a summary loaded at [loadedAt]: a timed habit's running stretch
  * keeps counting between reloads, so it can meet its goal (or use up its allowance) meanwhile.
  */
-fun HabitSummary.doneAt(now: Long, loadedAt: Long, isToday: Boolean = true): Boolean =
-    timedLive(now, loadedAt, isToday)?.met ?: doneToday
+fun HabitSummary.doneAt(now: Long, loadedAt: Long, isToday: Boolean = true): Boolean {
+    val live = timedLive(now, loadedAt, isToday) ?: return doneToday
+    // A past day nothing was tracked on isn't done, even within an allowance.
+    return live.met && (live.tracked || isToday)
+}
 
 /** [pending] as of [now]; see [doneAt]. */
 fun HabitSummary.pendingAt(now: Long, loadedAt: Long): Boolean = onToday && !doneAt(now, loadedAt)

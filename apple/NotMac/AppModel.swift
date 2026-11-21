@@ -83,8 +83,18 @@ final class AppModel {
     /// Open tasks of `panelListID`, without completed subtasks.
     private(set) var panelRows: [OutlineRow] = []
 
-    /// Habits as of `today`.
+    /// Habits as of `today`: Today's list and the badge.
     private(set) var habits: [HabitSummary] = []
+    /// The day Habits shows and checks in on: today, or one of the last days being caught up on.
+    var habitDay = AppModel.dayString(.now) {
+        didSet { if oldValue != habitDay { reloadHabits() } }
+    }
+    /// Habits as of `habitDay`, for the Habits screen.
+    private(set) var shownHabits: [HabitSummary] = []
+    var isHabitToday: Bool { habitDay == today }
+    /// Ticks every half minute: timed habits can meet their goal between reloads, so live counts
+    /// (the badge, "2 of 4 done") are judged against it.
+    private(set) var clock = Date()
     /// When `habits` was computed: timed habits keep counting from there until the next reload.
     private(set) var habitsLoadedAt = Date()
     var selectedHabitID: String?
@@ -150,6 +160,13 @@ final class AppModel {
         // What's been in the trash for 30 days goes for good (every device doing it is harmless).
         _ = try? store.purgeTrash(nowMs: Self.nowMs())
         reload()
+        Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard let self else { return }
+                self.clock = Date()
+            }
+        }
 
         let defaults = UserDefaults.standard
         // Before pairing, the shared server token was kept here in plain text.
@@ -211,6 +228,9 @@ final class AppModel {
         switch defaults.string(forKey: "show") {
         case "habits":
             selection = .habits
+            // `-daysBack 2` shows the day before yesterday.
+            let back = defaults.integer(forKey: "daysBack")
+            if back > 0, back < habitDays.count { habitDay = habitDays[habitDays.count - 1 - back] }
             // `-habit <title>` opens that habit's inspector.
             let all = run { try store.habits(date: today, nowMs: Self.nowMs(), utcOffsetMinutes: Self.utcOffsetMinutes()) } ?? []
             if let title = defaults.string(forKey: "habit"), let h = all.first(where: { $0.habit.title == title }) {
@@ -233,7 +253,6 @@ final class AppModel {
                 reload()
             }
             selectedWorkoutID = workouts.first?.id
-        case "today": selection = .today
         case "notes":
             selection = .notes(nil)
             let title = defaults.string(forKey: "note")
@@ -577,7 +596,10 @@ final class AppModel {
 
     // MARK: Habits
 
-    var selectedHabit: HabitSummary? { habits.first { $0.habit.id == selectedHabitID } }
+    var selectedHabit: HabitSummary? { shownHabits.first { $0.habit.id == selectedHabitID } }
+
+    /// Today's habits on the to-do and not done yet, as of `clock`: the badge.
+    var pendingHabits: Int { habits.count { $0.pendingAt(clock, loadedAt: habitsLoadedAt) } }
 
     /// The habits on today's to-do, done ones included, for the top of Today.
     var todayHabits: [HabitSummary] { habits.filter(\.onToday) }
@@ -605,9 +627,9 @@ final class AppModel {
         }
     }
 
-    /// A check-in until the goal is met, then back to zero.
-    func toggleHabit(_ id: String) {
-        run { _ = try store.toggleHabit(id: id, date: today) }
+    /// A check-in until the goal is met, then back to zero; on `day`, today by default.
+    func toggleHabit(_ id: String, day: String? = nil) {
+        run { _ = try store.toggleHabit(id: id, date: day ?? today) }
     }
 
     /// A timed habit, starting as "at least 1 h on, normally off"; the inspector sets the rest.
@@ -651,8 +673,16 @@ final class AppModel {
     /// Minutes east of UTC right now (UTC+1 = 60), how the core places local days.
     static func utcOffsetMinutes() -> Int32 { Int32(TimeZone.current.secondsFromGMT() / 60) }
 
-    func logHabit(_ id: String, _ delta: Int64) {
-        run { _ = try store.logHabit(id: id, date: today, delta: delta) }
+    func logHabit(_ id: String, _ delta: Int64, day: String? = nil) {
+        run { _ = try store.logHabit(id: id, date: day ?? today, delta: delta) }
+    }
+
+    /// The last days Habits can show, oldest first, today last.
+    var habitDays: [String] {
+        let now = Self.dayFormatter.date(from: today) ?? .now
+        return (0..<7).reversed().compactMap { back in
+            Calendar.current.date(byAdding: .day, value: -back, to: now).map(Self.dayString)
+        }
     }
 
     func deleteHabit(_ id: String) {
@@ -663,7 +693,7 @@ final class AppModel {
     func moveHabit(from source: Int, to destination: Int) {
         // `destination` counts the moved row itself when moving down.
         let index = source < destination ? destination - 1 : destination
-        run { try store.moveHabit(id: habits[source].habit.id, index: UInt32(index)) }
+        run { try store.moveHabit(id: shownHabits[source].habit.id, index: UInt32(index)) }
     }
 
     /// Check-ins per day (`YYYY-MM-DD`) from `from` through today.
@@ -676,7 +706,10 @@ final class AppModel {
     func refreshToday() {
         let now = Self.dayString(.now)
         guard now != today else { return }
+        let wasToday = isHabitToday
         today = now
+        // Showing today carries on to the new one; a past day stays put while it's in the strip.
+        if wasToday || !habitDays.contains(habitDay) { habitDay = now }
         reloadHabits()
         reloadTasks()
     }
@@ -1065,6 +1098,8 @@ final class AppModel {
 
     private func reloadHabits() {
         habits = run { try store.habits(date: today, nowMs: Self.nowMs(), utcOffsetMinutes: Self.utcOffsetMinutes()) } ?? []
+        shownHabits = isHabitToday ? habits
+            : run { try store.habits(date: habitDay, nowMs: Self.nowMs(), utcOffsetMinutes: Self.utcOffsetMinutes()) } ?? []
         habitsLoadedAt = Date()
         if selectedHabit == nil { selectedHabitID = nil }
     }

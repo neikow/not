@@ -28,10 +28,11 @@ struct TimedLive {
 }
 
 extension HabitSummary {
-    func timedLive(now: Date, loadedAt: Date) -> TimedLive? {
+    /// A past day (`isToday` false) doesn't keep counting.
+    func timedLive(now: Date, loadedAt: Date, isToday: Bool = true) -> TimedLive? {
         guard let rule = habit.timed, let state = timed else { return nil }
         let tracked = state.since != nil
-        let extra = tracked ? max(0, Int64(now.timeIntervalSince(loadedAt) * 1000)) : 0
+        let extra = tracked && isToday ? max(0, Int64(now.timeIntervalSince(loadedAt) * 1000)) : 0
         return TimedLive(
             tracked: tracked,
             on: state.on,
@@ -62,6 +63,14 @@ func stateName(_ rule: TimedRule, on: Bool) -> String {
     rule.usualOn ? (on ? "On" : "Paused") : (on ? "Running" : "Stopped")
 }
 
+/// A past day: "1h 20m off of 2h ✓", "45m of 1h", "Not tracked".
+func pastDayText(_ live: TimedLive) -> String {
+    if live.onMs + live.offMs == 0 { return "Not tracked" }
+    let met = live.met ? " ✓" : ""
+    return live.atMostOff ? "\(durationText(live.countedMs)) off of \(durationText(live.goalMs))\(met)"
+        : "\(durationText(live.countedMs)) of \(durationText(live.goalMs))\(met)"
+}
+
 /// "Paused 25m · 1h 35m left", "Running 12m · 18m to go".
 func timedStatus(_ rule: TimedRule, _ live: TimedLive, now: Date) -> String {
     guard live.tracked, let since = live.since else { return "Not started" }
@@ -82,9 +91,10 @@ struct TimedRingView: View {
     var size: CGFloat = 24
 
     var body: some View {
-        let fraction = live?.ringFraction ?? 0
+        // Nothing tracked yet: an empty ring, not a full allowance.
+        let fraction = live.map { $0.tracked ? $0.ringFraction : 0 } ?? 0
         let over = live.map { $0.atMostOff && $0.leftMs < 0 } ?? false
-        let met = live.map { !$0.atMostOff && $0.met } ?? false
+        let met = live.map { !$0.atMostOff && $0.met && $0.tracked } ?? false
         let color: Color = over ? .red : (live?.atMostOff == true && fraction < 0.25) ? .orange : .accentColor
         ZStack {
             if met {
@@ -111,16 +121,17 @@ struct TimedHabitRow: View {
 
     var body: some View {
         let habit = summary.habit
+        let isToday = model.isHabitToday
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            if let rule = habit.timed, let live = summary.timedLive(now: context.date, loadedAt: model.habitsLoadedAt) {
+            if let rule = habit.timed, let live = summary.timedLive(now: context.date, loadedAt: model.habitsLoadedAt, isToday: isToday) {
                 HStack(spacing: 12) {
                     TimedRingView(live: live)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(habit.title).foregroundStyle(summary.due ? .primary : .secondary)
                         HStack(spacing: 8) {
-                            Text(timedStatus(rule, live, now: context.date))
+                            Text(isToday ? timedStatus(rule, live, now: context.date) : pastDayText(live))
                                 .foregroundStyle(live.atMostOff && live.leftMs < 0 ? AnyShapeStyle(.red)
-                                    : live.tracked && live.on != rule.usualOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                                    : isToday && live.tracked && live.on != rule.usualOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                             if summary.streak > 0 {
                                 Label("\(summary.streak)", systemImage: "flame.fill").foregroundStyle(.orange)
                             }
@@ -129,7 +140,10 @@ struct TimedHabitRow: View {
                         .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
-                    TimedSwitchButton(rule: rule, live: live) { model.switchHabit(habit.id, on: !live.on) }
+                    // Switching is for now; a past day is fixed in the inspector's timeline on the phone.
+                    if isToday {
+                        TimedSwitchButton(rule: rule, live: live) { model.switchHabit(habit.id, on: !live.on) }
+                    }
                 }
                 .padding(.vertical, 4)
             }
@@ -141,6 +155,7 @@ struct TimedHabitRow: View {
 struct TimedSwitchButton: View {
     let rule: TimedRule
     let live: TimedLive
+    var size: ControlSize = .regular
     let action: () -> Void
 
     var body: some View {
@@ -150,7 +165,7 @@ struct TimedSwitchButton: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(leavingUsual ? .secondary : .accentColor)
-        .controlSize(.regular)
+        .controlSize(size)
     }
 }
 

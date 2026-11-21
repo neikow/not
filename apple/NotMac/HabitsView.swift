@@ -11,8 +11,9 @@ struct HabitsView: View {
     var body: some View {
         VStack(spacing: 0) {
             addField
+            DayBar(model: model)
             Divider()
-            if model.habits.isEmpty {
+            if model.shownHabits.isEmpty {
                 ContentUnavailableView(
                     "No habits yet",
                     systemImage: "repeat",
@@ -23,9 +24,24 @@ struct HabitsView: View {
             }
         }
         .navigationTitle("Habits")
-        .navigationSubtitle(Date.now.formatted(date: .complete, time: .omitted))
+        .navigationSubtitle(subtitle)
         .onAppear { addFieldFocused = true }
         .onChange(of: model.addFieldFocusRequests) { addFieldFocused = true }
+    }
+
+    /// "Saturday 21 November · 2 of 4 done" for the day shown; timed habits judged as of now.
+    private var subtitle: String {
+        let date = (AppModel.dayFormatter.date(from: model.habitDay) ?? .now).formatted(.dateTime.weekday(.wide).day().month(.wide))
+        let due = model.shownHabits.filter(\.onToday)
+        let done = due.count { $0.doneAt(model.clock, loadedAt: model.habitsLoadedAt, isToday: model.isHabitToday) }
+        let progress = if due.isEmpty {
+            model.isHabitToday ? "Nothing due today" : "Nothing was due"
+        } else if done == due.count {
+            model.isHabitToday ? "All done for today" : "All done"
+        } else {
+            "\(done) of \(due.count) done"
+        }
+        return "\(date) · \(progress)"
     }
 
     private var addField: some View {
@@ -60,7 +76,7 @@ struct HabitsView: View {
 
     private var habitList: some View {
         List(selection: $model.selectedHabitID) {
-            ForEach(model.habits, id: \.habit.id) { summary in
+            ForEach(model.shownHabits, id: \.habit.id) { summary in
                 HabitRow(summary: summary, model: model)
             }
             .onMove { source, destination in
@@ -68,14 +84,14 @@ struct HabitsView: View {
             }
         }
         .listStyle(.inset)
-        .animation(.snappy, value: model.habits.map(\.habit.id))
+        .animation(.snappy, value: model.shownHabits.map(\.habit.id))
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
                 Button("Show Info") {
                     model.selectedHabitID = id
                     model.showsInspector = true
                 }
-                if let summary = model.habits.first(where: { $0.habit.id == id }), let rule = summary.habit.timed {
+                if model.isHabitToday, let summary = model.shownHabits.first(where: { $0.habit.id == id }), let rule = summary.habit.timed {
                     let on = summary.timed?.on ?? false
                     Button(switchLabel(rule, on: on)) { model.switchHabit(id, on: !on) }
                     Menu("\(stateName(rule, on: !on)) Since") {
@@ -96,9 +112,60 @@ struct HabitsView: View {
         .onDeleteCommand { if let id = model.selectedHabitID { model.deleteHabit(id) } }
         .onKeyPress(.space) {
             guard let id = model.selectedHabitID else { return .ignored }
-            model.toggleHabit(id)
+            model.toggleHabit(id, day: model.habitDay)
             return .handled
         }
+    }
+}
+
+/// The last 7 days, oldest first, the shown one filled in: pick one to catch up on check-ins.
+/// ⌘← and ⌘→ step through them.
+private struct DayBar: View {
+    let model: AppModel
+
+    var body: some View {
+        let days = model.habitDays
+        HStack(spacing: 4) {
+            ForEach(days, id: \.self) { day in
+                let date = AppModel.dayFormatter.date(from: day) ?? .now
+                let selected = day == model.habitDay
+                let isToday = day == model.today
+                Button { model.habitDay = day } label: {
+                    VStack(spacing: 1) {
+                        Text(isToday ? "Today" : date.formatted(.dateTime.weekday(.abbreviated)))
+                            .font(.caption2)
+                            .foregroundStyle(selected ? AnyShapeStyle(.white) : isToday ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        Text(date.formatted(.dateTime.day()))
+                            .font(.callout.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 5)
+                    .background(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), in: .rect(cornerRadius: 9))
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .help(isToday ? "Today" : "Check in on \(date.formatted(date: .complete, time: .omitted))")
+            }
+        }
+        .frame(maxWidth: 520)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
+        .animation(.snappy, value: model.habitDay)
+        .background {
+            // Keyboard: step a day back or forward.
+            Group {
+                Button("") { step(-1, days) }.keyboardShortcut(.leftArrow, modifiers: .command)
+                Button("") { step(1, days) }.keyboardShortcut(.rightArrow, modifiers: .command)
+            }
+            .opacity(0)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func step(_ by: Int, _ days: [String]) {
+        guard let at = days.firstIndex(of: model.habitDay), days.indices.contains(at + by) else { return }
+        model.habitDay = days[at + by]
     }
 }
 
@@ -118,7 +185,7 @@ private struct HabitRow: View {
 
     private var countRow: some View {
         HStack(spacing: 12) {
-            Button { model.toggleHabit(habit.id) } label: {
+            Button { model.toggleHabit(habit.id, day: model.habitDay) } label: {
                 HabitRing(summary: summary)
             }
             .buttonStyle(.plain)
@@ -280,15 +347,16 @@ private struct HabitDetail: View {
             }
 
             if habit.timed != nil {
-                TimedDetailSections(model: model, summary: summary)
+                // Timed habits are about now: today's summary, whatever day the list shows.
+                TimedDetailSections(model: model, summary: model.habits.first { $0.habit.id == habit.id } ?? summary)
             } else {
-            Section("Today") {
+            Section(model.isHabitToday ? "Today" : (AppModel.dayFormatter.date(from: model.habitDay) ?? .now).formatted(.dateTime.weekday(.wide).day().month())) {
                 HStack(spacing: 14) {
                     HabitRing(summary: summary, size: 36)
                     VStack(alignment: .leading) {
                         if habit.isDaily {
                             Text("\(summary.count) of \(habit.goal)").font(.title3.monospacedDigit())
-                            Text(summary.due ? "Due today" : "Not scheduled today")
+                            Text(summary.due ? (model.isHabitToday ? "Due today" : "Was due") : (model.isHabitToday ? "Not scheduled today" : "Wasn't scheduled"))
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
                             Text("\(summary.progress) of \(habit.goal) this \(periodName(habit.period))").font(.title3.monospacedDigit())
@@ -297,9 +365,9 @@ private struct HabitDetail: View {
                     }
                     Spacer()
                     ControlGroup {
-                        Button { model.logHabit(habit.id, -1) } label: { Image(systemName: "minus") }
+                        Button { model.logHabit(habit.id, -1, day: model.habitDay) } label: { Image(systemName: "minus") }
                             .disabled(summary.count == 0)
-                        Button { model.logHabit(habit.id, 1) } label: { Image(systemName: "plus") }
+                        Button { model.logHabit(habit.id, 1, day: model.habitDay) } label: { Image(systemName: "plus") }
                     }
                     .fixedSize()
                 }
@@ -466,6 +534,17 @@ extension HabitSummary {
 
     /// On the day's to-do and not done yet: what badges count.
     var pending: Bool { onToday && !doneToday }
+
+    /// `doneToday` as of `now`, for a summary loaded at `loadedAt`: a timed habit's running stretch
+    /// keeps counting between reloads, so it can meet its goal (or use up its allowance) meanwhile.
+    /// A past day nothing was tracked on isn't done, even within an allowance.
+    func doneAt(_ now: Date, loadedAt: Date, isToday: Bool = true) -> Bool {
+        guard let live = timedLive(now: now, loadedAt: loadedAt, isToday: isToday) else { return doneToday }
+        return live.met && (live.tracked || isToday)
+    }
+
+    /// `pending` as of `now`; see `doneAt`.
+    func pendingAt(_ now: Date, loadedAt: Date) -> Bool { onToday && !doneAt(now, loadedAt: loadedAt) }
 }
 
 func periodName(_ period: HabitPeriod) -> String {

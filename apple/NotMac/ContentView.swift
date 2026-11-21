@@ -84,7 +84,7 @@ private struct Sidebar: View {
                     .tag(view.id == model.todayID ? SidebarItem.today : view.id == model.upcomingID ? .upcoming : .list(view.id))
             }
             Label("Habits", systemImage: "repeat")
-                .badge(model.habits.count { $0.pending })
+                .badge(model.pendingHabits)
                 .tag(SidebarItem.habits)
             Label("Workouts", systemImage: "dumbbell")
                 .tag(SidebarItem.workouts)
@@ -557,6 +557,14 @@ private struct TodayHabitRow: View {
     private var habit: Habit { summary.habit }
 
     var body: some View {
+        if habit.timed != nil {
+            TodayTimedRow(summary: summary, model: model)
+        } else {
+            checkIns
+        }
+    }
+
+    private var checkIns: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Button { withAnimation(.snappy) { model.toggleHabit(habit.id) } } label: {
                 HabitRing(summary: summary, size: 15)
@@ -589,6 +597,41 @@ private struct TodayHabitRow: View {
             Button("Take One Back") { model.logHabit(habit.id, -1) }.disabled(summary.count == 0)
             Divider()
             Button("Show in Habits") { model.openHabit(habit.id) }
+        }
+    }
+}
+
+/// A timed habit in Today: its ring, where it stands (counting live) and its switch, like the
+/// Habits row but sized to sit among tasks.
+private struct TodayTimedRow: View {
+    let summary: HabitSummary
+    let model: AppModel
+
+    var body: some View {
+        let habit = summary.habit
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if let rule = habit.timed, let live = summary.timedLive(now: context.date, loadedAt: model.habitsLoadedAt) {
+                HStack(alignment: .center, spacing: 8) {
+                    TimedRingView(live: live, size: 15)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(habit.title)
+                        Text(timedStatus(rule, live, now: context.date))
+                            .font(.caption)
+                            .foregroundStyle(live.atMostOff && live.leftMs < 0 ? AnyShapeStyle(.red)
+                                : live.tracked && live.on != rule.usualOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                    }
+                    Spacer(minLength: 8)
+                    TimedSwitchButton(rule: rule, live: live, size: .small) { model.switchHabit(habit.id, on: !live.on) }
+                }
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { model.openHabit(habit.id) }
+                .contextMenu {
+                    Button(switchLabel(rule, on: live.on)) { model.switchHabit(habit.id, on: !live.on) }
+                    Divider()
+                    Button("Show in Habits") { model.openHabit(habit.id) }
+                }
+            }
         }
     }
 }

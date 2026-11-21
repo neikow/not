@@ -54,6 +54,10 @@ class TimedRulesTest {
         assertTrue(paused.doneAt(now = 0, loadedAt = 0))
         assertFalse(paused.doneAt(now = 20 * min, loadedAt = 0))
         assertTrue(paused.pendingAt(now = 20 * min, loadedAt = 0))
+        // A past day with nothing tracked isn't done, though nothing went over the allowance.
+        val untracked = summary(wear, 60u, on = false, since = null, onMs = 0, offMs = 0, done = true)
+        assertTrue(untracked.doneAt(now = 0, loadedAt = 0, isToday = true))
+        assertFalse(untracked.doneAt(now = 0, loadedAt = 0, isToday = false))
     }
 
     @Test
