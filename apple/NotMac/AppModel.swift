@@ -809,6 +809,29 @@ final class AppModel {
         }
     }
 
+    /// Imports a Todoist project CSV or a TickTick backup the user picks. Returns what came in
+    /// ("Added 12 tasks from Todoist"), or nil when nothing did (an error shows instead).
+    func importTasks() -> String? {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.commaSeparatedText, .plainText]
+        panel.message = "Choose a Todoist project export or a TickTick backup (CSV)."
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let report = run({
+                try store.importTasks(text: text, fileName: url.lastPathComponent, today: today, utcOffsetMinutes: Self.utcOffsetMinutes())
+            }) else { return nil }
+            let from = report.source == .todoist ? "Todoist" : "TickTick"
+            let added = report.added == 1 ? "1 task" : "\(report.added) tasks"
+            let skipped = report.skippedDone == 0 ? "" : ", left out \(report.skippedDone) done"
+            return "Added \(added) from \(from)\(skipped)."
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     // ---- reminders ----
 
     /// Open tasks starting at a time: what reminders are set for.

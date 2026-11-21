@@ -104,6 +104,7 @@ private struct TrashSettings: View {
 private struct GeneralSettings: View {
     let model: AppModel
     @AppStorage(MenuBarPanel.visibleKey) private var showsMenuBarExtra = true
+    @State private var imported: String?
 
     var body: some View {
         Form {
@@ -114,6 +115,17 @@ private struct GeneralSettings: View {
                     .foregroundStyle(.secondary)
             }
             ReminderSettings(model: model)
+            Section {
+                HStack {
+                    Button("Import from Todoist or TickTick…") { imported = model.importTasks() }
+                    if let imported { Text(imported).foregroundStyle(.secondary) }
+                }
+            } header: {
+                Text("Import")
+            } footer: {
+                Text("A Todoist project export (CSV) or a TickTick backup. Projects and lists become tags; ⌘Z takes the import back.")
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 HStack {
                     Button("Export as JSON…") { model.exportJSON() }

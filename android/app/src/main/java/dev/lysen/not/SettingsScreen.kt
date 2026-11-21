@@ -81,7 +81,7 @@ private enum class SettingsPage(val title: String, val icon: Int, val parent: Se
     Sync("Sync", R.drawable.ic_sync),
     Reminders("Reminders", R.drawable.ic_schedule),
     Trash("Trash", R.drawable.ic_delete),
-    Backup("Export and backup", R.drawable.ic_copy),
+    Backup("Import, export and backup", R.drawable.ic_copy),
     Widgets("Widgets", R.drawable.ic_add_task),
     Workouts("Workouts", R.drawable.ic_fitness),
     Support("Support not", R.drawable.ic_favorite),
@@ -159,7 +159,7 @@ private fun summary(page: SettingsPage, state: UiState): String = when (page) {
     SettingsPage.Sync -> state.syncInfo?.let { "${it.serverUrl.removePrefix("https://").removePrefix("http://")} · ${syncStatus(state.sync)}" } ?: "Not paired"
     SettingsPage.Reminders -> "Task times, morning summary, habits in the evening"
     SettingsPage.Trash -> "Deleted items, kept ${dev.lysen.not.core.trashDays()} days"
-    SettingsPage.Backup -> "Everything as JSON, or a backup file to restore"
+    SettingsPage.Backup -> "Import from Todoist or TickTick, export, backups"
     SettingsPage.Widgets -> "Home screen widgets, quick add"
     SettingsPage.Workouts -> "Rest timer"
     SettingsPage.Support -> "Buy a coffee on Ko-fi"
@@ -271,6 +271,17 @@ private fun BackupPage(toasts: ToastState) {
             store.restoreBackup(bytes)
         }.onSuccess { say("Backup merged in") }
             .onFailure { say(if (it is dev.lysen.not.core.NotException) it.userMessage else "Couldn't read that file") }
+    }
+    val importFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        TaskImport.run(context, uri)
+            .onSuccess { say(TaskImport.message(it)) }
+            .onFailure { say(TaskImport.failure(it)) }
+    }
+    Section("Import", padded = false) {
+        ActionRow(R.drawable.ic_add_task, "From Todoist or TickTick", "A Todoist project CSV, or a TickTick backup; projects and lists become tags") {
+            importFile.launch(TaskImport.types)
+        }
     }
     Section("Export", padded = false) {
         ActionRow(R.drawable.ic_code, "Export as JSON", "Lists, tasks, habits, notes and workouts, readable anywhere") {

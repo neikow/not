@@ -203,6 +203,15 @@ private fun DataStep(
             "Backup restored."
         }.getOrElse { if (it is dev.lysen.not.core.NotException) it.userMessage else "Couldn't read that file." }
     }
+    val importFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        TaskImport.run(context, uri)
+            .onSuccess {
+                onRestored()
+                message = TaskImport.message(it) + "."
+            }
+            .onFailure { message = TaskImport.failure(it) + "." }
+    }
     // Paired just now: on to the next step after a beat, so the confirmation shows.
     LaunchedEffect(state.syncInfo != null) {
         if (state.syncInfo != null) scope.launch { kotlinx.coroutines.delay(900); onNext() }
@@ -210,7 +219,7 @@ private fun DataStep(
     StepHeader(
         R.drawable.ic_sync,
         "Your data",
-        "Start fresh, or bring what you have: a backup file, or your other devices through a sync server.",
+        "Start fresh, or bring what you have: tasks from Todoist or TickTick, a backup file, or your other devices through a sync server.",
     )
     when {
         state.syncInfo != null -> Text("Paired with ${state.syncInfo?.serverUrl}.", style = Not.type.bodyStrong, color = Not.colors.accentInk)
@@ -228,6 +237,7 @@ private fun DataStep(
                 }
             }
             Spacer(Modifier.height(4.dp))
+            Button("Import from Todoist or TickTick", { importFile.launch(TaskImport.types) }, Modifier.fillMaxWidth(), kind = ButtonKind.Secondary, icon = R.drawable.ic_add_task)
             Button("Restore a backup file", { restore.launch(arrayOf("*/*")) }, Modifier.fillMaxWidth(), kind = ButtonKind.Secondary, icon = R.drawable.ic_history)
             message?.let { Text(it, style = Not.type.caption, color = Not.colors.danger) }
             if (pairing) {

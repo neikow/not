@@ -389,3 +389,19 @@ fn starter_tasks_take_a_string_date() {
         Err(NotError::Invalid { .. })
     ));
 }
+
+#[test]
+fn imports_report_what_came_in_and_refuse_other_files() {
+    let db = TempDb::new("import");
+    let store = NotStore::new(db.path()).unwrap();
+    let csv = "TYPE,CONTENT,DESCRIPTION,PRIORITY,INDENT,DATE\ntask,Milk @errands,,1,1,tomorrow\n";
+    let report = store
+        .import_tasks(csv.into(), "Inbox.csv".into(), TODAY.into(), 0)
+        .unwrap();
+    assert_eq!(report.source, not_ffi::ImportSource::Todoist);
+    assert_eq!(report.added, 1);
+    assert!(matches!(
+        store.import_tasks("a,b\n1,2\n".into(), "x.csv".into(), TODAY.into(), 0),
+        Err(NotError::Invalid { .. })
+    ));
+}

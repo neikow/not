@@ -73,6 +73,23 @@ fn schedule(
     })
 }
 
+/// Which app an imported file came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ImportSource {
+    Todoist,
+    TickTick,
+}
+
+/// What an import brought in.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ImportReport {
+    pub source: ImportSource,
+    /// Tasks added, subtasks included.
+    pub added: u32,
+    /// Completed tasks left out.
+    pub skipped_done: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum TokenKind {
     /// The start date.
@@ -1723,6 +1740,28 @@ impl NotStore {
     /// Merges a backup file in, like a sync: nothing on this device is lost or undone.
     pub fn restore_backup(&self, bytes: Vec<u8>) -> Result<(), NotError> {
         Ok(self.store.restore_backup(&bytes)?)
+    }
+
+    /// Imports a Todoist project CSV or a TickTick backup CSV (one undo step). `file_name` names
+    /// the Todoist project ("Groceries.csv" → #groceries); `utc_offset_minutes` is the device's.
+    pub fn import_tasks(
+        &self,
+        text: String,
+        file_name: String,
+        today: String,
+        utc_offset_minutes: i32,
+    ) -> Result<ImportReport, NotError> {
+        let r = self
+            .store
+            .import_tasks(&text, &file_name, date(&today)?, utc_offset_minutes)?;
+        Ok(ImportReport {
+            source: match r.source {
+                not_core::ImportSource::Todoist => ImportSource::Todoist,
+                not_core::ImportSource::TickTick => ImportSource::TickTick,
+            },
+            added: r.added,
+            skipped_done: r.skipped_done,
+        })
     }
 
     // ---- sync ----

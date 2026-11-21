@@ -119,7 +119,7 @@ struct OnboardingSheet: View {
     private var data: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Your data").font(.title.weight(.bold))
-            Text("Start fresh, or bring what you have: a backup file, or your other devices through a sync server.")
+            Text("Start fresh, or bring what you have: tasks from Todoist or TickTick, a backup file, or your other devices through a sync server.")
                 .foregroundStyle(.secondary)
             if pairing {
                 PairForm(model: model)
@@ -129,6 +129,9 @@ struct OnboardingSheet: View {
                 choice("sparkles", "Start fresh", "Nothing to bring yet.") { startFresh() }
                 Toggle("Add a few example tasks that show the basics", isOn: $examples)
                     .padding(.leading, 12)
+                choice("square.and.arrow.down", "Import from Todoist or TickTick", "A Todoist project export or a TickTick backup (CSV).") {
+                    if model.importTasks() != nil { go(2) }
+                }
                 choice("doc.badge.arrow.up", "Restore a backup file", "A .notbackup saved from another device.") {
                     model.restoreBackup()
                     if model.isEstablished { go(2) }
