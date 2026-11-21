@@ -320,6 +320,32 @@ private fun RemindersPage() {
             }, icon = R.drawable.ic_schedule)
         }
     }
+    // Rechecked when the page comes back from the system screen that allows it.
+    var exact by remember { mutableStateOf(reminders.canExact) }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && exact != reminders.canExact) {
+                exact = reminders.canExact
+                reminders.reschedule()
+            }
+        }
+        lifecycle.lifecycle.addObserver(observer)
+        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+    }
+    if (allowed && !exact && Build.VERSION.SDK_INT >= 31) {
+        Section(null) {
+            Text("Reminders may come a few minutes late.", style = Not.type.body)
+            Text("Allow alarms so they ring on the minute.", style = Not.type.caption, color = Not.colors.inkMuted)
+            Button("Allow alarms", {
+                runCatching {
+                    context.startActivity(
+                        android.content.Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:${context.packageName}")),
+                    )
+                }
+            }, icon = R.drawable.ic_schedule)
+        }
+    }
     Section("Tasks", padded = false) {
         ToggleRow("When a task is due", "Tasks with a time, like “fri 9am”; Done and snooze from the notification", s.tasks) {
             reminders.update(s.copy(tasks = it))

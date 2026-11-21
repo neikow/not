@@ -20,7 +20,7 @@ ANDROID_CORE := android/app/src/main/jniLibs/arm64-v8a/libnot_ffi.so
 MAC_APP := build/xcode/Build/Products/Debug/not.app
 
 .PHONY: help server server-down server-logs pair devices serve serve-pair \
-	mac mac-run dmg android android-test release-apk phone emu test lint fmt coverage check clean
+	mac mac-run dmg android android-test release-apk play-bundle phone emu test lint fmt coverage check clean
 
 help: ## List shortcuts
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -84,6 +84,12 @@ android-test: $(ANDROID_CORE) ## Android JVM unit tests
 release-apk: $(ANDROID_CORE) ## Signed release APK, with keys from ~/.android/not-release.env (CI does this on main)
 	source ~/.android/not-release.env && cd android && ./gradlew -q assembleRelease
 	@echo android/app/build/outputs/apk/release/app-release.apk
+
+play-bundle: $(ANDROID_CORE) ## Signed Play bundle (.aab: no Ko-fi, Play's alarm permission), VERSION=X.Y.Z
+	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "VERSION=X.Y.Z, like the release tag"; exit 1; }
+	source ~/.android/not-release.env && cd android && ./gradlew -q bundleRelease -Pstore=play \
+		-PversionName=$(VERSION) -PversionCode=$$(echo $(VERSION) | awk -F. '{print $$1*10000 + $$2*100 + $$3}')
+	@echo android/app/build/outputs/bundle/release/app-release.aab
 
 phone: $(ANDROID_CORE) ## Install on the phone and launch (PHONE=<serial> to pick one)
 	@test -n "$(PHONE)" || { echo "no phone attached: adb pair/connect it first"; exit 1; }

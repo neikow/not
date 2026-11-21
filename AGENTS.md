@@ -84,6 +84,7 @@ deploy/            portainer-stack.yml: production server stack (ghcr image, `ng
 | `make dmg` | Release build as a drag-and-drop installer, `build/not.dmg` (`DMG_LAYOUT=0` skips the Finder layout step) |
 | `make serve`, `make serve-pair` | Run the server locally on :8081, get a pairing code |
 | `make release-apk` | Signed release APK locally (needs `~/.android/not-release.env`) |
+| `make play-bundle VERSION=X.Y.Z` | Signed Play bundle (.aab): `-Pstore=play`, so no Ko-fi and Play's exact-alarm permission |
 
 ## Testing rules
 
@@ -151,6 +152,10 @@ and Nginx Proxy Manager forwards `not.lysen.dev` to `http://not-server:8080` wit
 
 ## Gotchas
 
+- Two Android builds from one source: sideloaded (default; GitHub releases, Obtainium) and Play
+  (`-Pstore=play`): no Support page, and `src/play/AndroidManifest.xml` swaps USE_EXACT_ALARM
+  (alarm/calendar apps only on Play) for SCHEDULE_EXACT_ALARM, which the user allows in
+  Settings → Reminders. Keep store-only differences behind that property (ADR 0018).
 - Latest AndroidX needs `compileSdk = 37`. Release builds don't minify (R8 would need JNA/uniffi
   keep rules).
 - uniffi: an error field can't be named `message` (clashes with Kotlin's `Throwable.message`).

@@ -81,6 +81,10 @@ class Reminders(private val app: NotApp) {
         get() = Build.VERSION.SDK_INT < 33 ||
             ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
+    /** Whether alarms can ring on the minute; when not, Settings → Reminders offers to allow it. */
+    val canExact: Boolean
+        get() = Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()
+
     fun reschedule() {
         val s = _settings.value
         val now = LocalDateTime.now()
@@ -114,7 +118,8 @@ class Reminders(private val app: NotApp) {
 
     private fun setAlarm(at: LocalDateTime, intent: PendingIntent) {
         val millis = at.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-        // USE_EXACT_ALARM is granted at install on 33+; older versions ask for SCHEDULE_EXACT_ALARM.
+        // Sideloaded builds have USE_EXACT_ALARM (granted at install on 33+); Play builds and older
+        // versions need SCHEDULE_EXACT_ALARM, which the user may not have allowed (see canExact).
         if (Build.VERSION.SDK_INT >= 31 && !alarms.canScheduleExactAlarms()) {
             alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, intent)
         } else {

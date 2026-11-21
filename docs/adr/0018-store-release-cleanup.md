@@ -26,7 +26,15 @@ to ask for things, or what it's built on.
   (`supportUrl` in android/gradle.properties, `NOT_SUPPORT_URL` in apple/project.yml); empty
   hides the page.
 
+- **Exact alarms on Play.** Play keeps `USE_EXACT_ALARM` for alarm clock and calendar apps, so
+  Play builds merge `src/play/AndroidManifest.xml`, which asks for `SCHEDULE_EXACT_ALARM`
+  instead. Until the user allows it (a prompt in Settings → Reminders), reminders use inexact
+  alarms. Sideloaded builds keep `USE_EXACT_ALARM`.
+
 ## Consequences
 - Old saved views keep working; `done` is a new word, so no query changes meaning.
 - Tasks archived before this stay reachable from the Logbook and from any `done` view.
-- A Play build is `./gradlew bundleRelease -Pstore=play`.
+- A Play build is `make play-bundle VERSION=X.Y.Z` (`bundleRelease -Pstore=play`).
+- Play Console still needs declarations, made by hand: background location (place reminders, with
+  a demo video), the special-use foreground service (rest timer), and the data safety form
+  (nothing collected; see PRIVACY.md).

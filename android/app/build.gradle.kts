@@ -51,6 +51,12 @@ android {
         }
     }
 
+    // Play builds merge src/play/AndroidManifest.xml over the main one (exact alarm permission).
+    if (((findProperty("store") as String?) ?: "sideload") == "play") {
+        sourceSets.getByName("debug").manifest.srcFile("src/play/AndroidManifest.xml")
+        sourceSets.getByName("release").manifest.srcFile("src/play/AndroidManifest.xml")
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
