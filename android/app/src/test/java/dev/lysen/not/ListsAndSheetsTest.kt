@@ -22,6 +22,17 @@ class ListsAndSheetsTest {
     }
 
     @Test
+    fun anEmptyListSaysWhatNewTasksGet() {
+        fun hint(tags: List<String> = emptyList(), priority: UByte = 0u, start: String? = null, someday: Boolean = false) =
+            newTaskHint(dev.lysen.not.core.ViewDefaults(tags, priority, start, someday), "2026-11-08")
+        assertEquals("Tap + to add one. It gets #work !1, so it shows here.", hint(listOf("work"), 3u))
+        assertEquals("Tap + to add one. It gets today, so it shows here.", hint(start = "2026-11-08"))
+        assertEquals("Tap + to add one. It gets #ideas someday, so it shows here.", hint(listOf("ideas"), someday = true))
+        assertEquals("Tap + to add one. It gets tomorrow, so it shows here.", hint(start = "2026-11-09"))
+        assertEquals("Tap + to add one.", hint())
+    }
+
+    @Test
     fun aTallSheetRestsAtItsPeekOrFullyOpen() {
         val peek = 400f
         val close = 120f

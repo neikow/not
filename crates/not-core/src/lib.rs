@@ -24,6 +24,7 @@ mod workouts;
 pub use catalog::{CatalogExercise, MuscleSets};
 pub use checklist::{Checklist, ChecklistItem, ChecklistMoved, checklist};
 pub use error::{Error, Result};
+pub use filter::Defaults as ViewDefaults;
 pub use habits::{EVERY_DAY, Habit, HabitDay, HabitSummary, Period};
 pub use not_protocol::{IMAGE_SCHEME, PairingLink, ShareInfo, image_mime, is_image_id, share_url};
 pub use notes::{Folder, NoteSort, NoteSummary};

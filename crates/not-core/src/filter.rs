@@ -67,7 +67,7 @@ pub(crate) struct Candidate<'a> {
 
 /// What a task added in a view starts with, so it shows there.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Defaults {
+pub struct Defaults {
     pub tags: Vec<String>,
     pub priority: u8,
     pub start: Option<Date>,

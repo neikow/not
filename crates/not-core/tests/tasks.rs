@@ -827,3 +827,41 @@ fn logbook_and_stale_tasks() {
     s.rename(&find(&s, "c").id, "c2").unwrap();
     assert!(s.stale_tasks(now + 86_400_000, 30).unwrap().is_empty());
 }
+
+// ---- later in a view ----------------------------------------------------------------------------
+
+#[test]
+fn a_list_knows_what_it_will_show_later() {
+    let s = Store::open_in_memory().unwrap();
+    add(&s, INBOX, "Plan trip fri #work");
+    add(&s, INBOX, "Book flights tue #work");
+    add(&s, INBOX, "Write report #work");
+    add(&s, INBOX, "Maybe learn Rust someday #work");
+    add(&s, INBOX, "Groceries fri #home");
+    let parent = add(&s, INBOX, "Move house next month #work");
+    s.add_task(&parent, "Pack books", today()).unwrap();
+
+    // Shown now: what has no later day. Later: soonest first, subtasks with their parent, not
+    // Someday, nothing from other lists.
+    assert_eq!(open(&s, "#work"), ["Write report"]);
+    let later = s.view_later("#work", today()).unwrap();
+    assert_eq!(titles(&later), ["Book flights", "Plan trip", "Move house"]);
+
+    // Views that show dated tasks already have nothing "later".
+    assert!(s.view_later(UPCOMING, today()).unwrap().is_empty());
+    assert!(s.view_later(TODAY, today()).unwrap().is_empty());
+    let saved = s.create_view("Work", "#work").unwrap();
+    assert_eq!(s.view_later(&saved, today()).unwrap().len(), 3);
+}
+
+#[test]
+fn a_list_says_what_new_tasks_get() {
+    let s = Store::open_in_memory().unwrap();
+    let urgent = s.create_view("Urgent", "#work !1 or #home").unwrap();
+    let d = s.view_defaults(&urgent, today()).unwrap();
+    assert_eq!(d.tags, ["work"]);
+    assert_eq!(d.priority, 3);
+    assert_eq!(s.view_defaults("#home", today()).unwrap().tags, ["home"]);
+    assert_eq!(s.view_defaults(TODAY, today()).unwrap().start, Some(today()));
+    assert!(s.view_defaults(INBOX, today()).unwrap().tags.is_empty());
+}

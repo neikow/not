@@ -317,3 +317,30 @@ fn trash_restores_and_empties() {
     assert_eq!(store.empty_trash().unwrap(), 1);
     assert_eq!(store.purge_trash(i64::MAX / 2).unwrap(), 0);
 }
+
+#[test]
+fn an_empty_list_offers_what_comes_later_and_what_new_tasks_get() {
+    let db = TempDb::new("later");
+    let store = NotStore::new(db.path()).unwrap();
+    let add = |input: &str| {
+        store
+            .quick_add(not_ffi::inbox_id(), input.into(), TODAY.into(), None, vec![])
+            .unwrap()
+    };
+    add("Plan trip fri #work");
+    add("Write report #home");
+    let later = store.view_later("#work".into(), TODAY.into()).unwrap();
+    assert_eq!(
+        later.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+        ["Plan trip"]
+    );
+    assert_eq!(later[0].start.as_deref(), Some("2026-11-13"));
+
+    let urgent = store.create_view("Urgent".into(), "#work !1".into()).unwrap();
+    let d = store.view_defaults(urgent, TODAY.into()).unwrap();
+    assert_eq!(
+        (d.tags, d.priority, d.start, d.someday),
+        (vec!["work".to_string()], 3, None, false)
+    );
+    assert!(store.view_defaults("bad id".into(), TODAY.into()).is_err());
+}

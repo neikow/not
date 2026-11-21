@@ -191,9 +191,24 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
                             EmptyState(R.drawable.ic_check, "All done", "Everything in $title is checked off.", Modifier.padding(bottom = 24.dp))
                         state.isInbox ->
                             EmptyState(R.drawable.ic_inbox, "Inbox zero", "Anything you jot down without a #tag lands here first.")
-                        else -> EmptyState(R.drawable.ic_list, "Nothing in $title yet", "Tap + to add the first one: it gets what this list shows.")
+                        // Planned for later: a short line, then those tasks under "Later".
+                        state.later.isNotEmpty() ->
+                            Text(
+                                "Nothing in $title for now. ${state.newTaskHint}",
+                                style = Not.type.body,
+                                color = Not.colors.inkMuted,
+                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                            )
+                        else -> EmptyState(R.drawable.ic_list, "Nothing in $title yet", state.newTaskHint)
                     }
                     }
+                }
+            }
+            // An empty list shows what it will hold once their start day comes.
+            if (outline.open.isEmpty() && state.later.isNotEmpty()) {
+                item(key = "later") { DayHeader("Later", Modifier.animateItem()) }
+                items(state.later, key = { "later-${it.id}" }) { task ->
+                    TaskRow(OutlineRow(task, 0u, false, 0u, 0u), viewModel, Modifier.animateItem(), hideTag = state.selectedViewId.removePrefix("#").takeIf { state.isTag } ?: soleTag(state.selectedView?.query), onHold = { held = task })
                 }
             }
             if (state.isUpcoming) {
@@ -232,6 +247,8 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
                     }
                 }
             }
+            // Room under the last row, clear of the tab bar, to swipe to the next list.
+            item(key = "swipe-room") { Spacer(Modifier.fillMaxWidth().height(SWIPE_ROOM)) }
         }
 
         // The + beside the tab bar opens the composer above the keyboard.
@@ -1070,3 +1087,6 @@ private fun SyncStatus(state: SyncState?, onClick: () -> Unit) {
 @Composable
 fun TextPromptDialog(title: String, confirm: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit, initial: String = "") =
     PromptDialog(title, confirm, onConfirm, onDismiss, initial)
+
+/** Empty space under a task list's last row: somewhere to swipe that isn't a row. */
+private val SWIPE_ROOM = 96.dp

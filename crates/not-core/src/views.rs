@@ -332,6 +332,61 @@ impl Store {
         Ok(outline)
     }
 
+    /// Open tasks a view leaves out only because they start on a later day: what it will show once
+    /// that day comes, soonest first. A subtask goes with its parent. Empty for views that already
+    /// show such tasks (Today, Upcoming, Someday, and queries about dates).
+    pub fn view_later(&self, id: &str, today: Date) -> Result<Vec<Task>> {
+        let query = self.view_query(id)?;
+        let ctx = Context::new(self.all_tasks()?, today);
+        // Its start day, or for a subtask held back by its parent, the parent's.
+        let start = |i: usize| {
+            let mut at = i;
+            loop {
+                let t = &ctx.tasks[at];
+                if let Some(s) = t
+                    .start
+                    .as_deref()
+                    .and_then(|d| Date::parse(d).ok())
+                    .filter(|s| *s > today)
+                {
+                    return Some(s);
+                }
+                at = *t.parent_id.as_ref().and_then(|p| ctx.index.get(p))?;
+            }
+        };
+        let later: HashSet<usize> = (0..ctx.tasks.len())
+            .filter(|&i| {
+                let t = &ctx.tasks[i];
+                let candidate = ctx.candidate(i);
+                t.completed_at.is_none()
+                    && !ctx.under_done[i]
+                    && ctx.deferred[i]
+                    // Someday isn't "later": it has no day to come.
+                    && !t.someday
+                    && start(i).is_some()
+                    && !query.matches(&candidate, today)
+                    && query.matches_done(&candidate, today)
+            })
+            .collect();
+        let mut tops: Vec<usize> = later
+            .iter()
+            .copied()
+            .filter(|&i| !ctx.has_ancestor_in(i, &later))
+            .collect();
+        tops.sort_by(|&a, &b| {
+            start(a)
+                .cmp(&start(b))
+                .then_with(|| ctx.tasks[a].title.cmp(&ctx.tasks[b].title))
+        });
+        Ok(tops.into_iter().map(|i| ctx.tasks[i].clone()).collect())
+    }
+
+    /// What a task added in a view starts with, so it shows there: its tags, priority, start day
+    /// or Someday.
+    pub fn view_defaults(&self, id: &str, today: Date) -> Result<crate::filter::Defaults> {
+        Ok(self.view_query(id)?.defaults(today))
+    }
+
     /// Moves a task shown at the top level of a view right before `before` (another one shown
     /// there), or to the end when `None`. A sorted view switches to Manual, starting from the order
     /// shown, in the same undo step.

@@ -42,6 +42,10 @@ data class UiState(
     /** A view id, or a `#tag` being browsed. */
     val selectedViewId: String = INBOX_ID,
     val outline: Outline = Outline(emptyList(), emptyList()),
+    /** With nothing open: what the list will show once its start day comes, soonest first. */
+    val later: List<TaskItem> = emptyList(),
+    /** For the empty state: what a task added here gets, so it shows in this list. */
+    val newTaskHint: String = "",
     /** Today only: the habits on today's to-do, done ones included, in the user's order. */
     val todayHabits: List<HabitSummary> = emptyList(),
     /** Tasks completed over a day ago, latest first; Settings → Archive. */
@@ -406,6 +410,8 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
     private fun reloadTasks() {
         val viewId = _state.value.selectedViewId
         val outline = run { store.viewOutline(viewId, today()) } ?: return
+        val later = if (outline.open.isEmpty()) run { store.viewLater(viewId, today()) }.orEmpty() else emptyList()
+        val hint = run { store.viewDefaults(viewId, today()) }?.let { newTaskHint(it, today()) }.orEmpty()
         val archive = run { store.archive() }.orEmpty()
         val habits = if (viewId == TODAY_ID) run { store.habitsNow(today()) }.orEmpty().filter { it.onToday } else emptyList()
         _state.update { s ->
@@ -413,6 +419,8 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
             val open = s.openTask?.let { runCatching { store.taskById(it.id) }.getOrNull() }
             s.copy(
                 outline = outline,
+                later = later,
+                newTaskHint = hint,
                 todayHabits = habits,
                 archive = archive,
                 openTask = open,
@@ -449,3 +457,27 @@ internal val NotException.userMessage: String
         is NotException.Invalid -> detail
         is NotException.Internal -> detail
     }
+
+
+/**
+ * "Tap + to add one. It gets #work !1, so it shows here.": what a task added in a list starts
+ * with ([defaults], from its filter), said in the words of quick add. Plain when it gets nothing.
+ */
+fun newTaskHint(defaults: dev.lysen.not.core.ViewDefaults, today: String): String {
+    val words = buildList {
+        defaults.tags.forEach { add("#$it") }
+        if (defaults.priority > 0u) add("!${4 - defaults.priority.toInt()}")
+        defaults.start?.let { start ->
+            val tomorrow = runCatching { java.time.LocalDate.parse(today).plusDays(1).toString() }.getOrNull()
+            add(
+                when (start) {
+                    today -> "today"
+                    tomorrow -> "tomorrow"
+                    else -> start
+                },
+            )
+        }
+        if (defaults.someday) add("someday")
+    }
+    return if (words.isEmpty()) "Tap + to add one." else "Tap + to add one. It gets ${words.joinToString(" ")}, so it shows here."
+}

@@ -277,6 +277,17 @@ impl From<not_core::Error> for NotError {
     }
 }
 
+/// What a task added in a view starts with, so it shows there.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ViewDefaults {
+    pub tags: Vec<String>,
+    /// 0 for none, up to 3 (`!1`).
+    pub priority: u8,
+    /// `YYYY-MM-DD`.
+    pub start: Option<String>,
+    pub someday: bool,
+}
+
 /// A view: built in (Inbox, Today, Upcoming, Someday) or a saved smart list.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct TaskView {
@@ -1601,6 +1612,27 @@ impl NotStore {
     /// Deletes everything in the archive (one undo step). Returns how many tasks.
     pub fn clear_archive(&self) -> Result<u32, NotError> {
         Ok(self.store.clear_archive(now_millis())?)
+    }
+
+    /// Open tasks a view will show once their start day comes, soonest first: for an empty list.
+    pub fn view_later(&self, view: String, today: String) -> Result<Vec<TaskItem>, NotError> {
+        Ok(self
+            .store
+            .view_later(&view, date(&today)?)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// What a task added in `view` starts with (its tags, priority, start day or Someday).
+    pub fn view_defaults(&self, view: String, today: String) -> Result<ViewDefaults, NotError> {
+        let d = self.store.view_defaults(&view, date(&today)?)?;
+        Ok(ViewDefaults {
+            tags: d.tags,
+            priority: d.priority,
+            start: d.start.map(|s| s.to_string()),
+            someday: d.someday,
+        })
     }
 
     /// A view's tasks as shown (`view` may also be a `#tag` query, to browse a tag).
