@@ -97,6 +97,10 @@ final class AppModel {
     /// Ticks every half minute: timed habits can meet their goal between reloads, so live counts
     /// (the badge, "2 of 4 done") are judged against it.
     private(set) var clock = Date()
+    /// Bumped when a menu bar timer setting changes (they live in UserDefaults, unobserved).
+    private(set) var timedBarVersion = 0
+
+    func timedBarChanged() { timedBarVersion += 1 }
     /// When `habits` was computed: timed habits keep counting from there until the next reload.
     private(set) var habitsLoadedAt = Date()
     var selectedHabitID: String?
@@ -862,6 +866,24 @@ final class AppModel {
     /// Keeps image data (downscaled first) for notes; its id, for `imageMarkup`.
     func addImage(_ data: Data) -> String? {
         run { try store.addImage(bytes: data) }
+    }
+
+    /// From Services: a task in the Inbox, a link kept in its notes.
+    @discardableResult
+    func addSharedTask(title: String, link: String) -> String? {
+        refreshToday()
+        guard let id = run({ try store.addTask(target: inboxID, title: title, today: today) }) else { return nil }
+        if !link.isEmpty { run { try store.setNotes(id: id, notes: link) } }
+        return id
+    }
+
+    /// From Services: a note from text and pictures (downscaled), pictures after the text.
+    @discardableResult
+    func addSharedNote(body: String, images: [Data]) -> String? {
+        let pictures = images.compactMap { NoteImageEncoder.encode($0) }.compactMap { addImage($0) }.map { imageMarkup(id: $0) }
+        let all = ([body.isEmpty ? nil : body] + pictures).compactMap { $0 }.joined(separator: "\n")
+        guard !all.isEmpty else { return nil }
+        return run { try store.createNote(folderId: nil, body: all) }
     }
 
     /// Picks image files and puts them into the open note at the caret.

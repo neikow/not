@@ -27,6 +27,13 @@ struct NotMacApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        // A timed habit out of its usual state, if its timer is switched on here.
+        MenuBarExtra(isInserted: Binding(get: { !appDelegate.model.menuBarTimed.isEmpty }, set: { _ in })) {
+            TimedBarMenu(model: appDelegate.model)
+        } label: {
+            TimedBarLabel(model: appDelegate.model)
+        }
+
         Settings {
             SettingsView(model: appDelegate.model)
         }
@@ -112,6 +119,15 @@ private struct TaskCommands: Commands {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
+    private var services: ServiceProvider?
+
+    /// Services → Add to not / New not Note, from any app.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let provider = ServiceProvider(model: model)
+        services = provider
+        NSApp.servicesProvider = provider
+        NSUpdateDynamicServices()
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 

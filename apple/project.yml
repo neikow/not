@@ -26,6 +26,16 @@ targets:
         CFBundleDisplayName: not
         LSApplicationCategoryType: public.app-category.productivity
         NSCalendarsFullAccessUsageDescription: Shows your calendar events beside your tasks in Today and Upcoming, read only.
+        # Services menu: send text, links and pictures from any app (see Services.swift).
+        NSServices:
+          - NSMenuItem: { default: Add to not }
+            NSMessage: addToNot
+            NSPortName: not
+            NSSendTypes: [public.utf8-plain-text, public.url, public.file-url, public.image, NSStringPboardType]
+          - NSMenuItem: { default: New not Note }
+            NSMessage: newNote
+            NSPortName: not
+            NSSendTypes: [public.utf8-plain-text, public.url, public.file-url, public.image, NSStringPboardType]
         CFBundleURLTypes:
           - CFBundleURLName: dev.lysen.not
             CFBundleURLSchemes: [not]

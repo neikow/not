@@ -263,7 +263,8 @@ struct TimedDetailSections: View {
                 Stepper(value: Binding(get: { Int(rule.nudgeMinutes) }, set: { save(rule: TimedRule(atMostOff: rule.atMostOff, usualOn: rule.usualOn, nudgeMinutes: UInt32($0))) }), in: 0...180, step: 15) {
                     Text(rule.nudgeMinutes == 0 ? "No reminder" : "Remind after \(durationText(Int64(rule.nudgeMinutes) * 60_000)) \(stateName(rule, on: !rule.usualOn).lowercased())")
                 }
-                Text("Reminders and the lock-screen notification are on your phone.")
+                TimedBarSettings(model: model, habit: habit, rule: rule)
+                Text("The reminder rings on this Mac too once switched on in Settings → General.")
                     .font(.caption).foregroundStyle(.secondary)
                 WeekdayPicker(days: Binding(get: { habit.days }, set: { save(days: $0) }))
             }

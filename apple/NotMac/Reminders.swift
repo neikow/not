@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import NotCore
 import SwiftUI
@@ -13,10 +14,15 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
     static let digestAtKey = "remindDigestAt"
     static let habitsKey = "remindHabits"
     static let habitsAtKey = "remindHabitsAt"
+    static let timedKey = "remindTimed"
 
     nonisolated private static let category = "task"
     nonisolated private static let done = "done"
     nonisolated private static let snooze = "snooze"
+    /// Timed habit nudges: one category per button title, since titles are fixed per category.
+    nonisolated private static let timedResume = "timedResume"
+    nonisolated private static let timedStop = "timedStop"
+    nonisolated private static let switchBack = "switchBack"
     /// macOS keeps at most 64 pending requests per app.
     private static let maxTasks = 50
 
@@ -34,6 +40,7 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
             Self.digestAtKey: 9 * 60,
             Self.habitsKey: false,
             Self.habitsAtKey: 20 * 60,
+            Self.timedKey: false,
         ])
         center.delegate = self
         center.setNotificationCategories([
@@ -45,6 +52,8 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
                 ],
                 intentIdentifiers: []
             ),
+            UNNotificationCategory(identifier: Self.timedResume, actions: [UNNotificationAction(identifier: Self.switchBack, title: "Resume")], intentIdentifiers: []),
+            UNNotificationCategory(identifier: Self.timedStop, actions: [UNNotificationAction(identifier: Self.switchBack, title: "Stop")], intentIdentifiers: []),
         ])
     }
 
@@ -64,8 +73,11 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
         let wantsTasks = defaults.bool(forKey: Self.tasksKey)
         let wantsDigest = defaults.bool(forKey: Self.digestKey)
         let wantsHabits = defaults.bool(forKey: Self.habitsKey)
+        let wantsTimed = defaults.bool(forKey: Self.timedKey)
         center.removeAllPendingNotificationRequests()
-        guard wantsTasks || wantsDigest || wantsHabits else { return }
+        // A stretch that ended has nothing left to say.
+        if wantsTimed { clearEndedNudges(model) }
+        guard wantsTasks || wantsDigest || wantsHabits || wantsTimed else { return }
         guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return }
 
         let now = Date()
@@ -105,9 +117,45 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
                 requests.append(request("habits", content, at: at))
             }
         }
+        if wantsTimed {
+            requests += timedNudges(model, now: now)
+        }
         for request in requests {
             try? await center.add(request)
         }
+    }
+
+    /// A timed habit out of its usual state, once its stretch reaches the habit's reminder delay:
+    /// "Retainer paused for 30m", with a button to switch back. One per stretch (its id has the
+    /// stretch's start), and only ahead of now, so nothing repeats.
+    private func timedNudges(_ model: AppModel, now: Date) -> [UNNotificationRequest] {
+        model.habits.compactMap { summary in
+            guard let rule = summary.habit.timed, rule.nudgeMinutes > 0, let state = summary.timed,
+                  let since = state.since, state.on != rule.usualOn else { return nil }
+            let at = Date(timeIntervalSince1970: Double(since) / 1000 + Double(rule.nudgeMinutes) * 60)
+            guard at > now else { return nil }
+            let content = UNMutableNotificationContent()
+            let stretch = durationText(Int64(rule.nudgeMinutes) * 60_000)
+            content.title = rule.usualOn ? "\(summary.habit.title) paused for \(stretch)" : "\(summary.habit.title) running for \(stretch)"
+            content.body = rule.usualOn ? "Resume it when it's back on." : "Stop it if you're done."
+            content.sound = .default
+            content.categoryIdentifier = rule.usualOn ? Self.timedResume : Self.timedStop
+            content.userInfo = ["habit": summary.habit.id, "on": rule.usualOn]
+            return UNNotificationRequest(
+                identifier: "timed-\(summary.habit.id)",
+                content: content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: at.timeIntervalSince(now), repeats: false)
+            )
+        }
+    }
+
+    /// Takes a delivered nudge away once its habit is back in its usual state.
+    private func clearEndedNudges(_ model: AppModel) {
+        let ended = model.habits.compactMap { summary -> String? in
+            guard let rule = summary.habit.timed, summary.timed?.on == rule.usualOn else { return nil }
+            return "timed-\(summary.habit.id)"
+        }
+        center.removeDeliveredNotifications(withIdentifiers: ended)
     }
 
     private func request(_ id: String, _ content: UNNotificationContent, at date: Date) -> UNNotificationRequest {
@@ -142,6 +190,19 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let content = response.notification.request.content
+        if let habit = content.userInfo["habit"] as? String {
+            let on = content.userInfo["on"] as? Bool ?? true
+            let switching = response.actionIdentifier == Self.switchBack
+            await MainActor.run {
+                if switching {
+                    model?.switchHabit(habit, on: on)
+                } else {
+                    model?.openHabit(habit)
+                    NSApp.activate()
+                }
+            }
+            return
+        }
         guard let id = content.userInfo["id"] as? String else { return }
         switch response.actionIdentifier {
         case Self.snooze:
@@ -169,6 +230,7 @@ struct ReminderSettings: View {
     @AppStorage(Reminders.digestAtKey) private var digestAt = 9 * 60
     @AppStorage(Reminders.habitsKey) private var habits = false
     @AppStorage(Reminders.habitsAtKey) private var habitsAt = 20 * 60
+    @AppStorage(Reminders.timedKey) private var timed = false
 
     var body: some View {
         Section {
@@ -177,13 +239,14 @@ struct ReminderSettings: View {
             if digest { TimeField(label: "Summary at", minutes: $digestAt) }
             Toggle("Evening nudge for habits left", isOn: $habits)
             if habits { TimeField(label: "Nudge at", minutes: $habitsAt) }
+            Toggle("When a timed habit is paused or running too long", isOn: $timed)
         } header: {
             Text("Reminders")
         } footer: {
-            Text("On this Mac only. The summary and nudge are off by default here, since the phone sends them too.")
+            Text("On this Mac only. The summary and the habit reminders are off by default here, since the phone sends them too. A timed habit's delay is set in its Info.")
                 .foregroundStyle(.secondary)
         }
-        .onChange(of: [tasks, digest, habits]) { model.reminders.reschedule() }
+        .onChange(of: [tasks, digest, habits, timed]) { model.reminders.reschedule() }
         .onChange(of: [digestAt, habitsAt]) { model.reminders.reschedule() }
     }
 }
