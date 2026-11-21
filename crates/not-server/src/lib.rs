@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path as UrlPath, Query, Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -44,6 +44,28 @@ const CODE_LEN: usize = 10;
 const MAX_DEVICE_NAME: usize = 64;
 const LAST_SEEN_GRANULARITY_MS: i64 = 60_000;
 
+/// Wrong pairing codes the whole server takes in [`PAIR_WINDOW_MS`] before pairing pauses until
+/// the window ends. Codes are out of reach of guessing anyway (50 bits, minutes to live); this
+/// keeps a flood of guesses from filling the logs and the database lock.
+const PAIR_FAILURES_PER_WINDOW: u32 = 20;
+const PAIR_WINDOW_MS: i64 = 10 * 60_000;
+
+/// Counts wrong pairing codes in the current window (see [`PAIR_FAILURES_PER_WINDOW`]).
+#[derive(Debug, Default)]
+struct PairThrottle {
+    window_start: i64,
+    failures: u32,
+}
+
+/// What a pairing attempt came to.
+pub enum PairOutcome {
+    Paired(PairResponse),
+    /// Wrong, used or expired code.
+    Refused,
+    /// Too many wrong codes lately: try again once the window ends.
+    Paused,
+}
+
 /// The paired device a request is authenticated as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DeviceId(i64);
@@ -66,6 +88,7 @@ pub struct AppState {
     /// The server's own copy of the workspace, for the web pages and shared lists (ADR 0009).
     /// `None` if it couldn't be opened; syncing still works without it.
     replica: Option<Arc<not_core::Store>>,
+    throttle: Arc<Mutex<PairThrottle>>,
 }
 
 impl AppState {
@@ -154,6 +177,7 @@ impl AppState {
             db: Arc::new(Mutex::new(db)),
             pokes: broadcast::channel(64).0,
             replica: replica.map(Arc::new),
+            throttle: Arc::default(),
         })
     }
 
@@ -405,6 +429,35 @@ impl AppState {
     }
 
     /// Consumes `code` and registers a device. `None` if the code is unknown, used or expired.
+    /// [`AppState::pair`] behind the throttle, as of `now`: the way in for the API and web login.
+    pub fn pair_throttled(&self, code: &str, name: &str, now: i64) -> rusqlite::Result<PairOutcome> {
+        {
+            let mut t = self.throttle.lock().unwrap();
+            if now - t.window_start >= PAIR_WINDOW_MS {
+                *t = PairThrottle {
+                    window_start: now,
+                    failures: 0,
+                };
+            }
+            if t.failures >= PAIR_FAILURES_PER_WINDOW {
+                return Ok(PairOutcome::Paused);
+            }
+        }
+        Ok(match self.pair(code, name)? {
+            Some(paired) => PairOutcome::Paired(paired),
+            None => {
+                let mut t = self.throttle.lock().unwrap();
+                t.failures += 1;
+                if t.failures == PAIR_FAILURES_PER_WINDOW {
+                    tracing::warn!(
+                        "{PAIR_FAILURES_PER_WINDOW} wrong pairing codes: pairing paused for a while"
+                    );
+                }
+                PairOutcome::Refused
+            }
+        })
+    }
+
     fn pair(&self, code: &str, name: &str) -> rusqlite::Result<Option<PairResponse>> {
         let Some(code) = normalize_code(code) else {
             return Ok(None);
@@ -491,7 +544,27 @@ pub fn router(state: AppState) -> Router {
         .nest(API_PREFIX, api)
         .merge(web::routes())
         .route("/healthz", get(|| async { "ok" }))
+        .layer(middleware::map_response(security_headers))
         .with_state(state)
+}
+
+/// On every response. No referrer, so a link out of a shared page (`/s/<token>`) doesn't hand
+/// its token to the other site; no framing; no sniffing. The CSP leaves scripts and styles alone
+/// (the pages inline both) and only closes what they never use.
+async fn security_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    for (name, value) in [
+        ("referrer-policy", "no-referrer"),
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "DENY"),
+        (
+            "content-security-policy",
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
+        ),
+    ] {
+        headers.insert(name, HeaderValue::from_static(value));
+    }
+    response
 }
 
 async fn require_device(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
@@ -512,16 +585,19 @@ async fn require_device(State(state): State<AppState>, mut request: Request, nex
 }
 
 async fn pair(State(state): State<AppState>, Json(request): Json<PairRequest>) -> Result<Response, AppError> {
-    Ok(match state.pair(&request.code, &request.name)? {
-        Some(paired) => {
-            tracing::info!(id = paired.device.id, name = %paired.device.name, "device paired");
-            Json(paired).into_response()
-        }
-        None => {
-            tracing::warn!("pairing attempt with an invalid or expired code");
-            StatusCode::UNAUTHORIZED.into_response()
-        }
-    })
+    Ok(
+        match state.pair_throttled(&request.code, &request.name, now_millis())? {
+            PairOutcome::Paired(paired) => {
+                tracing::info!(id = paired.device.id, name = %paired.device.name, "device paired");
+                Json(paired).into_response()
+            }
+            PairOutcome::Refused => {
+                tracing::warn!("pairing attempt with an invalid or expired code");
+                StatusCode::UNAUTHORIZED.into_response()
+            }
+            PairOutcome::Paused => StatusCode::TOO_MANY_REQUESTS.into_response(),
+        },
+    )
 }
 
 async fn create_pairing(State(state): State<AppState>) -> Result<Json<PairingCode>, AppError> {

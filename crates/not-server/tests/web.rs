@@ -575,3 +575,59 @@ async fn notes_list_by_folder_and_render_as_escaped_markdown() {
     let (status, _, _) = send(&state, get("/n/999@1", Some(&cookie))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn pages_send_no_referrer_and_refuse_framing() {
+    let state = AppState::in_memory().unwrap();
+    for path in ["/login", "/s/not-a-token", "/healthz"] {
+        let response = not_server::router(state.clone())
+            .oneshot(get(path, None))
+            .await
+            .unwrap();
+        let headers = response.headers();
+        assert_eq!(headers["referrer-policy"], "no-referrer", "{path}");
+        assert_eq!(headers["x-frame-options"], "DENY", "{path}");
+        assert!(
+            headers["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("frame-ancestors 'none'"),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn too_many_wrong_codes_pause_pairing_for_a_while() {
+    let state = AppState::in_memory().unwrap();
+    let good = state.create_pairing_code().unwrap();
+    // The real clock, as web login uses it.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    for _ in 0..20 {
+        assert!(matches!(
+            state.pair_throttled("AAAAA-AAAAA", "Guess", now).unwrap(),
+            not_server::PairOutcome::Refused
+        ));
+    }
+    assert!(
+        matches!(
+            state.pair_throttled(&good.code, "Phone", now + 1).unwrap(),
+            not_server::PairOutcome::Paused
+        ),
+        "even a good code waits"
+    );
+    let (status, location, _) = send(&state, post("/login", &format!("code={}", good.code), None)).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location.as_deref(), Some("/login?failed=busy"));
+
+    // Ten minutes on, a new window: the good code still works (it hasn't been used).
+    assert!(matches!(
+        state
+            .pair_throttled(&good.code, "Phone", now + 10 * 60_000)
+            .unwrap(),
+        not_server::PairOutcome::Paired(_)
+    ));
+}

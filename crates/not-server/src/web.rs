@@ -59,10 +59,12 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
 }
 
 async fn login_page(Query(q): Query<LoginQuery>) -> Html<String> {
-    let error = if q.failed.is_some() {
-        r#"<p class="error">That code didn't work: it may have expired or been used. Make a new one.</p>"#
-    } else {
-        ""
+    let error = match q.failed.as_deref() {
+        Some("busy") => r#"<p class="error">Too many wrong codes lately. Try again in a few minutes.</p>"#,
+        Some(_) => {
+            r#"<p class="error">That code didn't work: it may have expired or been used. Make a new one.</p>"#
+        }
+        None => "",
     };
     page(
         "Sign in",
@@ -100,8 +102,8 @@ async fn login(State(state): State<AppState>, headers: HeaderMap, Form(form): Fo
     } else {
         form.name.trim()
     };
-    match state.pair(&form.code, name) {
-        Ok(Some(paired)) => {
+    match state.pair_throttled(&form.code, name, crate::now_millis()) {
+        Ok(crate::PairOutcome::Paired(paired)) => {
             tracing::info!(id = paired.device.id, name = %paired.device.name, "browser paired");
             let cookie = format!(
                 "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{}",
@@ -114,7 +116,8 @@ async fn login(State(state): State<AppState>, headers: HeaderMap, Form(form): Fo
                 .insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
             response
         }
-        Ok(None) => Redirect::to("/login?failed=1").into_response(),
+        Ok(crate::PairOutcome::Refused) => Redirect::to("/login?failed=1").into_response(),
+        Ok(crate::PairOutcome::Paused) => Redirect::to("/login?failed=busy").into_response(),
         Err(e) => server_error(e),
     }
 }

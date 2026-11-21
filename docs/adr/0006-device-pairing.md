@@ -50,3 +50,9 @@ hide each phone's updates from the other. The server is the backup; a new phone 
 - Pairing over plain `http://` sends the code and token in clear; use HTTPS or Tailscale.
 - `not://` URLs and Android intents never pair a device, since any web page or app could trigger them
   and point sync at another server. The debug-only intent extras are the exception, for scripted tests.
+
+## Addendum (2026-11-21): throttling
+After 20 wrong codes in 10 minutes (server-wide, API and web login alike), pairing answers 429
+until the window ends. Codes were already out of reach of guessing; this keeps a flood of guesses
+from filling the logs. Every response also carries `Referrer-Policy: no-referrer` (share links
+hold their token in the path), `X-Frame-Options: DENY`, `nosniff` and a CSP that forbids framing.
