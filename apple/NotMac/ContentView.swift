@@ -325,7 +325,9 @@ private struct TaskListView: View {
     private var parsed: ParsedTask? { model.parse(draft.text, dismissed: draft.dismissed) }
 
     private var isEmpty: Bool {
-        model.outline.open.isEmpty && model.outline.completed.isEmpty && !(model.isToday && !model.todayHabits.isEmpty)
+        model.outline.open.isEmpty && model.outline.completed.isEmpty
+            && !(model.isToday && (!model.todayHabits.isEmpty || !model.calendar.on(model.today).isEmpty))
+            && !(model.isUpcoming && model.calendar.events.contains { $0.day > model.today })
     }
 
     /// The last open row under the task getting a subtask: the inline field goes after it.
@@ -449,6 +451,14 @@ private struct TaskListView: View {
 
     private var taskList: some View {
         List(selection: $model.selectedTaskID) {
+            // The day's calendar, read only, above what there is to do.
+            if model.isToday {
+                ForEach(model.calendar.on(model.today)) { event in
+                    EventRow(event: event, overlay: model.calendar)
+                        .selectionDisabled()
+                        .moveDisabled(true)
+                }
+            }
             // Today's habits lead, as rows like the tasks under them.
             if model.isToday {
                 ForEach(model.todayHabits, id: \.habit.id) { summary in
@@ -457,6 +467,19 @@ private struct TaskListView: View {
                         .moveDisabled(true)
                 }
             }
+            if model.isUpcoming {
+                // By day, with the calendar's events of that day: Tomorrow, the weekdays, Later.
+                ForEach(upcomingDays(model.outline.open, events: model.calendar.events, today: model.today), id: \.label) { day in
+                    Section(day.label) {
+                        ForEach(day.events) { event in
+                            EventRow(event: event, overlay: model.calendar).selectionDisabled()
+                        }
+                        ForEach(day.rows, id: \.task.id) { row in
+                            TaskRowView(row: row, model: model)
+                        }
+                    }
+                }
+            } else {
             ForEach(model.outline.open, id: \.task.id) { row in
                 TaskRowView(row: row, model: model, hiddenTag: model.selectedListID.flatMap(soleTag))
                 if row.task.id == subtaskAnchorID, let parent = model.addingSubtaskTo,
@@ -469,6 +492,7 @@ private struct TaskListView: View {
             }
             .onMove { source, destination in
                 if let from = source.first { model.moveOpenRow(from: from, to: destination) }
+            }
             }
 
             if !model.outline.completed.isEmpty {
@@ -1076,4 +1100,42 @@ private struct SwipeCatcher: NSViewRepresentable {
             }
         }
     }
+}
+
+
+/// A day of Upcoming: its events and the tasks starting (or due) then.
+struct UpcomingDay {
+    let label: String
+    var events: [CalendarEvent]
+    var rows: [OutlineRow]
+}
+
+/// Upcoming's rows and the week's events by day: Tomorrow, then weekdays, then Later. A subtask
+/// stays with its parent. Mirrors `byDay` on Android.
+@MainActor
+func upcomingDays(_ rows: [OutlineRow], events: [CalendarEvent], today: String) -> [UpcomingDay] {
+    let start = AppModel.dayFormatter.date(from: today) ?? .now
+    func label(_ day: String?) -> String {
+        guard let day, let date = AppModel.dayFormatter.date(from: day),
+              let days = Calendar.current.dateComponents([.day], from: start, to: date).day else { return "Later" }
+        if days == 1 { return "Tomorrow" }
+        if days < 7 { return date.formatted(.dateTime.weekday(.wide)) }
+        return "Later"
+    }
+    let order = (1...6).map { label(AppModel.dayString(Calendar.current.date(byAdding: .day, value: $0, to: start)!)) } + ["Later"]
+    var days = order.map { UpcomingDay(label: $0, events: [], rows: []) }
+    func add(_ l: String, _ update: (inout UpcomingDay) -> Void) {
+        if let i = days.firstIndex(where: { $0.label == l }) { update(&days[i]) }
+    }
+    var current = "Later"
+    for row in rows {
+        if row.depth == 0 {
+            // Its start once it's ahead, else its deadline.
+            let date = row.task.start.flatMap { $0 > today ? $0 : nil } ?? row.task.deadline
+            current = label(date)
+        }
+        add(current) { $0.rows.append(row) }
+    }
+    for event in events where event.day > today { add(label(event.day)) { $0.events.append(event) } }
+    return days.filter { !$0.rows.isEmpty || !$0.events.isEmpty }
 }

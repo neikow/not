@@ -131,6 +131,8 @@ final class AppModel {
     /// Working sets per muscle since Monday.
     private(set) var weekMuscles: [MuscleSets] = []
     let restTimer = RestTimer()
+    /// Calendar events beside tasks in Today and Upcoming (Settings → Calendar).
+    let calendar = CalendarOverlay()
 
     @ObservationIgnored private let store: NotStore
     @ObservationIgnored private var observer: ModelObserver?
@@ -242,6 +244,7 @@ final class AppModel {
                 showsInspector = true
             }
         case "today": selection = .today
+        case "upcoming": selection = .upcoming
         case "inbox":
             selection = .list(inboxID)
             // `-process YES` opens Process Inbox.
@@ -740,6 +743,7 @@ final class AppModel {
         today = now
         // Showing today carries on to the new one; a past day stays put while it's in the strip.
         if wasToday || !habitDays.contains(habitDay) { habitDay = now }
+        calendar.reload()
         reloadHabits()
         reloadTasks()
     }

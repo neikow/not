@@ -25,6 +25,7 @@ targets:
       properties:
         CFBundleDisplayName: not
         LSApplicationCategoryType: public.app-category.productivity
+        NSCalendarsFullAccessUsageDescription: Shows your calendar events beside your tasks in Today and Upcoming, read only.
         CFBundleURLTypes:
           - CFBundleURLName: dev.lysen.not
             CFBundleURLSchemes: [not]

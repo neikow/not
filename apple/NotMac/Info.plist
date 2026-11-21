@@ -33,5 +33,7 @@
 	<string>1</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Shows your calendar events beside your tasks in Today and Upcoming, read only.</string>
 </dict>
 </plist>

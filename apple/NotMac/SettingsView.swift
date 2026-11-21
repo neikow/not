@@ -10,6 +10,9 @@ struct SettingsView: View {
             Tab("General", systemImage: "gearshape") {
                 GeneralSettings(model: model)
             }
+            Tab("Calendar", systemImage: "calendar") {
+                CalendarSettings(overlay: model.calendar)
+            }
             Tab("Archive", systemImage: "archivebox") {
                 ArchiveSettings(model: model)
             }
