@@ -44,7 +44,7 @@ scripts/           build-apple.sh, build-android.sh (core + bindings), fetch-exe
 docs/              architecture.md, adr/NNNN-*.md
 deploy/            portainer-stack.yml: production server stack (ghcr image, `nginx` network)
 .github/workflows/ ci.yml: tests on every push/PR, signed APK release + server image on main;
-                   mac.yml: build and attach the Mac app, run by hand
+                   mac.yml: build the Mac app and attach its installer (.dmg), run by hand
 ```
 
 ## Where code goes
@@ -80,6 +80,7 @@ deploy/            portainer-stack.yml: production server stack (ghcr image, `ng
 | `make coverage` | Per-file Rust line coverage (cargo-llvm-cov) |
 | `make android` / `make emu` | Debug APK / install on the emulator |
 | `make mac` / `make mac-run` | Build / run the Mac app |
+| `make dmg` | Release build as a drag-and-drop installer, `build/not.dmg` (`DMG_LAYOUT=0` skips the Finder layout step) |
 | `make serve`, `make serve-pair` | Run the server locally on :8081, get a pairing code |
 | `make release-apk` | Signed release APK locally (needs `~/.android/not-release.env`) |
 

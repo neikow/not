@@ -20,7 +20,7 @@ ANDROID_CORE := android/app/src/main/jniLibs/arm64-v8a/libnot_ffi.so
 MAC_APP := build/xcode/Build/Products/Debug/not.app
 
 .PHONY: help server server-down server-logs pair devices serve serve-pair \
-	mac mac-run android android-test release-apk phone emu test lint fmt coverage check clean
+	mac mac-run dmg android android-test release-apk phone emu test lint fmt coverage check clean
 
 help: ## List shortcuts
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -58,6 +58,13 @@ mac: $(APPLE_CORE) ## Build the Mac app (rebuilds the Rust core when it changed)
 	cd apple && xcodegen generate --quiet
 	xcodebuild -project apple/Not.xcodeproj -scheme NotMac -configuration Debug \
 		-destination platform=macOS,arch=arm64 -derivedDataPath build/xcode -quiet build
+
+dmg: $(APPLE_CORE) ## Release build of the Mac app as a drag-and-drop installer, build/not.dmg
+	cd apple && xcodegen generate --quiet
+	xcodebuild -project apple/Not.xcodeproj -scheme NotMac -configuration Release \
+		-destination platform=macOS,arch=arm64 -derivedDataPath build/xcode -quiet build
+	codesign --force --deep --sign - build/xcode/Build/Products/Release/not.app
+	./scripts/make-dmg.sh build/xcode/Build/Products/Release/not.app build/not.dmg
 
 mac-run: mac ## Build, then (re)start the Mac app
 	-pkill -x not && sleep 0.5

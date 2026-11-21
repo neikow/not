@@ -24,6 +24,9 @@ targets:
       path: NotMac/Info.plist
       properties:
         CFBundleDisplayName: not
+        # From the build settings, so CI's release number shows in About and Finder.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
         NSCalendarsFullAccessUsageDescription: Shows your calendar events beside your tasks in Today and Upcoming, read only.
         # Services menu: send text, links and pictures from any app (see Services.swift).

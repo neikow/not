@@ -1,9 +1,10 @@
 # Builds the Mac app on demand (Actions → "Mac app" → Run workflow): Apple-silicon, ad-hoc
-# signed (no paid developer account, ADR 0005), zipped, and attached to a GitHub release (the
-# latest by default) as not-mac-<version>.zip. Manual only: macOS minutes cost 10× on private repos.
+# signed (no paid developer account, ADR 0005), packed as a drag-and-drop installer
+# (scripts/make-dmg.sh), and attached to a GitHub release (the latest by default) as
+# not-mac-<version>.dmg. Manual only: macOS minutes cost 10× on private repos.
 #
-# The app isn't notarized: after unzipping, right-click not.app → Open the first time (or
-# `xattr -dr com.apple.quarantine not.app`).
+# The app isn't notarized: after dragging it to Applications, right-click not → Open the first
+# time (the installer window says so), or `xattr -dr com.apple.quarantine /Applications/not.app`.
 name: Mac app
 
 on:
@@ -60,14 +61,16 @@ jobs:
           app=build/xcode/Build/Products/Release/not.app
           codesign --force --deep --sign - "$app"
           codesign --verify --verbose "$app"
-          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/not-mac-${{ steps.release.outputs.version }}.zip"
+
+      - name: Pack the installer
+        run: ./scripts/make-dmg.sh build/xcode/Build/Products/Release/not.app "$RUNNER_TEMP/not-mac-${{ steps.release.outputs.version }}.dmg"
 
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.release.outputs.tag }}" "$RUNNER_TEMP/not-mac-${{ steps.release.outputs.version }}.zip" --clobber
+        run: gh release upload "${{ steps.release.outputs.tag }}" "$RUNNER_TEMP/not-mac-${{ steps.release.outputs.version }}.dmg" --clobber
 
       - uses: actions/upload-artifact@v7
         with:
           name: not-mac-${{ steps.release.outputs.version }}
-          path: ${{ runner.temp }}/not-mac-${{ steps.release.outputs.version }}.zip
+          path: ${{ runner.temp }}/not-mac-${{ steps.release.outputs.version }}.dmg
