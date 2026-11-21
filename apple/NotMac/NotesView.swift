@@ -29,7 +29,7 @@ struct NotesView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 let sort = model.noteSort
                 Menu {
-                    Picker("Sort By", selection: Binding(get: { sort }, set: model.setNoteSort)) {
+                    Picker("Sort By", selection: Binding(get: { sort }, set: { model.setNoteSort($0) })) {
                         // By hand only in a folder: All Notes mixes every folder.
                         ForEach(model.selectedFolderID == nil ? [NoteSort.edited, .created, .title] : [.edited, .created, .title, .manual], id: \.self) {
                             Text($0.label).tag($0)
