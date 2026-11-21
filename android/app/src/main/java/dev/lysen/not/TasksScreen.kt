@@ -73,6 +73,7 @@ import dev.lysen.not.ui.PromptDialog
 import dev.lysen.not.ui.RoundCheck
 import dev.lysen.not.ui.OnTabGesture
 import dev.lysen.not.ui.PullAction
+import dev.lysen.not.ui.PagePosition
 import dev.lysen.not.ui.Sheet
 import dev.lysen.not.ui.SwipeAction
 import dev.lysen.not.ui.SwipeRow
@@ -135,7 +136,8 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
                 // Upcoming is always by date.
                 if (!state.isUpcoming) SortMenu(state.sort) { viewModel.setSort(state.selectedViewId, it) }
             },
-            header = { Subtitle(state, onProcess = { processing = true }) },
+            // Room for the list dots under the title, kept even when they're hidden.
+            header = { Box(Modifier.padding(top = 6.dp)) { Subtitle(state, onProcess = { processing = true }) } },
             pull = PullAction("Lists", R.drawable.ic_list) { showsLists = true },
             // Swiping the title bar or an empty spot steps through Inbox, Today, Upcoming… and the smart
             // lists, in the order the sheet shows them, round and round.
@@ -146,6 +148,17 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
                 }
             },
             next = neighbour(state, forward = true)?.second,
+            // Holding the title goes home: Today.
+            onTitleLongClick = {
+                if (state.selectedViewId != TODAY_ID) {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.select(TODAY_ID)
+                }
+            },
+            onTitleLongClickLabel = "Go to Today",
+            position = state.views.indexOfFirst { it.id == state.selectedViewId }
+                .takeIf { it >= 0 && state.views.size > 1 }
+                ?.let { PagePosition(it, state.views.size) },
         ) {
             val outline = state.outline
             if (state.earlier.isNotEmpty()) {

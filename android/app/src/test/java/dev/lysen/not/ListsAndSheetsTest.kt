@@ -39,3 +39,24 @@ class ListsAndSheetsTest {
         assertNull(sheetRest(200f, 0f, 0f, close))
     }
 }
+
+class PageDotsTest {
+    @Test
+    fun fewPagesShowAllDots() {
+        assertEquals(listOf(0 to false, 1 to false, 2 to false), dev.lysen.not.ui.dotWindow(dev.lysen.not.ui.PagePosition(1, 3)))
+    }
+
+    @Test
+    fun manyPagesShowAWindowThatShrinksAtTheEdgesWithMoreBeyond() {
+        val start = dev.lysen.not.ui.dotWindow(dev.lysen.not.ui.PagePosition(0, 12))
+        assertEquals((0..6).toList(), start.map { it.first })
+        assertEquals(listOf(false, false, false, false, false, false, true), start.map { it.second })
+        val middle = dev.lysen.not.ui.dotWindow(dev.lysen.not.ui.PagePosition(6, 12))
+        assertEquals((3..9).toList(), middle.map { it.first })
+        assertEquals(true, middle.first().second)
+        assertEquals(true, middle.last().second)
+        val end = dev.lysen.not.ui.dotWindow(dev.lysen.not.ui.PagePosition(11, 12))
+        assertEquals((5..11).toList(), end.map { it.first })
+        assertEquals(false, end.last().second)
+    }
+}

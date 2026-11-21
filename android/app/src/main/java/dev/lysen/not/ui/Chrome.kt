@@ -100,7 +100,8 @@ private val CollapseDistance = 64.dp
  * the content scrolls under it and fades out as it passes. [header] goes under the title
  * (subtitles, chips) and scrolls with the content. With [onSwipe], sideways drags on the top bar or on
  * any part of the content that doesn't swipe itself step through whatever the title names, and [next]
- * shows beside the title what forward leads to.
+ * shows beside the title what forward leads to, and [position] dots under it where the title sits
+ * among its pages. [onTitleLongClick] is for a shortcut, like going home.
  */
 @Composable
 fun LargeTitleScreen(
@@ -116,6 +117,9 @@ fun LargeTitleScreen(
     pull: PullAction? = null,
     onSwipe: ((forward: Boolean) -> Unit)? = null,
     next: String? = null,
+    onTitleLongClick: (() -> Unit)? = null,
+    onTitleLongClickLabel: String? = null,
+    position: PagePosition? = null,
     content: LazyListScope.() -> Unit,
 ) {
     val colors = Not.colors
@@ -186,7 +190,10 @@ fun LargeTitleScreen(
                     },
             ) {
                 Row(
-                    Modifier.then(if (onTitleClick != null) Modifier.pressable(onTitleClick, pressedScale = 0.98f) else Modifier),
+                    Modifier.then(
+                        if (onTitleClick != null) Modifier.pressable(onTitleClick, pressedScale = 0.98f, onLongClick = onTitleLongClick, onLongClickLabel = onTitleLongClickLabel)
+                        else Modifier,
+                    ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     AnimatedContent(
@@ -202,6 +209,10 @@ fun LargeTitleScreen(
                     titleAccessory?.let { Box(Modifier.padding(start = 6.dp)) { it() } }
                     if (next != null) NextPeek(next) { drag.value }
                 }
+                // Drawn over the bar's bottom edge, so showing or hiding them moves nothing.
+                if (position != null) {
+                    PageDots(position, Modifier.align(Alignment.BottomStart).offset(y = 5.dp).padding(start = 2.dp))
+                }
             }
             Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 actions?.invoke(this)
@@ -212,6 +223,38 @@ fun LargeTitleScreen(
             }
         }
         if (pull != null) PullHint(pull, pulling, Modifier.align(Alignment.TopCenter).padding(top = barBottom + 4.dp))
+    }
+}
+
+/** Where the shown page sits among [count] of them, for [PageDots]. */
+data class PagePosition(val index: Int, val count: Int)
+
+/** At most this many dots; past it they scroll with the shown one, shrinking at the edges. */
+private const val MAX_DOTS = 7
+
+/**
+ * The dots to draw for [position]: the page each stands for, and whether it's small because more
+ * pages lie beyond it. Up to [max] dots, a window kept around the shown page.
+ */
+internal fun dotWindow(position: PagePosition, max: Int = MAX_DOTS): List<Pair<Int, Boolean>> {
+    val (index, count) = position
+    if (count <= max) return (0 until count).map { it to false }
+    val first = (index - max / 2).coerceIn(0, count - max)
+    val last = first + max - 1
+    return (first..last).map { it to ((it == first && first > 0) || (it == last && last < count - 1)) }
+}
+
+/** A row of small dots, the shown page's filled in: where a sideways swipe will lead. */
+@Composable
+private fun PageDots(position: PagePosition, modifier: Modifier = Modifier) {
+    val colors = Not.colors
+    Row(modifier.height(6.dp), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+        dotWindow(position).forEach { (page, small) ->
+            val on = page == position.index
+            val color by animateColorAsState(if (on) colors.accentInk else colors.inkFaint, label = "dot")
+            val width by animateDpAsState(if (on) 12.dp else if (small) 3.dp else 5.dp, label = "dot")
+            Box(Modifier.size(width = width, height = if (small) 3.dp else 5.dp).clip(CircleShape).background(color))
+        }
     }
 }
 
