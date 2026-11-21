@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import dev.lysen.not.HabitsViewModel
@@ -147,6 +148,25 @@ class ScreensTest {
         compose.onNodeWithContentDescription("Restore").performClick()
         compose.waitUntil(5_000) { store.trash().isEmpty() }
         assertEquals("Call the bank", store.viewOutline(INBOX_ID, today()).open.single().task.title)
+    }
+
+    @Test
+    fun aboutListsTheLibrariesAndSupportFollowsTheBuildsLink() {
+        dev.lysen.not.FirstRun.done(app)
+        showApp()
+        compose.onNodeWithContentDescription("Settings").performClick()
+        // Shown only when the build has a link (gradle.properties supportUrl; never in Play builds).
+        assertEquals(
+            dev.lysen.not.BuildConfig.SUPPORT_URL.isNotEmpty(),
+            compose.onAllNodesWithText("Support not").fetchSemanticsNodes().isNotEmpty(),
+        )
+        compose.onNodeWithText("About").performScrollTo().performClick()
+        compose.onNodeWithText("Request a feature").assertExists()
+        compose.onNodeWithText("Open-source licenses").performScrollTo().performClick()
+        // From assets/licenses.json, which scripts/build-android.sh writes.
+        compose.onNodeWithText("ZXing").assertExists()
+        compose.onNodeWithContentDescription("About").performClick()
+        compose.onNodeWithText("Report a bug").assertExists()
     }
 
     @Test

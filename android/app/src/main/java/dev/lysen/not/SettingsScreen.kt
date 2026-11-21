@@ -73,15 +73,23 @@ import dev.lysen.not.widget.NotesWidgetReceiver
 import dev.lysen.not.widget.TasksWidgetReceiver
 import kotlinx.coroutines.launch
 
-/** What Settings holds, one page each. */
-private enum class SettingsPage(val title: String, val icon: Int) {
+/**
+ * What Settings holds, one page each. A page with a [parent] isn't in the list: it opens from its
+ * parent, and back returns there.
+ */
+private enum class SettingsPage(val title: String, val icon: Int, val parent: SettingsPage? = null) {
     Sync("Sync", R.drawable.ic_sync),
     Reminders("Reminders", R.drawable.ic_schedule),
     Trash("Trash", R.drawable.ic_delete),
     Backup("Export and backup", R.drawable.ic_copy),
     Widgets("Widgets", R.drawable.ic_add_task),
     Workouts("Workouts", R.drawable.ic_fitness),
-    About("About", R.drawable.ic_note),
+    Support("Support not", R.drawable.ic_favorite),
+    About("About", R.drawable.ic_info),
+    Licenses("Open-source licenses", R.drawable.ic_code, parent = About),
+    ;
+
+    val listed: Boolean get() = parent == null && (this != Support || Links.support.isNotEmpty())
 }
 
 /** A list of categories; each opens its own page, and back returns to the list. */
@@ -102,7 +110,7 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
         ) {
             item(key = "pages") {
                 Card {
-                    SettingsPage.entries.forEachIndexed { i, p ->
+                    SettingsPage.entries.filter { it.listed }.forEachIndexed { i, p ->
                         if (i > 0) Divider(Modifier.padding(start = 56.dp))
                         CategoryRow(p, detail = summary(p, state)) { page = p }
                     }
@@ -110,12 +118,12 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
             }
         }
     } else {
-        BackHandler { page = null }
+        BackHandler { page = shown.parent }
         // Keyed so each page starts at its top.
         key(shown) {
             LargeTitleScreen(
                 title = shown.title,
-                navigation = { IconButton(R.drawable.ic_arrow_back, "Settings", { page = null }) },
+                navigation = { IconButton(R.drawable.ic_arrow_back, shown.parent?.title ?: "Settings", { page = shown.parent }) },
                 bottomPadding = bottom,
             ) {
                 when (shown) {
@@ -127,7 +135,9 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
                     SettingsPage.Backup -> item(key = "backup") { BackupPage(toasts) }
                     SettingsPage.Widgets -> item(key = "widgets") { WidgetsPage() }
                     SettingsPage.Workouts -> item(key = "workouts") { WorkoutsPage(workouts) }
-                    SettingsPage.About -> item(key = "about") { AboutPage() }
+                    SettingsPage.Support -> item(key = "support") { SupportPage() }
+                    SettingsPage.About -> item(key = "about") { AboutPage(onLicenses = { page = SettingsPage.Licenses }) }
+                    SettingsPage.Licenses -> licensesPage()
                 }
             }
         }
@@ -152,7 +162,9 @@ private fun summary(page: SettingsPage, state: UiState): String = when (page) {
     SettingsPage.Backup -> "Everything as JSON, or a backup file to restore"
     SettingsPage.Widgets -> "Home screen widgets, quick add"
     SettingsPage.Workouts -> "Rest timer"
-    SettingsPage.About -> "Version ${BuildConfig.VERSION_NAME}, credits"
+    SettingsPage.Support -> "Buy a coffee on Ko-fi"
+    SettingsPage.About -> "Version ${BuildConfig.VERSION_NAME}, ideas and bugs, licenses"
+    SettingsPage.Licenses -> ""
 }
 
 @Composable
@@ -388,11 +400,36 @@ private fun TimeRow(label: String, minutes: Int, onChange: (Int) -> Unit) {
     }
 }
 
+/** Who made it and where to talk about it: version, feature requests, bug reports, the source. */
 @Composable
-private fun AboutPage() {
+private fun AboutPage(onLicenses: () -> Unit) {
+    val context = LocalContext.current
+    val version = BuildConfig.VERSION_NAME
     Section(null) {
-        Text("not ${BuildConfig.VERSION_NAME}", style = Not.type.bodyStrong)
-        Text("Tasks, habits, notes and workouts, synced through your own server.", style = Not.type.caption, color = Not.colors.inkMuted)
+        Text("not $version", style = Not.type.bodyStrong)
+        Text(
+            "Tasks, notes, habits and workouts. Everything lives on your devices first, and syncs through a server you run.",
+            style = Not.type.caption,
+            color = Not.colors.inkMuted,
+        )
+    }
+    Section("Ideas and problems", padded = false) {
+        LinkRow(R.drawable.ic_lightbulb, "Request a feature", "Suggest something; others can vote on it") {
+            Links.open(context, Links.featureRequest(version))
+        }
+        Divider(Modifier.padding(start = 56.dp))
+        LinkRow(R.drawable.ic_bug, "Report a bug", "The version and phone are filled in for you") {
+            Links.open(context, Links.bugReport(version, Links.device()))
+        }
+    }
+    Section("More", padded = false) {
+        LinkRow(R.drawable.ic_history, "What's new", "Every release and what changed") { Links.open(context, Links.RELEASES) }
+        Divider(Modifier.padding(start = 56.dp))
+        LinkRow(R.drawable.ic_code, "Source code", "not is open source, on GitHub") { Links.open(context, Links.REPO) }
+        Divider(Modifier.padding(start = 56.dp))
+        LinkRow(R.drawable.ic_info, "Privacy", "What not keeps, and where") { Links.open(context, Links.PRIVACY) }
+        Divider(Modifier.padding(start = 56.dp))
+        LinkRow(R.drawable.ic_note, "Open-source licenses", "The libraries not is built on", external = false, onClick = onLicenses)
     }
     Section("Exercise data") {
         Text(
@@ -400,6 +437,86 @@ private fun AboutPage() {
             style = Not.type.caption,
             color = Not.colors.inkMuted,
         )
+    }
+}
+
+/** Ko-fi, in sideloaded builds only (see build.gradle.kts). */
+@Composable
+private fun SupportPage() {
+    val context = LocalContext.current
+    Section(null) {
+        Text("not is free", style = Not.type.bodyStrong)
+        Text(
+            "No ads, no tracking, no account. It's made by one person in their spare time. If it earns a place on your phone, a coffee helps keep it going.",
+            style = Not.type.body,
+            color = Not.colors.inkMuted,
+        )
+        Button("Support on Ko-fi", { Links.open(context, Links.support) }, icon = R.drawable.ic_favorite)
+    }
+}
+
+/** A library the app ships, from assets/licenses.json (scripts/licenses.py). */
+internal data class Library(val name: String, val version: String, val license: String, val url: String)
+
+internal fun readLibraries(json: String): List<Library> {
+    val array = org.json.JSONObject(json).getJSONArray("libraries")
+    return (0 until array.length()).map { i ->
+        val o = array.getJSONObject(i)
+        Library(o.getString("name"), o.optString("version"), o.getString("license"), o.getString("url"))
+    }
+}
+
+/** Every library with its license; tapping one opens its page. */
+private fun LazyListScope.licensesPage() {
+    item(key = "licenses-intro") {
+        Section(null) {
+            Text(
+                "not is built on these open-source libraries. Tap one to see its source and license.",
+                style = Not.type.caption,
+                color = Not.colors.inkMuted,
+            )
+        }
+    }
+    item(key = "licenses") {
+        val context = LocalContext.current
+        val libraries = remember {
+            runCatching { context.assets.open("licenses.json").bufferedReader().use { readLibraries(it.readText()) } }.getOrDefault(emptyList())
+        }
+        Column(Modifier.padding(horizontal = 16.dp)) {
+            libraries.forEach { lib ->
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .pressable({ Links.open(context, lib.url) }, pressedScale = 0.985f)
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                ) {
+                    Text(listOf(lib.name, lib.version).filter { it.isNotEmpty() }.joinToString(" "), style = Not.type.body)
+                    Text(lib.license, style = Not.type.caption, color = Not.colors.inkMuted)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LinkRow(icon: Int, title: String, subtitle: String, external: Boolean = true, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .pressable(onClick, pressedScale = 0.985f)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) { Icon(icon, null, tint = Not.colors.accentInk, size = 22.dp) }
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(title, style = Not.type.body)
+            Text(subtitle, style = Not.type.caption, color = Not.colors.inkMuted)
+        }
+        if (external) {
+            Icon(R.drawable.ic_open_in_new, null, tint = Not.colors.inkFaint, size = 18.dp)
+        } else {
+            Icon(R.drawable.ic_expand_more, null, tint = Not.colors.inkFaint, size = 20.dp, modifier = Modifier.rotate(-90f))
+        }
     }
 }
 

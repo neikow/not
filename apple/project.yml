@@ -13,6 +13,7 @@ settings:
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    NOT_SUPPORT_URL: "https://ko-fi.com/vitalyn"
 targets:
   NotMac:
     type: application
@@ -42,6 +43,9 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: dev.lysen.not
             CFBundleURLSchemes: [not]
+        # Settings → Support (Ko-fi); empty hides it. The Mac app isn't in a store, so no policy
+        # stands in the way (Android keeps it out of Play builds).
+        NotSupportURL: $(NOT_SUPPORT_URL)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.lysen.not

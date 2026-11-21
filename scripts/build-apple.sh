@@ -24,4 +24,5 @@ xcodebuild -create-xcframework -library "$LIB_DIR/libnot_ffi.a" -headers "$HEADE
 # The folder holds only this generated (untracked) file, so a fresh checkout doesn't have it.
 mkdir -p "$PKG/Sources/NotCore"
 cp "$GEN/not_ffi.swift" "$PKG/Sources/NotCore/Generated.swift"
+python3 scripts/licenses.py apple apple/NotMac/licenses.json
 echo "apple: $PKG ready"

@@ -17,4 +17,6 @@ case "$(uname)" in Darwin) host_lib=libnot_ffi.dylib ;; *) host_lib=libnot_ffi.s
 rm -rf "$APP/java/dev/lysen/not/core"
 cargo run -q -p uniffi-bindgen -- generate \
   --library "target/release/$host_lib" --language kotlin --no-format --out-dir "$APP/java"
+mkdir -p "$APP/assets"
+python3 scripts/licenses.py android "$APP/assets/licenses.json"
 echo "android: bindings and jniLibs ($ABIS) ready"

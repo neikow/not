@@ -189,7 +189,7 @@ an IndexedDB cache. Online-first; no parity goal.
 | Phase | Scope |
 |---|---|
 | P0–P0.5 ✅ | Core, relay server, live sync, uniffi, Mac + Android apps; Inbox, device pairing, revocation |
-| P1 ✅ | Quick add (English + French), start dates and deadlines, repeats, Today / Upcoming / Someday, tags and smart lists (ADR 0014), reminders, Android widgets and Quick Settings tile, Mac menu bar extra, undo, archive, trash, share target, first run |
+| P1 ✅ | Quick add (English + French), start dates and deadlines, repeats, Today / Upcoming / Someday, tags and smart lists (ADR 0014), reminders, Android widgets and Quick Settings tile, Mac menu bar extra, undo, `done` views (ADR 0018), trash, share target, first run |
 | P2 ✅ | Notes: folders, pinning, search, live-styled markdown, checklists, pictures |
 | P3 ✅ | Habits: check-ins, goals per day / week / month, streaks, history; timed habits (ADR 0015) with widget, live notification and reminders |
 | P4 ✅ | Workouts; web companion and shared lists (ADR 0009); log compaction and encryption at rest (ADR 0016); signed APK releases for Obtainium; Mac app build on demand |

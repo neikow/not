@@ -1,0 +1,26 @@
+name: Feature request
+description: Something you'd like not to do
+labels: [idea]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like?
+      description: Describe what you're trying to do, not only the button you'd add. A screenshot or sketch helps.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: When would you use it? What do you do today instead?
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Filled in when you come from the app (About → Request a feature).
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Android, Mac, Web, Server, Every platform]

@@ -17,6 +17,15 @@ android {
         // so every release installs over the last one; local builds stay at 1.
         versionCode = (findProperty("versionCode") as String?)?.toInt() ?: 1
         versionName = (findProperty("versionName") as String?) ?: "0.1.0"
+
+        // Where this build goes: "sideload" (GitHub releases, Obtainium; the default) or "play"
+        // (-Pstore=play). Play's payments policy doesn't clearly allow linking out to tip the
+        // developer, so the Support page (Ko-fi) is only in sideloaded builds.
+        val store = (findProperty("store") as String?) ?: "sideload"
+        require(store in setOf("sideload", "play")) { "-Pstore is sideload or play, not $store" }
+        buildConfigField("String", "STORE", "\"$store\"")
+        val support = if (store == "play") "" else (findProperty("supportUrl") as String?).orEmpty()
+        buildConfigField("String", "SUPPORT_URL", "\"$support\"")
     }
 
     // Release signing comes from the environment (CI secrets, or a local keystore):

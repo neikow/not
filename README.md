@@ -67,3 +67,9 @@ rest; an existing plain database is encrypted on the next start. Keep the key sa
 server's copy can't be read (devices still hold everything and can re-upload to a fresh server).
 The sync log is compacted into a snapshot as it grows (`not-server compact` does it on demand). Put the server behind your reverse proxy or Tailscale
 for TLS: the apps only trust publicly trusted certificates.
+
+## License
+
+not is free software under the [GNU Affero General Public License v3.0 or later](LICENSE): you can
+use, study, change and share it, and if you run a changed version as a service for others, you
+share your changes with them too. Exercise data comes from [wger](https://wger.de) (CC-BY-SA).

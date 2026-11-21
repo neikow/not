@@ -1,0 +1,42 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to see it again
+      placeholder: |
+        1. Add a task "call mum fri 9am"
+        2. …
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Filled in when you come from the app (About → Report a bug).
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Android, Mac, Web, Server]
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and system
+      placeholder: Pixel 8 · Android 15
+  - type: dropdown
+    id: sync
+    attributes:
+      label: Sync
+      options: [Not paired, Self-hosted server]

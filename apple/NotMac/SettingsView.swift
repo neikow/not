@@ -16,14 +16,6 @@ struct SettingsView: View {
             Tab("Trash", systemImage: "trash") {
                 TrashSettings(model: model)
             }
-            Tab("Credits", systemImage: "heart") {
-                Form {
-                    Section("Exercise data") {
-                        Text("Exercise names, muscles and equipment come from the free exercise database of [wger](https://wger.de), shared by its contributors under [CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), CC-BY-SA 3.0 or CC0. Each exercise credits its author in its history.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
             Tab("Sync", systemImage: "arrow.triangle.2.circlepath.icloud") {
                 Group {
                     if let info = model.syncInfo {
@@ -33,6 +25,10 @@ struct SettingsView: View {
                     }
                 }
             }
+            if !AboutLinks.support.isEmpty {
+                Tab("Support", systemImage: "heart") { SupportSettings() }
+            }
+            Tab("About", systemImage: "info.circle") { AboutSettings() }
         }
         .formStyle(.grouped)
         .frame(width: 460)
@@ -308,4 +304,134 @@ private struct QRCodeView: View {
 
 private func date(_ millis: Int64) -> Date {
     Date(timeIntervalSince1970: TimeInterval(millis) / 1000)
+}
+
+/// Where About and Support lead: the public repo, its issue forms, Ko-fi.
+enum AboutLinks {
+    static let repo = "https://github.com/neikow/not"
+    static let releases = repo + "/releases"
+    static let privacy = repo + "/blob/main/PRIVACY.md"
+    static let support = (Bundle.main.object(forInfoDictionaryKey: "NotSupportURL") as? String) ?? ""
+
+    static var version: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "?"
+    }
+
+    /// "macOS 26.1", for bug reports.
+    static var system: String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return "macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
+    }
+
+    /// A GitHub issue form (.github/ISSUE_TEMPLATE) with the version and system filled in.
+    static func issueForm(_ template: String, device: String? = nil) -> URL {
+        var parts = URLComponents(string: repo + "/issues/new")!
+        parts.queryItems = [
+            URLQueryItem(name: "template", value: template),
+            URLQueryItem(name: "version", value: version),
+            URLQueryItem(name: "platform", value: "Mac"),
+        ] + (device.map { [URLQueryItem(name: "device", value: $0)] } ?? [])
+        return parts.url!
+    }
+}
+
+/// Version, feature requests and bug reports, the source, privacy, licenses, credits.
+private struct AboutSettings: View {
+    @State private var showsLicenses = false
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("not \(AboutLinks.version)").font(.headline)
+                    Text("Tasks, notes, habits and workouts. Everything lives on your devices first, and syncs through a server you run.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("Ideas and problems") {
+                Link(destination: AboutLinks.issueForm("feature_request.yml")) {
+                    Label("Request a Feature", systemImage: "lightbulb")
+                }
+                Link(destination: AboutLinks.issueForm("bug_report.yml", device: AboutLinks.system)) {
+                    Label("Report a Bug", systemImage: "ladybug")
+                }
+            }
+            Section("More") {
+                Link(destination: URL(string: AboutLinks.releases)!) { Label("What's New", systemImage: "sparkles") }
+                Link(destination: URL(string: AboutLinks.repo)!) { Label("Source Code", systemImage: "chevron.left.forwardslash.chevron.right") }
+                Link(destination: URL(string: AboutLinks.privacy)!) { Label("Privacy", systemImage: "hand.raised") }
+                Button { showsLicenses = true } label: { Label("Open-Source Licenses", systemImage: "doc.text") }
+                    .buttonStyle(.link)
+            }
+            Section("Exercise data") {
+                Text("Exercise names, muscles and equipment come from the free exercise database of [wger](https://wger.de), shared by its contributors under [CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), CC-BY-SA 3.0 or CC0. Each exercise credits its author in its history.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $showsLicenses) { LicensesSheet() }
+    }
+}
+
+/// A library the app ships, from licenses.json (scripts/licenses.py, run by build-apple.sh).
+struct Library: Decodable, Identifiable {
+    let name: String
+    let version: String
+    let license: String
+    let url: String
+    var id: String { name + " " + version }
+
+    static func bundled() -> [Library] {
+        struct File: Decodable { let libraries: [Library] }
+        guard let url = Bundle.main.url(forResource: "licenses", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(File.self, from: data)
+        else { return [] }
+        return file.libraries
+    }
+}
+
+private struct LicensesSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    private let libraries = Library.bundled()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Open-Source Licenses").font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding()
+            List(libraries) { lib in
+                if let url = URL(string: lib.url) {
+                    Link(destination: url) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text([lib.name, lib.version].filter { !$0.isEmpty }.joined(separator: " "))
+                            Text(lib.license).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .foregroundStyle(.primary)
+                }
+            }
+        }
+        .frame(width: 420, height: 480)
+    }
+}
+
+/// Ko-fi, when a link is set (NOT_SUPPORT_URL in project.yml).
+private struct SupportSettings: View {
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("not is free").font(.headline)
+                    Text("No ads, no tracking, no account. It's made by one person in their spare time. If it earns a place on your Mac, a coffee helps keep it going.")
+                        .foregroundStyle(.secondary)
+                }
+                if let url = URL(string: AboutLinks.support) {
+                    Link(destination: url) { Label("Support on Ko-fi", systemImage: "heart") }
+                }
+            }
+        }
+    }
 }
