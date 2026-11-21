@@ -67,7 +67,7 @@ struct ViewEditor: View {
                         Button("#" + tag.name) { add("#" + tag.name) }
                     }
                     ForEach([("Today", "today"), ("This week", "week"), ("Overdue", "overdue"), ("Deadline", "deadline"),
-                             ("High", "!1"), ("No date", "nodate"), ("Someday", "someday"), ("Untagged", "untagged"), ("or", "or")], id: \.1) { label, term in
+                             ("High", "!1"), ("No date", "nodate"), ("Someday", "someday"), ("Untagged", "untagged"), ("Done", "done"), ("or", "or")], id: \.1) { label, term in
                         Button(label) { add(term) }
                     }
                 }

@@ -77,7 +77,7 @@ fun ViewEditor(draft: ViewDraft, state: UiState, viewModel: TasksViewModel, onDo
             state.tags.take(12).forEach { tag -> Chip(R.drawable.ic_tag, tag.name, onClick = { add("#${tag.name}") }) }
             for ((label, term) in listOf(
                 "Today" to "today", "This week" to "week", "Overdue" to "overdue", "Has deadline" to "deadline",
-                "High priority" to "!1", "No date" to "nodate", "Someday" to "someday", "Untagged" to "untagged", "or" to "or",
+                "High priority" to "!1", "No date" to "nodate", "Someday" to "someday", "Untagged" to "untagged", "Done" to "done", "or" to "or",
             )) {
                 Chip(R.drawable.ic_add, label, onClick = { add(term) })
             }

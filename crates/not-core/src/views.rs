@@ -120,6 +120,7 @@ impl Context {
             repeating: t.repeat.is_some(),
             tags: &self.tags[i],
             deferred: self.deferred[i],
+            done: t.completed_at.is_some(),
         }
     }
 
@@ -293,7 +294,8 @@ impl Store {
         let mut completed: Vec<usize> = (0..ctx.tasks.len())
             .filter(|&i| {
                 let t = &ctx.tasks[i];
-                t.completed_at.is_some_and(|at| at > now - ARCHIVE_AFTER_MS)
+                t.completed_at
+                    .is_some_and(|at| query.shows_done() || at > now - ARCHIVE_AFTER_MS)
                     && !ctx.under_done[i]
                     && !ctx.has_ancestor_in(i, &open_set)
                     && query.matches_done(&ctx.candidate(i), today)

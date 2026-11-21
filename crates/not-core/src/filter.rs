@@ -7,6 +7,10 @@
 //!
 //! Unless a query names `upcoming`, `tomorrow`, `week`, `someday` or `all`, it only matches tasks
 //! that are available now: no future start date and not Someday, nor under a task that is.
+//!
+//! `done` matches completed tasks. A view whose query names it shows its completed tasks however
+//! long ago they were done (other views keep them for a day), and no open ones: `done #work` is
+//! the archive of a tag.
 
 use crate::date::Date;
 use crate::parse::normalize_tag;
@@ -17,6 +21,8 @@ pub(crate) struct Query {
     groups: Vec<Vec<Term>>,
     /// Only tasks available now (see the module docs).
     available_only: bool,
+    /// Names `done` (not negated): completed tasks of any age (see the module docs).
+    shows_done: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +53,8 @@ enum Atom {
     Tagged,
     Untagged,
     All,
+    /// Completed.
+    Done,
     Text(String),
 }
 
@@ -63,6 +71,8 @@ pub(crate) struct Candidate<'a> {
     pub tags: &'a [String],
     /// It or an ancestor starts after today or is Someday.
     pub deferred: bool,
+    /// Completed.
+    pub done: bool,
 }
 
 /// What a task added in a view starts with, so it shows there.
@@ -87,6 +97,7 @@ const KEYWORDS: &[(&str, Atom)] = &[
     ("tagged", Atom::Tagged),
     ("untagged", Atom::Untagged),
     ("all", Atom::All),
+    ("done", Atom::Done),
 ];
 
 impl Query {
@@ -151,9 +162,14 @@ impl Query {
             )
         };
         let available_only = !groups.iter().flatten().any(|t| !t.negated && opens_up(&t.atom));
+        let shows_done = groups
+            .iter()
+            .flatten()
+            .any(|t| !t.negated && t.atom == Atom::Done);
         Ok(Self {
             groups,
             available_only,
+            shows_done,
         })
     }
 
@@ -164,6 +180,11 @@ impl Query {
         self.groups
             .iter()
             .any(|group| group.iter().all(|t| t.atom.matches(task, today) != t.negated))
+    }
+
+    /// Whether the query names `done`: its view lists completed tasks of any age.
+    pub fn shows_done(&self) -> bool {
+        self.shows_done
     }
 
     /// Like [`Query::matches`] for a completed task: whether it's deferred doesn't matter any more.
@@ -214,6 +235,7 @@ impl Atom {
             Self::Tagged => !t.tags.is_empty(),
             Self::Untagged => t.tags.is_empty(),
             Self::All => true,
+            Self::Done => t.done,
             Self::Text(text) => {
                 t.title.to_lowercase().contains(text.as_str())
                     || t.notes.to_lowercase().contains(text.as_str())
@@ -302,6 +324,7 @@ mod tests {
             repeating: false,
             tags,
             deferred: false,
+            done: false,
         }
     }
 

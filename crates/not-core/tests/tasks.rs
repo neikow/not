@@ -550,6 +550,51 @@ fn completed_tasks_move_to_the_archive_after_a_day() {
 }
 
 #[test]
+fn a_done_view_keeps_completed_tasks_of_any_age() {
+    let s = Store::open_in_memory().unwrap();
+    let old = add(&s, INBOX, "old #home");
+    s.add_task(&old, "old.1", today()).unwrap();
+    let work = add(&s, INBOX, "report #work");
+    add(&s, INBOX, "open #home");
+    s.set_completed(&old, true, today()).unwrap();
+    s.set_completed(&work, true, today()).unwrap();
+    let done_home = s.create_view("Home archive", "done #home").unwrap();
+    let not_done = s.create_view("Open home", "#home -done").unwrap();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let later = now + not_core::ARCHIVE_AFTER_MS + 1000;
+    let outline = s.view_outline_at(&done_home, today(), later).unwrap();
+    assert!(outline.open.is_empty(), "a done view lists no open tasks");
+    assert_eq!(
+        outline
+            .completed
+            .iter()
+            .map(|r| r.task.title.as_str())
+            .collect::<Vec<_>>(),
+        ["old", "old.1"],
+        "completed long ago, with its subtask, and only #home"
+    );
+    let views = s.views(today()).unwrap();
+    assert_eq!(views.iter().find(|v| v.id == done_home).unwrap().open_count, 0);
+
+    let outline = s.view_outline_at(&not_done, today(), later).unwrap();
+    assert_eq!(outline.open.len(), 1);
+    assert!(outline.completed.is_empty());
+
+    s.set_completed(&old, false, today()).unwrap();
+    assert!(
+        s.view_outline_at(&done_home, today(), later)
+            .unwrap()
+            .completed
+            .is_empty()
+    );
+    assert!(s.check_query("-done").is_ok());
+}
+
+#[test]
 fn search_finds_tasks_by_title_notes_and_tags() {
     let s = Store::open_in_memory().unwrap();
     let milk = add(&s, INBOX, "Oat milk #groceries");

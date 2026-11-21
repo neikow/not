@@ -134,7 +134,7 @@ pub struct OutlineRow {
 }
 
 /// A view as shown: open tasks (with all their subtasks) in its order, then tasks completed in the
-/// last [`ARCHIVE_AFTER_MS`], most recently completed first. Older ones are in [`Store::archive`].
+/// last [`ARCHIVE_AFTER_MS`] (any age in a view naming `done`), most recently completed first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outline {
     pub open: Vec<OutlineRow>,

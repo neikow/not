@@ -31,7 +31,8 @@ Friday of the month" repeats, and a quick way to deal with tasks that slipped pa
 - Query language (whitespace = AND, `or` between groups, `-` negates a term): `#tag`, `!1`/`!2`/
   `!3` (high/medium/low, as in quick add), `!` (any priority), `today`, `tomorrow`, `week`,
   `overdue`, `upcoming`, `someday`, `nodate`, `deadline`, `repeating`, `tagged`, `untagged`,
-  `all`, and any other word or `"quoted phrase"` matched in title and notes.
+  `all`, `done` (completed tasks of any age, ADR 0018), and any other word or `"quoted phrase"`
+  matched in title and notes.
 - Unless a query names `upcoming`, `tomorrow`, `week`, `someday` or `all`, it only shows tasks
   that are available: no future start date and not Someday (A: hidden until the start date).
 - Adding a task in a view gives it what makes it match: the first group's `#tags`, priority,
