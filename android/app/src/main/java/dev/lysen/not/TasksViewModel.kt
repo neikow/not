@@ -339,6 +339,11 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         run { store.undo() }
     }
 
+    /** First run → Start fresh: a few tasks that show the basics. */
+    fun addStarterTasks() {
+        run { store.addStarterTasks(today()) }
+    }
+
     fun dismissError() = _state.update { it.copy(error = null) }
 
     // ---- pairing ----

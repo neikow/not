@@ -59,10 +59,30 @@ class ScreensTest {
         showApp()
         compose.onNodeWithText("Welcome to not").assertIsDisplayed()
         compose.onNodeWithText("Get started").performClick()
-        compose.onNodeWithText("Bring your data").assertIsDisplayed()
+        compose.onNodeWithText("Your data").assertIsDisplayed()
         compose.onNodeWithText("Skip").performClick()
         compose.waitForIdle()
         assertTrue("the app proper", compose.onAllNodesWithText("Inbox").fetchSemanticsNodes().isNotEmpty())
+    }
+
+    @Test
+    fun startFreshAddsTheExampleTasksUnlessUnticked() {
+        showApp()
+        compose.onNodeWithText("Get started").performClick()
+        compose.onNodeWithText("Add a few example tasks").assertIsDisplayed()
+        compose.onNodeWithText("Start fresh").performClick()
+        compose.waitUntil(5_000) { app.store.viewOutline(INBOX_ID, today()).open.isNotEmpty() }
+        assertTrue(app.store.viewOutline(INBOX_ID, today()).open.first().task.title.startsWith("Welcome to not"))
+    }
+
+    @Test
+    fun startFreshWithoutExamplesLeavesTheInboxEmpty() {
+        showApp()
+        compose.onNodeWithText("Get started").performClick()
+        compose.onNodeWithText("Add a few example tasks").performClick()
+        compose.onNodeWithText("Start fresh").performClick()
+        compose.onNodeWithText("Not now").assertIsDisplayed()
+        assertTrue(app.store.viewOutline(INBOX_ID, today()).open.isEmpty())
     }
 
     @Test

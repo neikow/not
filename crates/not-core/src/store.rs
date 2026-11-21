@@ -1162,7 +1162,13 @@ impl Snooze {
 }
 
 /// Title, schedule, priority and tags of a new task, in its meta map.
-fn fill_task(meta: &LoroMap, title: &str, schedule: &Schedule, priority: u8, tags: &[String]) -> Result<()> {
+pub(crate) fn fill_task(
+    meta: &LoroMap,
+    title: &str,
+    schedule: &Schedule,
+    priority: u8,
+    tags: &[String],
+) -> Result<()> {
     meta.insert(KIND, KIND_TASK)?;
     meta.insert(TITLE, title)?;
     write_schedule(meta, schedule)?;

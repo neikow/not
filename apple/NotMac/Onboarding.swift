@@ -24,14 +24,16 @@ enum FirstRun {
     static func done() { UserDefaults.standard.set(true, forKey: key) }
 }
 
-/// Four short steps on a fresh Mac: what not is, bringing data in (pair with a server, restore a
-/// backup, or neither), reminders and the calendar, and where not lives around the Mac. Every step
-/// can be skipped; everything is in Settings later.
+/// Four short steps on a fresh Mac: what not is, where the data comes from (start fresh, with a few
+/// tasks that show the basics, or restore a backup, or pair with a sync server), reminders and the
+/// calendar, and where not lives around the Mac. Every step can be skipped; everything is in
+/// Settings later.
 struct OnboardingSheet: View {
     let model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var step = 0
     @State private var pairing = false
+    @State private var examples = true
     @AppStorage(Reminders.tasksKey) private var taskReminders = true
     @AppStorage(MenuBarPanel.visibleKey) private var menuBar = true
 
@@ -61,7 +63,9 @@ struct OnboardingSheet: View {
                 Spacer()
                 if step > 0 { Button("Back") { go(step - 1) } }
                 if step < count - 1 {
-                    Button(step == 0 ? "Get Started" : "Continue") { go(step + 1) }
+                    Button(step == 0 ? "Get Started" : step == 1 && !model.isEstablished ? "Start Fresh" : "Continue") {
+                        if step == 1 { startFresh() } else { go(step + 1) }
+                    }
                         .keyboardShortcut(.defaultAction)
                 } else {
                     Button("Start Using not") { finish() }
@@ -82,6 +86,12 @@ struct OnboardingSheet: View {
 
     private func go(_ to: Int) { step = to }
 
+    /// On from the data step: with the example tasks, unless unticked or data came in already.
+    private func startFresh() {
+        if examples, !model.isEstablished { model.addStarterTasks() }
+        go(2)
+    }
+
     private func finish() {
         FirstRun.done()
         dismiss()
@@ -91,7 +101,7 @@ struct OnboardingSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72)
             Text("Welcome to not").font(.largeTitle.weight(.bold))
-            Text("Tasks, notes, habits and workouts, kept on your devices first and synced through your own server.")
+            Text("Tasks, notes, habits and workouts in one calm place. Everything stays on this Mac and works offline; syncing with your other devices is up to you.")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 8) {
                 tip("text.cursor", "Type tasks the way you'd say them: “call mum fri 6pm #home !1”.")
@@ -108,20 +118,22 @@ struct OnboardingSheet: View {
 
     private var data: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Bring your data").font(.title.weight(.bold))
-            Text("Already using not on your phone? Pair this Mac with the same server. Or restore a backup file, or start fresh.")
+            Text("Your data").font(.title.weight(.bold))
+            Text("Start fresh, or bring what you have: a backup file, or your other devices through a sync server.")
                 .foregroundStyle(.secondary)
             if pairing {
                 PairForm(model: model)
                     .formStyle(.grouped)
                     .frame(height: 230)
             } else {
-                choice("arrow.triangle.2.circlepath.icloud", "Pair with your server", "Get a code on a paired device: Settings → Sync.") { pairing = true }
+                choice("sparkles", "Start fresh", "Nothing to bring yet.") { startFresh() }
+                Toggle("Add a few example tasks that show the basics", isOn: $examples)
+                    .padding(.leading, 12)
                 choice("doc.badge.arrow.up", "Restore a backup file", "A .notbackup saved from another device.") {
                     model.restoreBackup()
                     if model.isEstablished { go(2) }
                 }
-                choice("sparkles", "Start fresh", "Nothing to bring: pair later in Settings → Sync.") { go(2) }
+                choice("arrow.triangle.2.circlepath.icloud", "I have a sync server", "Get a code on a paired device: Settings → Sync.") { pairing = true }
             }
         }
     }

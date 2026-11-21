@@ -13,6 +13,7 @@ mod notes;
 mod parse;
 mod projection;
 mod schedule;
+mod starter;
 mod storage;
 mod store;
 mod sync;
@@ -30,6 +31,7 @@ pub use not_protocol::{IMAGE_SCHEME, PairingLink, ShareInfo, image_mime, is_imag
 pub use notes::{Folder, NoteSort, NoteSummary};
 pub use parse::{ParsedTask, Token, TokenKind, normalize_tag, parse_task, parse_task_at};
 pub use schedule::{Freq, Repeat, Schedule, due_label};
+pub use starter::STARTER_TAG;
 pub use store::{
     ARCHIVE_AFTER_MS, ChangeOrigin, INBOX, ListenerId, Outline, OutlineRow, SOMEDAY_VIEW, Snooze, Store,
     TODAY, Task, TaskSort, UPCOMING, WORKSPACE,

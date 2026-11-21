@@ -1082,6 +1082,9 @@ final class AppModel {
 
     func undo() { run { _ = try store.undo() } }
 
+    /// First run → Start fresh: a few tasks that show the basics.
+    func addStarterTasks() { run { _ = try store.addStarterTasks(today: today) } }
+
     /// Puts a completed task back in its list, open (from the Logbook).
     func restore(_ task: TaskItem) {
         run { try store.setCompleted(id: task.id, completed: false, today: today) }

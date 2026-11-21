@@ -44,6 +44,8 @@ import dev.lysen.not.ui.Button
 import dev.lysen.not.ui.ButtonKind
 import dev.lysen.not.ui.Icon
 import dev.lysen.not.ui.Not
+import dev.lysen.not.ui.RoundCheck
+import dev.lysen.not.ui.pressable
 import dev.lysen.not.ui.Text
 import dev.lysen.not.widget.HabitsWidgetReceiver
 import dev.lysen.not.widget.TasksWidgetReceiver
@@ -75,9 +77,9 @@ object FirstRun {
 private enum class Step { Welcome, Data, Notifications, Widgets }
 
 /**
- * Four short steps on a fresh install: what the app is, bringing data in (pair with a server, or
- * restore a backup file, or neither), notifications, and widgets. Every step can be skipped, and
- * everything is in Settings later.
+ * Four short steps on a fresh install: what the app is, where the data comes from (start fresh,
+ * with a few tasks that show the basics, or restore a backup file, or pair with a sync server),
+ * notifications, and widgets. Every step can be skipped, and everything is in Settings later.
  */
 @Composable
 fun Onboarding(viewModel: TasksViewModel, onDone: () -> Unit) {
@@ -85,8 +87,12 @@ fun Onboarding(viewModel: TasksViewModel, onDone: () -> Unit) {
     val app = context.applicationContext as NotApp
     val state by viewModel.state.collectAsStateWithLifecycle()
     var step by rememberSaveable { mutableIntStateOf(0) }
+    // Start fresh adds the starter tasks unless this is unticked, or data came in another way.
+    var starter by rememberSaveable { mutableStateOf(true) }
+    var restored by rememberSaveable { mutableStateOf(false) }
     val steps = Step.entries
     fun next() {
+        if (steps[step] == Step.Data && starter && !restored && state.syncInfo == null) viewModel.addStarterTasks()
         if (step < steps.lastIndex) step++ else {
             FirstRun.done(context)
             onDone()
@@ -113,7 +119,12 @@ fun Onboarding(viewModel: TasksViewModel, onDone: () -> Unit) {
             ) {
                 when (steps[shown]) {
                     Step.Welcome -> Welcome()
-                    Step.Data -> DataStep(state, viewModel, app, onNext = ::next)
+                    Step.Data -> DataStep(
+                        state, viewModel, app,
+                        starter = starter, onStarter = { starter = it },
+                        restored = restored, onRestored = { restored = true },
+                        onNext = ::next,
+                    )
                     Step.Notifications -> NotificationsStep(app, onNext = ::next)
                     Step.Widgets -> WidgetsStep()
                 }
@@ -122,13 +133,13 @@ fun Onboarding(viewModel: TasksViewModel, onDone: () -> Unit) {
         Button(
             when (steps[step]) {
                 Step.Welcome -> "Get started"
-                Step.Data -> if (state.syncInfo != null) "Continue" else "Use on this phone only"
+                Step.Data -> if (state.syncInfo != null || restored) "Continue" else "Start fresh"
                 Step.Notifications -> "Not now"
                 Step.Widgets -> "Done"
             },
             ::next,
             Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
-            kind = if (steps[step] == Step.Notifications || (steps[step] == Step.Data && state.syncInfo == null)) ButtonKind.Secondary else ButtonKind.Primary,
+            kind = if (steps[step] == Step.Notifications) ButtonKind.Secondary else ButtonKind.Primary,
         )
     }
 }
@@ -149,7 +160,7 @@ private fun Welcome() {
     StepHeader(
         R.drawable.ic_task_alt,
         "Welcome to not",
-        "Tasks, notes, habits and workouts in one calm place. Everything works offline, and syncs through a server you run yourself.",
+        "Tasks, notes, habits and workouts in one calm place. Everything stays on your phone and works offline; syncing with your other devices is up to you.",
     )
     listOf(
         R.drawable.ic_today to "Plan with Today, Upcoming and smart lists",
@@ -164,17 +175,31 @@ private fun Welcome() {
     }
 }
 
-/** Pair with a server, or restore a backup file; pairing moves on by itself. */
+/**
+ * Where the data comes from: nothing yet (Start fresh, below, with the starter tasks if ticked),
+ * a backup file, or a sync server (pairing moves on by itself).
+ */
 @Composable
-private fun DataStep(state: UiState, viewModel: TasksViewModel, app: NotApp, onNext: () -> Unit) {
+private fun DataStep(
+    state: UiState,
+    viewModel: TasksViewModel,
+    app: NotApp,
+    starter: Boolean,
+    onStarter: (Boolean) -> Unit,
+    restored: Boolean,
+    onRestored: () -> Unit,
+    onNext: () -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var restored by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var pairing by rememberSaveable { mutableStateOf(false) }
     val restore = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
-        restored = runCatching {
+        message = runCatching {
             val bytes = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
             app.store.restoreBackup(bytes)
+            onRestored()
             "Backup restored."
         }.getOrElse { if (it is dev.lysen.not.core.NotException) it.userMessage else "Couldn't read that file." }
     }
@@ -184,17 +209,34 @@ private fun DataStep(state: UiState, viewModel: TasksViewModel, app: NotApp, onN
     }
     StepHeader(
         R.drawable.ic_sync,
-        "Bring your data",
-        "Pair with your server to sync with your other devices, or restore a backup file. You can do either later in Settings.",
+        "Your data",
+        "Start fresh, or bring what you have: a backup file, or your other devices through a sync server.",
     )
-    if (state.syncInfo != null) {
-        Text("Paired with ${state.syncInfo?.serverUrl}.", style = Not.type.bodyStrong, color = Not.colors.accentInk)
-    } else {
-        PairForm(state, viewModel, intro = false)
+    when {
+        state.syncInfo != null -> Text("Paired with ${state.syncInfo?.serverUrl}.", style = Not.type.bodyStrong, color = Not.colors.accentInk)
+        restored -> Text(message.orEmpty(), style = Not.type.bodyStrong, color = Not.colors.accentInk)
+        else -> {
+            Row(
+                Modifier.fillMaxWidth().pressable({ onStarter(!starter) }, pressedScale = 0.985f).padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                RoundCheck(starter, { onStarter(!starter) }, contentDescription = "Add example tasks")
+                Column(Modifier.weight(1f)) {
+                    Text("Add a few example tasks", style = Not.type.body)
+                    Text("They show the basics; tick them off as you go.", style = Not.type.caption, color = Not.colors.inkMuted)
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Button("Restore a backup file", { restore.launch(arrayOf("*/*")) }, Modifier.fillMaxWidth(), kind = ButtonKind.Secondary, icon = R.drawable.ic_history)
+            message?.let { Text(it, style = Not.type.caption, color = Not.colors.danger) }
+            if (pairing) {
+                PairForm(state, viewModel, intro = false)
+            } else {
+                Button("I have a sync server", { pairing = true }, Modifier.fillMaxWidth(), kind = ButtonKind.Secondary, icon = R.drawable.ic_sync)
+            }
+        }
     }
-    Spacer(Modifier.height(4.dp))
-    Button("Restore a backup file", { restore.launch(arrayOf("*/*")) }, Modifier.fillMaxWidth(), kind = ButtonKind.Secondary, icon = R.drawable.ic_history)
-    restored?.let { Text(it, style = Not.type.caption, color = Not.colors.inkMuted) }
 }
 
 @Composable

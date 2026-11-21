@@ -26,6 +26,9 @@ to ask for things, or what it's built on.
   (`supportUrl` in android/gradle.properties, `NOT_SUPPORT_URL` in apple/project.yml); empty
   hides the page.
 
+- **First run is local-first.** It no longer assumes a server: "Start fresh" is the main
+  choice, with a few example tasks that show the basics (on by default; `Store::add_starter_tasks`,
+  one undo step), then restoring a backup, then "I have a sync server".
 - **Exact alarms on Play.** Play keeps `USE_EXACT_ALARM` for alarm clock and calendar apps, so
   Play builds merge `src/play/AndroidManifest.xml`, which asks for `SCHEDULE_EXACT_ALARM`
   instead. Until the user allows it (a prompt in Settings → Reminders), reminders use inexact

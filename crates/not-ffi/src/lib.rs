@@ -854,6 +854,11 @@ impl NotStore {
         Ok(self.store.add_task(&target, &title, date(&today)?)?)
     }
 
+    /// A few tasks that show the basics, for a fresh install (one undo step). Returns how many.
+    pub fn add_starter_tasks(&self, today: String) -> Result<u32, NotError> {
+        Ok(self.store.add_starter_tasks(date(&today)?)?)
+    }
+
     pub fn rename(&self, id: String, title: String) -> Result<(), NotError> {
         Ok(self.store.rename(&id, &title)?)
     }

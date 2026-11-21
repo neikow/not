@@ -964,3 +964,44 @@ fn leaving_a_tagged_parent_keeps_its_tags() {
         .unwrap();
     assert_eq!(s.task_by_id(&deck).unwrap().tags, ["home", "work"]);
 }
+
+// ---- starter tasks --------------------------------------------------------------------------------
+
+#[test]
+fn starter_tasks_show_the_basics_and_undo_in_one_step() {
+    let s = Store::open_in_memory().unwrap();
+    assert_eq!(s.add_starter_tasks(today()).unwrap(), 6);
+
+    let inbox = s.view_outline(INBOX, today()).unwrap();
+    let tops: Vec<&str> = inbox
+        .open
+        .iter()
+        .filter(|r| r.depth == 0)
+        .map(|r| r.task.title.as_str())
+        .collect();
+    assert_eq!(tops.len(), 5, "the tagged one isn't in the Inbox: {tops:?}");
+    assert!(
+        tops[0].starts_with("Welcome to not"),
+        "in order, top first: {tops:?}"
+    );
+    let with_subtasks = inbox.open.iter().find(|r| r.subtasks == 2).unwrap();
+    assert!(with_subtasks.task.title.starts_with("Open a task"));
+
+    let tagged = s
+        .view_outline(&format!("#{}", not_core::STARTER_TAG), today())
+        .unwrap();
+    assert_eq!(tagged.open.len(), 1);
+    let today_view = s.view_outline(not_core::TODAY, today()).unwrap();
+    assert!(
+        today_view
+            .open
+            .iter()
+            .any(|r| r.task.title.starts_with("Welcome"))
+    );
+
+    assert!(s.undo().unwrap());
+    assert!(
+        s.all_tasks().unwrap().is_empty(),
+        "one undo step takes them all back"
+    );
+}

@@ -378,3 +378,14 @@ fn a_task_nests_under_another_and_comes_back_out() {
         ["Flights", "Trip"]
     );
 }
+
+#[test]
+fn starter_tasks_take_a_string_date() {
+    let db = TempDb::new("starter");
+    let store = NotStore::new(db.path()).unwrap();
+    assert_eq!(store.add_starter_tasks(TODAY.into()).unwrap(), 6);
+    assert!(matches!(
+        store.add_starter_tasks("tomorrow".into()),
+        Err(NotError::Invalid { .. })
+    ));
+}
