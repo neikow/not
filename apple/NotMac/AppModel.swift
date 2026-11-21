@@ -296,6 +296,28 @@ final class AppModel {
     var builtInViews: [TaskView] { lists.filter(\.builtIn) }
     /// The user's smart lists.
     var userLists: [TaskView] { lists.filter { !$0.builtIn } }
+
+    /// Shows the view `id` (a built-in, a smart list or a `#tag`), with the sidebar's own item.
+    func showList(_ id: String) {
+        selection = id == todayID ? .today : id == upcomingID ? .upcoming : .list(id)
+    }
+
+    /// Steps to the next (or previous) of Inbox, Today, Upcoming, Someday and the smart lists, in
+    /// sidebar order, round from the last to the first. From anything else (a tag, Habits, Notes),
+    /// forward starts at the first, back at the last.
+    func stepList(forward: Bool) {
+        let ids = lists.map(\.id)
+        guard let next = AppModel.neighbour(in: ids, of: selectedListID, forward: forward) else { return }
+        showList(next)
+    }
+
+    /// The id after (or before) `current` in `ids`, wrapping; nil when there's nowhere else to go.
+    nonisolated static func neighbour(in ids: [String], of current: String?, forward: Bool) -> String? {
+        guard !ids.isEmpty else { return nil }
+        guard let current, let at = ids.firstIndex(of: current) else { return forward ? ids.first : ids.last }
+        guard ids.count > 1 else { return nil }
+        return ids[(at + (forward ? 1 : ids.count - 1)) % ids.count]
+    }
     var panelList: TaskView? { lists.first { $0.id == panelListID } }
 
     var selectedTask: TaskItem? {

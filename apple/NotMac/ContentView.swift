@@ -411,6 +411,8 @@ private struct TaskListView: View {
         }
         .onAppear { focusRequests += 1 }
         .onChange(of: model.addFieldFocusRequests) { focusRequests += 1 }
+        // A two-finger swipe sideways steps through the lists, like on the phone.
+        .background(SwipeCatcher { forward in withAnimation(.snappy) { model.stepList(forward: forward) } })
     }
 
     private var addField: some View {
@@ -1002,3 +1004,69 @@ let snoozes: [(String, Snooze)] = [
     ("Later Today", .laterToday), ("This Evening", .thisEvening), ("Tomorrow", .tomorrow),
     ("This Weekend", .weekend), ("Next Week", .nextWeek),
 ]
+
+
+/// Catches a sideways two-finger swipe over its area (a scroll that's mostly horizontal, from the
+/// trackpad), once per gesture: `onSwipe(true)` when the fingers move left, like turning a page.
+private struct SwipeCatcher: NSViewRepresentable {
+    let onSwipe: (Bool) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.view = view
+        context.coordinator.install()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) { context.coordinator.onSwipe = onSwipe }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) { coordinator.remove() }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onSwipe: onSwipe) }
+
+    @MainActor
+    final class Coordinator {
+        var onSwipe: (Bool) -> Void
+        weak var view: NSView?
+        private var monitor: Any?
+        private var dx: CGFloat = 0
+        private var dy: CGFloat = 0
+        private var fired = false
+
+        /// How far the fingers travel sideways before it counts, in points.
+        private let threshold: CGFloat = 90
+
+        init(onSwipe: @escaping (Bool) -> Void) { self.onSwipe = onSwipe }
+
+        func install() {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                self?.handle(event)
+                return event
+            }
+        }
+
+        func remove() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
+
+        private func handle(_ event: NSEvent) {
+            // Trackpad gestures only (they have phases); a mouse wheel scrolls as usual.
+            guard let view, event.window === view.window, event.hasPreciseScrollingDeltas else { return }
+            if event.phase == .began {
+                let point = view.convert(event.locationInWindow, from: nil)
+                guard view.bounds.contains(point) else { fired = true; return }
+                dx = 0; dy = 0; fired = false
+            }
+            guard event.phase == .changed, !fired else { return }
+            dx += event.scrollingDeltaX
+            dy += event.scrollingDeltaY
+            if abs(dx) > threshold, abs(dx) > abs(dy) * 2 {
+                fired = true
+                // With natural scrolling, fingers moving left give a negative delta.
+                let fingersLeft = event.isDirectionInvertedFromDevice ? dx < 0 : dx > 0
+                onSwipe(fingersLeft)
+            }
+        }
+    }
+}

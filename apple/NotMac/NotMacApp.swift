@@ -51,6 +51,18 @@ private struct TaskCommands: Commands {
             Button(newItemTitle) { model.newItem() }
                 .keyboardShortcut("n")
         }
+        CommandGroup(after: .sidebar) {
+            Divider()
+            Button("Inbox") { model.showList(model.inboxID) }.keyboardShortcut("1")
+            Button("Today") { model.showList(model.todayID) }.keyboardShortcut("2")
+            Button("Upcoming") { model.showList(model.upcomingID) }.keyboardShortcut("3")
+            Button("Someday") { model.showList(model.somedayID) }.keyboardShortcut("4")
+            Button("Next List") { model.stepList(forward: true) }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+            Button("Previous List") { model.stepList(forward: false) }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+            Divider()
+        }
         CommandMenu("Task") {
             Button(model.selectedTask?.completedAt == nil ? "Complete" : "Mark as Not Completed") {
                 model.toggleSelected()
