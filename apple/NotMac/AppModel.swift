@@ -105,6 +105,8 @@ final class AppModel {
     /// Notes of the selected folder (or all notes), or search results.
     private(set) var notes: [NoteSummary] = []
     private(set) var noteCount = 0
+    /// How All Notes sorts; folders carry their own.
+    private(set) var allNotesSort: NoteSort = .edited
     var selectedNoteID: String?
     var noteSearch = "" {
         didSet { if oldValue != noteSearch { reloadNotes() } }
@@ -882,14 +884,14 @@ final class AppModel {
         run { try store.moveNote(id: id, folderId: folderID) }
     }
 
-    /// The selected folder sorts its notes by hand.
-    var isManualOrder: Bool {
-        folders.first { $0.id == selectedFolderID }?.manualOrder ?? false
+    /// How the shown folder, or All Notes, sorts its notes (synced, like on the phone).
+    var noteSort: NoteSort {
+        guard let folder = selectedFolderID else { return allNotesSort }
+        return folders.first { $0.id == folder }?.sort ?? .edited
     }
 
-    func setManualOrder(_ manual: Bool) {
-        guard let folder = selectedFolderID else { return }
-        run { try store.setFolderManualOrder(id: folder, manual: manual) }
+    func setNoteSort(_ sort: NoteSort) {
+        run { try store.setNoteSort(folderId: selectedFolderID, sort: sort) }
     }
 
     /// Notes dropped into the shown folder's list at `index` (of `notes`). Notes from elsewhere join
@@ -1102,6 +1104,7 @@ final class AppModel {
     }
 
     private func reloadNotes() {
+        allNotesSort = store.allNotesSort()
         folders = run { try store.folders() } ?? []
         if case let .notes(id?) = selection, !folders.contains(where: { $0.id == id }) {
             // The folder was deleted, possibly on another device.

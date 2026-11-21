@@ -27,18 +27,20 @@ struct NotesView: View {
         .searchable(text: $model.noteSearch, placement: .toolbar, prompt: "Search notes")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                if model.selectedFolderID != nil {
-                    Menu {
-                        Picker("Sort By", selection: Binding(get: { model.isManualOrder }, set: model.setManualOrder)) {
-                            Text("Latest Edit").tag(false)
-                            Text("Manual").tag(true)
+                let sort = model.noteSort
+                Menu {
+                    Picker("Sort By", selection: Binding(get: { sort }, set: model.setNoteSort)) {
+                        // By hand only in a folder: All Notes mixes every folder.
+                        ForEach(model.selectedFolderID == nil ? [NoteSort.edited, .created, .title] : [.edited, .created, .title, .manual], id: \.self) {
+                            Text($0.label).tag($0)
                         }
-                        .pickerStyle(.inline)
-                    } label: {
-                        Label("Sort", systemImage: "arrow.up.arrow.down")
                     }
-                    .help("Sort notes in this folder — drag a note to sort by hand")
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Sort", systemImage: "arrow.up.arrow.down")
                 }
+                .help(model.selectedFolderID == nil ? "Sort notes: \(sort.label.lowercased())"
+                    : "Sort notes: \(sort.label.lowercased()) — dragging a note sorts by hand")
                 if model.selectedNote != nil {
                     Button(action: model.pickImagesForNote) {
                         Label("Add Image", systemImage: "photo.badge.plus")
@@ -219,6 +221,17 @@ struct NotePreviewLine: View {
                 .labelStyle(.titleAndIcon)
         } else {
             Text(line)
+        }
+    }
+}
+
+extension NoteSort {
+    var label: String {
+        switch self {
+        case .edited: "Last Edited"
+        case .created: "Date Created"
+        case .title: "Title"
+        case .manual: "Manual"
         }
     }
 }
