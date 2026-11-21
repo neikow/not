@@ -73,6 +73,36 @@ fn schedule(
     })
 }
 
+/// One release's highlights, for What's new.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Release {
+    pub version: String,
+    pub highlights: Vec<String>,
+}
+
+fn release(r: &not_core::changelog::Release) -> Release {
+    Release {
+        version: r.version.into(),
+        highlights: r.highlights.iter().map(|h| (*h).into()).collect(),
+    }
+}
+
+/// Releases newer than `since` (the version last opened) up to `current`, newest first; empty on
+/// a fresh install (`since` empty). Shown once after an update.
+#[uniffi::export]
+pub fn whats_new(since: String, current: String) -> Vec<Release> {
+    not_core::changelog::whats_new(&since, &current)
+        .iter()
+        .map(release)
+        .collect()
+}
+
+/// Every release's highlights, newest first (About → What's new).
+#[uniffi::export]
+pub fn all_releases() -> Vec<Release> {
+    not_core::changelog::RELEASES.iter().map(release).collect()
+}
+
 /// Which app an imported file came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ImportSource {

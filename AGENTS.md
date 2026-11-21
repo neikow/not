@@ -117,7 +117,9 @@ Every feature and every bug fix comes with tests; nothing merges with `make chec
 
 ## Releases (tags)
 
-A release is a version tag on `main`: `git tag v0.2.3 && git push origin v0.2.3`. Pushes to `main`
+A release is a version tag on `main`: `git tag v0.2.3 && git push origin v0.2.3`. Before tagging,
+add the release's highlights to `crates/not-core/src/changelog.rs` (the apps' What's new, shown
+once after an update). Pushes to `main`
 and pull requests only run the tests (`.github/workflows/ci.yml`: Rust fmt, clippy, tests; Android
 core build and unit tests). A `vMAJOR.MINOR.PATCH` tag, once its tests pass, runs:
 

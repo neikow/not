@@ -442,6 +442,8 @@ private fun TimeRow(label: String, minutes: Int, onChange: (Int) -> Unit) {
 private fun AboutPage(onLicenses: () -> Unit) {
     val context = LocalContext.current
     val version = BuildConfig.VERSION_NAME
+    var showsNews by remember { mutableStateOf(false) }
+    if (showsNews) WhatsNewSheet(WhatsNew.all(), onDismiss = { showsNews = false })
     Section(null) {
         Text("not $version", style = Not.type.bodyStrong)
         Text(
@@ -460,7 +462,7 @@ private fun AboutPage(onLicenses: () -> Unit) {
         }
     }
     Section("More", padded = false) {
-        LinkRow(R.drawable.ic_history, "What's new", "Every release and what changed") { Links.open(context, Links.RELEASES) }
+        LinkRow(R.drawable.ic_history, "What's new", "What changed in each version", external = false) { showsNews = true }
         Divider(Modifier.padding(start = 56.dp))
         LinkRow(R.drawable.ic_code, "Source code", "not is open source, on GitHub") { Links.open(context, Links.REPO) }
         Divider(Modifier.padding(start = 56.dp))

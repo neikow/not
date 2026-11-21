@@ -350,6 +350,7 @@ enum AboutLinks {
 /// Version, feature requests and bug reports, the source, privacy, licenses, credits.
 private struct AboutSettings: View {
     @State private var showsLicenses = false
+    @State private var showsNews = false
 
     var body: some View {
         Form {
@@ -369,7 +370,8 @@ private struct AboutSettings: View {
                 }
             }
             Section("More") {
-                Link(destination: URL(string: AboutLinks.releases)!) { Label("What's New", systemImage: "sparkles") }
+                Button { showsNews = true } label: { Label("What's New", systemImage: "sparkles") }
+                    .buttonStyle(.link)
                 Link(destination: URL(string: AboutLinks.repo)!) { Label("Source Code", systemImage: "chevron.left.forwardslash.chevron.right") }
                 Link(destination: URL(string: AboutLinks.privacy)!) { Label("Privacy", systemImage: "hand.raised") }
                 Button { showsLicenses = true } label: { Label("Open-Source Licenses", systemImage: "doc.text") }
@@ -381,6 +383,7 @@ private struct AboutSettings: View {
             }
         }
         .sheet(isPresented: $showsLicenses) { LicensesSheet() }
+        .sheet(isPresented: $showsNews) { WhatsNewSheet(releases: allReleases()) }
     }
 }
 
@@ -445,5 +448,50 @@ private struct SupportSettings: View {
                 }
             }
         }
+    }
+}
+
+/// What changed since the version last opened: shown once after an update, never on a fresh
+/// install. Mirrors `WhatsNew` on Android.
+enum WhatsNew {
+    static let key = "seenVersion"
+
+    /// Releases to show now, and the current version marked as seen. A Mac that had the app before
+    /// this existed has no version stored but isn't fresh: it gets everything up to now.
+    static func pending(freshInstall: Bool) -> [Release] {
+        let current = AboutLinks.version
+        let seen = UserDefaults.standard.string(forKey: key) ?? (freshInstall ? current : "0.0.0")
+        UserDefaults.standard.set(current, forKey: key)
+        return whatsNew(since: seen, current: current)
+    }
+}
+
+struct WhatsNewSheet: View {
+    let releases: [Release]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("What's New").font(.title.weight(.bold))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(releases, id: \.version) { release in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Version \(release.version)").font(.headline).foregroundStyle(.secondary)
+                            ForEach(release.highlights, id: \.self) { line in
+                                Label(line, systemImage: "sparkle").labelStyle(.titleAndIcon)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Spacer()
+                Button("Got It") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 460, height: 380)
     }
 }

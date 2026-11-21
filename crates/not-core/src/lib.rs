@@ -1,6 +1,7 @@
 //! Shared core of `not`: Loro documents, SQLite persistence and read model, commands, sync.
 
 mod catalog;
+pub mod changelog;
 mod checklist;
 pub mod date;
 mod error;

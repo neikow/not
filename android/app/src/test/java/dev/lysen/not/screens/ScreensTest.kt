@@ -190,6 +190,16 @@ class ScreensTest {
     }
 
     @Test
+    fun whatsNewShowsOnceAfterAnUpdateAndNeverOnAFreshInstall() {
+        assertTrue("fresh install", dev.lysen.not.WhatsNew.pending(app, freshInstall = true, current = "1.0.0").isEmpty())
+        assertTrue("same version", dev.lysen.not.WhatsNew.pending(app, freshInstall = false, current = "1.0.0").isEmpty())
+        app.getSharedPreferences("app", android.content.Context.MODE_PRIVATE).edit().clear().commit()
+        val news = dev.lysen.not.WhatsNew.pending(app, freshInstall = false, current = "1.0.0")
+        assertEquals("an install from before this existed catches up", "1.0.0", news.first().version)
+        assertTrue("once", dev.lysen.not.WhatsNew.pending(app, freshInstall = false, current = "1.0.0").isEmpty())
+    }
+
+    @Test
     fun notePreviewsShowLinesWithoutBrackets() {
         app.store.createNote(null, "Pancakes\nShopping\n- [ ] Flour\n- [x] Eggs\n- [ ]")
         showApp(Tab.Notes)

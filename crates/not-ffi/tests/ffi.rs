@@ -405,3 +405,11 @@ fn imports_report_what_came_in_and_refuse_other_files() {
         Err(NotError::Invalid { .. })
     ));
 }
+
+#[test]
+fn whats_new_lists_releases_since_the_last_version_opened() {
+    assert!(not_ffi::whats_new(String::new(), "1.0.0".into()).is_empty());
+    let new = not_ffi::whats_new("0.2.0".into(), "1.0.0".into());
+    assert_eq!(new[0].version, "1.0.0");
+    assert!(!not_ffi::all_releases()[0].highlights.is_empty());
+}

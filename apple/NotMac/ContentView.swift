@@ -5,6 +5,8 @@ struct ContentView: View {
     @Bindable var model: AppModel
     /// The first-run steps, on a fresh Mac.
     @State private var onboarding = false
+    /// What changed since the version last opened, shown once after an update.
+    @State private var news: [Release] = []
 
     /// Notes and workouts have no inspector; the editor takes the room.
     private var hasInspector: Bool {
@@ -58,8 +60,14 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             model.refreshToday()
         }
-        .onAppear { onboarding = FirstRun.needed(model) }
+        .onAppear {
+            onboarding = FirstRun.needed(model)
+            news = WhatsNew.pending(freshInstall: onboarding)
+        }
         .sheet(isPresented: $onboarding) { OnboardingSheet(model: model) }
+        .sheet(isPresented: Binding(get: { !onboarding && !news.isEmpty }, set: { if !$0 { news = [] } })) {
+            WhatsNewSheet(releases: news)
+        }
         .alert("Something went wrong", isPresented: .constant(model.errorMessage != nil)) {
             Button("OK") { model.errorMessage = nil }
         } message: {

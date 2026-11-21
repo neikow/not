@@ -76,10 +76,13 @@ fun NotAppUi(
     // A fresh install starts with a few first-run steps.
     val app = LocalContext.current.applicationContext as NotApp
     var firstRun by rememberSaveable { mutableStateOf(FirstRun.needed(app)) }
+    // After an update: what changed, once (checked before the first run marks itself done).
+    var news by remember { mutableStateOf(WhatsNew.pending(app, freshInstall = firstRun)) }
     if (firstRun) {
         Onboarding(tasks, onDone = { firstRun = false })
         return
     }
+    if (news.isNotEmpty()) WhatsNewSheet(news, onDismiss = { news = emptyList() })
     if (showsSettings) {
         BackHandler { showsSettings = false }
         SettingsScreen(tasks, workouts, onBack = { showsSettings = false })
