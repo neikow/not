@@ -13,8 +13,8 @@ android {
         applicationId = "dev.lysen.not"
         minSdk = 29
         targetSdk = 36
-        // CI passes -PversionCode=<run number> -PversionName=0.1.<run number> so every release
-        // installs over the last one; local builds stay at 1.
+        // A release tag vX.Y.Z makes CI pass -PversionName=X.Y.Z -PversionCode=X·10000 + Y·100 + Z,
+        // so every release installs over the last one; local builds stay at 1.
         versionCode = (findProperty("versionCode") as String?)?.toInt() ?: 1
         versionName = (findProperty("versionName") as String?) ?: "0.1.0"
     }

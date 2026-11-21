@@ -1,4 +1,5 @@
-# Builds the Mac app on demand (Actions → "Mac app" → Run workflow): Apple-silicon, ad-hoc
+# Releases build the Mac installer themselves (ci.yml, on a version tag). This rebuilds it by hand
+# for an existing release (Actions → "Mac app" → Run workflow): Apple-silicon, ad-hoc
 # signed (no paid developer account, ADR 0005), packed as a drag-and-drop installer
 # (scripts/make-dmg.sh), and attached to a GitHub release (the latest by default) as
 # not-mac-<version>.dmg. Manual only: macOS minutes cost 10× on private repos.

@@ -43,8 +43,9 @@ android/           Compose app. Own design system in ui/ (no Material 3). widget
 scripts/           build-apple.sh, build-android.sh (core + bindings), fetch-exercises.sh
 docs/              architecture.md, adr/NNNN-*.md
 deploy/            portainer-stack.yml: production server stack (ghcr image, `nginx` network)
-.github/workflows/ ci.yml: tests on every push/PR, signed APK release + server image on main;
-                   mac.yml: build the Mac app and attach its installer (.dmg), run by hand
+.github/workflows/ ci.yml: tests on every push/PR; a version tag releases (APK, Mac installer,
+                   server image);
+                   mac.yml: rebuild a release's Mac installer (.dmg), run by hand
 ```
 
 ## Where code goes
@@ -113,30 +114,40 @@ Every feature and every bug fix comes with tests; nothing merges with `make chec
   dir (`-dataDir <dir> -seedDemo YES -show <page>` in DEBUG builds). Don't automate the user's own
   Mac or phone.
 
-## Releases (Android, Obtainium)
+## Releases (tags)
 
-`.github/workflows/ci.yml`: every push and PR runs the Rust job (fmt, clippy, tests), then the Android
-job (core build for arm64-v8a, unit tests). On a push to `main` that passes, it also builds a release
-APK signed with the release key, and publishes GitHub release `v0.1.<run number>` with
-`not-0.1.<run number>.apk` attached. `versionCode` = the workflow run number, so each release installs
-over the previous one.
+A release is a version tag on `main`: `git tag v0.2.3 && git push origin v0.2.3`. Pushes to `main`
+and pull requests only run the tests (`.github/workflows/ci.yml`: Rust fmt, clippy, tests; Android
+core build and unit tests). A `vMAJOR.MINOR.PATCH` tag, once its tests pass, runs:
+
+- **android**: the release APK signed with the release key, `versionName` = the tag's version,
+  `versionCode` = MAJOR·10000 + MINOR·100 + PATCH (so minor and patch stay under 100, and each
+  release installs over the last);
+- **mac**: the Release app, ad-hoc signed, packed as the drag-and-drop installer
+  (`scripts/make-dmg.sh`);
+- **release**: GitHub release `vX.Y.Z` with `not-X.Y.Z.apk` and `not-mac-X.Y.Z.dmg`, notes listing
+  every commit since the previous tag. Obtainium picks up the APK;
+- **server-image**: see below.
+
+A tag that isn't on `main`, or isn't `vMAJOR.MINOR.PATCH`, fails before anything is built.
+`mac.yml` (run by hand) rebuilds the installer for an existing release.
 
 - Signing secrets (repo settings → Secrets → Actions): `NOT_KEYSTORE_BASE64`, `NOT_KEYSTORE_PASSWORD`,
   `NOT_KEY_ALIAS`, `NOT_KEY_PASSWORD`. The keystore itself lives outside the repo
   (`~/.android/not-release.jks` + `not-release.env`). Losing it means users must uninstall to update.
 - Obtainium: add the GitHub repo URL as the source; the repo is private, so give Obtainium a GitHub
   token with read access to it (Obtainium settings → GitHub personal access token).
-- Renaming the workflow file resets the run number: bump versions past the last release if you do.
+- Versions only go up: never reuse or lower a tag (the last push-based release was v0.1.11).
 - Local builds keep versionCode 1 and the debug key, so they don't install over a release build.
 
 ## Server deploy (ghcr, Portainer)
 
-On a green push to `main`, CI's `server-image` job builds the Dockerfile and pushes
-`ghcr.io/neikow/not-server:latest` (and `:0.1.<run number>`), then POSTs the Portainer stack
-webhook (`PORTAINER_WEBHOOK_URL` secret; skipped with a warning if unset). The stack is
-`deploy/portainer-stack.yml`: no published ports, joins the external `nginx` network, and Nginx
-Proxy Manager forwards `not.lysen.dev` to `http://not-server:8080` with WebSockets on. `NOT_DB_KEY`
-lives in the stack's environment in Portainer; keep a copy with the backups.
+With a release (after it's published), CI's `server-image` job builds the Dockerfile and pushes
+`ghcr.io/neikow/not-server:latest` and `:X.Y.Z`, then POSTs the Portainer stack webhook
+(`PORTAINER_WEBHOOK_URL` secret; skipped with a warning if unset). Pushes to `main` don't deploy.
+The stack is `deploy/portainer-stack.yml`: no published ports, joins the external `nginx` network,
+and Nginx Proxy Manager forwards `not.lysen.dev` to `http://not-server:8080` with WebSockets on.
+`NOT_DB_KEY` lives in the stack's environment in Portainer; keep a copy with the backups.
 
 ## Gotchas
 

@@ -1,17 +1,20 @@
-# Tests every push and pull request. A push to main that passes also builds a signed APK and
-# publishes it as a GitHub release, which Obtainium picks up (see AGENTS.md, "Releases").
+# Tests every push to main and every pull request. A version tag (`v0.2.0`) releases: once its
+# tests pass, it builds the signed APK and the Mac installer, publishes them as a GitHub release
+# (Obtainium picks up the APK), pushes the server image and redeploys the server. See AGENTS.md,
+# "Releases".
 name: CI
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # Never cancel a main run halfway through publishing a release.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Never cancel a release (or a main run) halfway through.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v') }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,45 +33,39 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
-  server-image:
-    name: Server image (ghcr)
-    needs: rust
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  # The version a tag stands for, checked once for every release job.
+  version:
+    name: Release version
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write # push to ghcr.io
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      code: ${{ steps.parse.outputs.code }}
     steps:
       - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/not-server:latest
-            ghcr.io/${{ github.repository_owner }}/not-server:0.1.${{ github.run_number }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      # Portainer pulls :latest and recreates the stack (deploy/portainer-stack.yml).
-      - name: Redeploy on the server
+          fetch-depth: 0
+      - id: parse
         env:
-          WEBHOOK: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+          TAG: ${{ github.ref_name }}
         run: |
-          if [ -z "$WEBHOOK" ]; then echo "::warning::PORTAINER_WEBHOOK_URL not set, skipping redeploy"; exit 0; fi
-          curl -fsS -X POST "$WEBHOOK"
+          # vMAJOR.MINOR.PATCH; Android's versionCode must only go up: MAJOR·10000 + MINOR·100 + PATCH.
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]{1,2})\.([0-9]{1,2})$ ]]; then
+            echo "::error::tag $TAG isn't vMAJOR.MINOR.PATCH (minor and patch under 100)"; exit 1
+          fi
+          major=${BASH_REMATCH[1]} minor=$((10#${BASH_REMATCH[2]})) patch=$((10#${BASH_REMATCH[3]}))
+          echo "version=$major.$minor.$patch" >> "$GITHUB_OUTPUT"
+          echo "code=$((major * 10000 + minor * 100 + patch))" >> "$GITHUB_OUTPUT"
+          # Only what's on main gets released.
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$TAG isn't on main"; exit 1; }
 
   android:
     name: Android (unit tests, APK)
-    needs: rust
+    needs: [rust, version]
+    # The version job only runs for tags; tests run regardless.
+    if: ${{ !cancelled() && needs.rust.result == 'success' && needs.version.result != 'failure' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # publish the release
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -94,30 +91,135 @@ jobs:
         run: ./gradlew testDebugUnitTest
 
       - name: Build signed release APK
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: startsWith(github.ref, 'refs/tags/v')
         working-directory: android
         env:
           KEYSTORE_BASE64: ${{ secrets.NOT_KEYSTORE_BASE64 }}
           NOT_KEYSTORE_PASSWORD: ${{ secrets.NOT_KEYSTORE_PASSWORD }}
           NOT_KEY_ALIAS: ${{ secrets.NOT_KEY_ALIAS }}
           NOT_KEY_PASSWORD: ${{ secrets.NOT_KEY_PASSWORD }}
+          VERSION: ${{ needs.version.outputs.version }}
+          CODE: ${{ needs.version.outputs.code }}
         run: |
           test -n "$KEYSTORE_BASE64" || { echo "::error::NOT_KEYSTORE_BASE64 secret is missing"; exit 1; }
           export NOT_KEYSTORE="$RUNNER_TEMP/release.jks"
           echo "$KEYSTORE_BASE64" | base64 -d > "$NOT_KEYSTORE"
-          ./gradlew assembleRelease \
-            -PversionCode=${{ github.run_number }} -PversionName=0.1.${{ github.run_number }}
+          ./gradlew assembleRelease -PversionCode="$CODE" -PversionName="$VERSION"
           "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner" verify \
             app/build/outputs/apk/release/app-release.apk
-          mv app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/not-0.1.${{ github.run_number }}.apk"
+          mkdir -p "$RUNNER_TEMP/out"
+          mv app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/out/not-$VERSION.apk"
           rm "$NOT_KEYSTORE"
 
-      - name: Publish release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: apk
+          path: ${{ runner.temp }}/out/not-${{ needs.version.outputs.version }}.apk
+
+  mac:
+    name: Mac app (installer)
+    needs: [rust, version]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mac
+      - run: brew install xcodegen
+
+      - name: Build the Rust core and Swift bindings
+        run: ./scripts/build-apple.sh
+
+      - name: Build not.app (Release) and pack the installer
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          CODE: ${{ needs.version.outputs.code }}
+        run: |
+          cd apple && xcodegen generate --quiet && cd ..
+          xcodebuild -project apple/Not.xcodeproj -scheme NotMac -configuration Release \
+            -destination platform=macOS,arch=arm64 -derivedDataPath build/xcode \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$CODE" -quiet build
+          app=build/xcode/Build/Products/Release/not.app
+          # Ad-hoc: no paid developer account (ADR 0005).
+          codesign --force --deep --sign - "$app"
+          codesign --verify --verbose "$app"
+          mkdir -p "$RUNNER_TEMP/out"
+          ./scripts/make-dmg.sh "$app" "$RUNNER_TEMP/out/not-mac-$VERSION.dmg"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dmg
+          path: ${{ runner.temp }}/out/not-mac-${{ needs.version.outputs.version }}.dmg
+
+  release:
+    name: Publish release
+    needs: [version, android, mac]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # publish the release
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          version=0.1.${{ github.run_number }}
-          gh release create "v$version" "$RUNNER_TEMP/not-$version.apk" \
-            --target "$GITHUB_SHA" --title "not $version" \
-            --notes "$(git log -1 --format='%s%n%n%b' "$GITHUB_SHA")"
+          # The notes: every change since the previous version tag, one line each.
+          previous="$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null || true)"
+          range="${previous:+$previous..}$TAG"
+          {
+            echo "## What's new"
+            git log --no-merges --format='- %s' "$range"
+            echo
+            echo "**Android**: \`not-$VERSION.apk\` (Obtainium installs it). **Mac**: open \`not-mac-$VERSION.dmg\` and drag not to Applications; the first time, right-click it → Open (not notarized)."
+          } > notes.md
+          gh release create "$TAG" out/* --verify-tag --title "not $VERSION" --notes-file notes.md
+
+  server-image:
+    name: Server image (ghcr)
+    needs: [version, release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/not-server:latest
+            ghcr.io/${{ github.repository_owner }}/not-server:${{ needs.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Portainer pulls :latest and recreates the stack (deploy/portainer-stack.yml).
+      - name: Redeploy on the server
+        env:
+          WEBHOOK: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then echo "::warning::PORTAINER_WEBHOOK_URL not set, skipping redeploy"; exit 0; fi
+          curl -fsS -X POST "$WEBHOOK"
