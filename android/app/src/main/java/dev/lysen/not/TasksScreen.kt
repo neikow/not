@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -136,7 +137,8 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
             },
             header = { Subtitle(state, onProcess = { processing = true }) },
             pull = PullAction("Lists", R.drawable.ic_list) { showsLists = true },
-            // Swiping the title bar steps through Today, Upcoming and the lists, in the order the sheet shows them.
+            // Swiping the title bar or an empty spot steps through Inbox, Today, Upcoming… and the smart
+            // lists, in the order the sheet shows them, round and round.
             onSwipe = { forward ->
                 neighbour(state, forward)?.let { (id, _) ->
                     haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
@@ -324,12 +326,23 @@ private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>,
     )
 }
 
-/** The id and title of the view before or after the shown one, in the lists sheet's order. */
-private fun neighbour(state: UiState, forward: Boolean): Pair<String, String>? {
-    val views = state.views.map { it.id to it.title }
-    val at = views.indexOfFirst { it.first == state.selectedViewId }
-    if (at < 0) return null
-    return views.getOrNull(if (forward) at + 1 else at - 1)
+/**
+ * The id and title of the view before or after the shown one, in the lists sheet's order, going
+ * round from the last to the first. From a tag, forward starts at the first view, back at the last.
+ */
+private fun neighbour(state: UiState, forward: Boolean): Pair<String, String>? =
+    neighbourIn(state.views.map { it.id to it.title }, state.selectedViewId, forward)
+
+internal fun <T> neighbourIn(views: List<Pair<String, T>>, selected: String, forward: Boolean): Pair<String, T>? {
+    if (views.isEmpty()) return null
+    val at = views.indexOfFirst { it.first == selected }
+    if (at >= 0 && views.size == 1) return null
+    val next = when {
+        at < 0 -> if (forward) 0 else views.lastIndex
+        forward -> (at + 1) % views.size
+        else -> (at - 1 + views.size) % views.size
+    }
+    return views[next]
 }
 
 /** The tag a smart list is about when it names just one (`#work`, `#work !1`). */
@@ -646,7 +659,28 @@ private fun ListsSheet(
     onDismiss: () -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    // Tags have a page of their own in the sheet: there can be many, and lists come first.
+    var showsTags by rememberSaveable { mutableStateOf(false) }
     Sheet(onDismiss) { close ->
+        BackHandler(showsTags) { showsTags = false }
+        if (showsTags) {
+            TagsPage(
+                state,
+                saved = state.views.filter { !it.builtIn },
+                onBack = { showsTags = false },
+                onSelect = {
+                    onSelect(it)
+                    close()
+                },
+                onSaveTag = onSaveTag,
+                onRenameTag = onRenameTag,
+                onDeleteTag = {
+                    close()
+                    onDeleteTag(it)
+                },
+            )
+            return@Sheet
+        }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
             Text("Lists", style = Not.type.title, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 12.dp))
             Field(
@@ -711,27 +745,21 @@ private fun ListsSheet(
             }
             ListRow(R.drawable.ic_add, "New smart list", accent = true, onClick = onNewList)
             if (state.tags.isNotEmpty()) {
-                SectionLabel("Tags")
-                state.tags.forEach { tag ->
-                    ListRow(
-                        icon = R.drawable.ic_tag,
-                        title = tag.name,
-                        count = tag.openCount.toInt(),
-                        selected = state.selectedViewId == "#${tag.name}",
-                        onClick = { pick("#${tag.name}") },
-                        menu = {
-                            TagMenu(
-                                saved = saved.any { soleTag(it.query) == tag.name },
-                                onSave = { onSaveTag(tag.name) },
-                                onRename = { onRenameTag(tag.name) },
-                                onDelete = {
-                                    close()
-                                    onDeleteTag(tag.name)
-                                },
-                            )
-                        },
-                    )
-                }
+                val tagShown = state.selectedViewId.takeIf { it.startsWith("#") }?.removePrefix("#")
+                Spacer(Modifier.height(8.dp))
+                ListRow(
+                    icon = R.drawable.ic_tag,
+                    title = "Tags",
+                    selected = tagShown != null,
+                    onClick = { showsTags = true },
+                    menu = {
+                        // The tag being shown, so it's clear where it lives.
+                        if (tagShown != null) Text(tagShown, style = Not.type.label, color = Not.colors.inkFaint, maxLines = 1, modifier = Modifier.widthIn(max = 120.dp))
+                        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                            Icon(R.drawable.ic_expand_more, "Show tags", tint = Not.colors.inkFaint, size = 22.dp, modifier = Modifier.rotate(-90f))
+                        }
+                    },
+                )
             }
             Spacer(Modifier.height(8.dp))
             Divider(Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
@@ -746,6 +774,63 @@ private fun ListsSheet(
         }
     }
 }
+
+/** The lists sheet's page of tags: back, a filter once there are many, and every tag with its menu. */
+@Composable
+private fun TagsPage(
+    state: UiState,
+    saved: List<TaskView>,
+    onBack: () -> Unit,
+    onSelect: (String) -> Unit,
+    onSaveTag: (String) -> Unit,
+    onRenameTag: (String) -> Unit,
+    onDeleteTag: (String) -> Unit,
+) {
+    var filter by rememberSaveable { mutableStateOf("") }
+    val shown = state.tags.filter { filter.isBlank() || it.name.contains(filter.trim().removePrefix("#"), ignoreCase = true) }
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
+        Row(Modifier.padding(top = 0.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(R.drawable.ic_arrow_back, "Back to lists", onBack, tint = Not.colors.inkMuted)
+            Text("Tags", style = Not.type.title, modifier = Modifier.padding(start = 2.dp))
+        }
+        if (state.tags.size > TAG_FILTER_FROM) {
+            Field(
+                filter,
+                { filter = it },
+                "Find a tag",
+                filled = true,
+                shape = CircleShape,
+                leading = { Icon(R.drawable.ic_search, null, tint = Not.colors.inkFaint, size = 20.dp) },
+                trailing = if (filter.isEmpty()) null else ({ IconButton(R.drawable.ic_close, "Clear", { filter = "" }, tint = Not.colors.inkFaint) }),
+                imeAction = ImeAction.Search,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            )
+        }
+        if (shown.isEmpty()) {
+            Text("No tag matches “${filter.trim()}”", style = Not.type.body, color = Not.colors.inkMuted, modifier = Modifier.padding(14.dp))
+        }
+        shown.forEach { tag ->
+            ListRow(
+                icon = R.drawable.ic_tag,
+                title = tag.name,
+                count = tag.openCount.toInt(),
+                selected = state.selectedViewId == "#${tag.name}",
+                onClick = { onSelect("#${tag.name}") },
+                menu = {
+                    TagMenu(
+                        saved = saved.any { soleTag(it.query) == tag.name },
+                        onSave = { onSaveTag(tag.name) },
+                        onRename = { onRenameTag(tag.name) },
+                        onDelete = { onDeleteTag(tag.name) },
+                    )
+                },
+            )
+        }
+    }
+}
+
+/** Past this many tags, their page gets a filter field. */
+private const val TAG_FILTER_FROM = 8
 
 @Composable
 private fun SectionLabel(text: String) {

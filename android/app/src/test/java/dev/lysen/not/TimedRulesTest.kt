@@ -43,6 +43,38 @@ class TimedRulesTest {
     }
 
     @Test
+    fun aTimedHabitCountsAsDoneOnceItsGoalIsMetBetweenReloads() {
+        // Reading 50 of 60 min when loaded; 15 min later the goal is met, though the core said not yet.
+        val running = summary(read, 60u, on = true, since = 0, onMs = 50 * min, offMs = 0, done = false)
+        assertFalse(running.doneAt(now = 10 * min, loadedAt = 10 * min))
+        assertTrue(running.doneAt(now = 25 * min, loadedAt = 10 * min))
+        assertFalse(running.pendingAt(now = 25 * min, loadedAt = 10 * min))
+        // A retainer within its allowance when loaded runs over it while paused.
+        val paused = summary(wear, 60u, on = false, since = 0, onMs = 0, offMs = 50 * min, done = true)
+        assertTrue(paused.doneAt(now = 0, loadedAt = 0))
+        assertFalse(paused.doneAt(now = 20 * min, loadedAt = 0))
+        assertTrue(paused.pendingAt(now = 20 * min, loadedAt = 0))
+    }
+
+    @Test
+    fun theLiveNotificationCountsWhatWasChosen() {
+        // Retainer paused since 10 min, 50 min off today of a 60 min allowance; now at 20 min.
+        val paused = summary(wear, 60u, on = false, since = 10 * min, onMs = 0, offMs = 50 * min).timedLive(20 * min, 20 * min)!!
+        assertEquals(Chrono(10 * min, down = false), paused.chrono(LiveCounter.Stretch, 20 * min))
+        assertEquals(Chrono(-30 * min, down = false), paused.chrono(LiveCounter.Today, 20 * min))
+        assertEquals(Chrono(30 * min, down = true), paused.chrono(LiveCounter.Left, 20 * min))
+        // Over the allowance: the time over, counting up.
+        val over = summary(wear, 60u, on = false, since = 0, onMs = 0, offMs = 70 * min).timedLive(20 * min, 20 * min)!!
+        assertEquals(Chrono(10 * min, down = false), over.chrono(LiveCounter.Left, 20 * min))
+        // Worn (on) doesn't count toward "at most off": only the stretch moves.
+        val worn = summary(wear, 60u, on = true, since = 5 * min, onMs = 0, offMs = 0).timedLive(20 * min, 20 * min)!!
+        assertEquals(Chrono(5 * min, down = false), worn.chrono(LiveCounter.Left, 20 * min))
+        assertTrue(read.unusualCounts)
+        assertTrue(wear.unusualCounts)
+        assertFalse(TimedRule(atMostOff = false, usualOn = true, nudgeMinutes = 0u).unusualCounts)
+    }
+
+    @Test
     fun theRunningStretchKeepsCountingBetweenReloads() {
         // Paused at 0 with 40 min off already today; loaded at 10 min, shown at 25 min.
         val s = summary(wear, 120u, on = false, since = 0, onMs = 300 * min, offMs = 50 * min)

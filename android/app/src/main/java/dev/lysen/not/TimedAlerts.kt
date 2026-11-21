@@ -53,6 +53,15 @@ class TimedAlerts(private val app: NotApp) {
         refresh()
     }
 
+    /** What [habitId]'s live notification counts on this phone. The stretch by default. */
+    fun liveCounter(habitId: String): LiveCounter =
+        prefs.getString(KEY_COUNTER + habitId, null)?.let { name -> LiveCounter.entries.firstOrNull { it.name == name } } ?: LiveCounter.Stretch
+
+    fun setLiveCounter(habitId: String, counter: LiveCounter) {
+        prefs.edit().putString(KEY_COUNTER + habitId, counter.name).apply()
+        refresh()
+    }
+
     fun refresh() {
         val habits = try {
             app.store.habitsNow(LocalDate.now().toString()).filter { it.habit.timed != null }
@@ -87,6 +96,9 @@ class TimedAlerts(private val app: NotApp) {
                 wantShown += id
                 notify(liveId(id), live(summary, now))
                 timed.securedAt(now)?.let { nextTick = minOf(nextTick, it) }
+                // A countdown that runs out turns into "over": redraw it then, counting up.
+                val chrono = timed.chrono(liveCounter(id), now)
+                if (chrono.down) nextTick = minOf(nextTick, chrono.base)
             }
             if (rule.nudgeMinutes > 0u) {
                 val at = since + rule.nudgeMinutes.toLong() * 60_000
@@ -171,13 +183,15 @@ class TimedAlerts(private val app: NotApp) {
             !live.atMostOff && counts -> "goal at ${clockText(now + live.leftMs)}"
             else -> null
         }
+        val chrono = live.chrono(liveCounter(summary.habit.id), now)
         return NotificationCompat.Builder(app, CHANNEL_LIVE)
             .setSmallIcon(R.drawable.ic_timer)
             .setContentTitle(summary.habit.title)
             .setContentText(listOfNotNull(head, tail).joinToString(" · "))
-            .setWhen(since)
+            .setWhen(chrono.base)
             .setShowWhen(true)
             .setUsesChronometer(true)
+            .setChronometerCountDown(chrono.down)
             .setCategory(NotificationCompat.CATEGORY_STOPWATCH)
             .setRequestPromotedOngoing(true)
             .setOngoing(true)
@@ -262,6 +276,7 @@ class TimedAlerts(private val app: NotApp) {
         internal const val EXTRA_SINCE = "since"
         private const val REQUEST_OPEN = 0x7300_0000
         private const val KEY_LIVE = "live_"
+        private const val KEY_COUNTER = "counter_"
         private const val KEY_NUDGED = "nudged_"
         private const val KEY_SHOWN = "shown"
         private const val KEY_NUDGES = "nudges"

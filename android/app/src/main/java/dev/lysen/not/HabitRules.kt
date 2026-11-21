@@ -29,6 +29,16 @@ val HabitSummary.doneToday: Boolean get() = when {
 /** On the day's to-do and not done yet: what badges count. */
 val HabitSummary.pending: Boolean get() = onToday && !doneToday
 
+/**
+ * [doneToday] as of [now], for a summary loaded at [loadedAt]: a timed habit's running stretch
+ * keeps counting between reloads, so it can meet its goal (or use up its allowance) meanwhile.
+ */
+fun HabitSummary.doneAt(now: Long, loadedAt: Long, isToday: Boolean = true): Boolean =
+    timedLive(now, loadedAt, isToday)?.met ?: doneToday
+
+/** [pending] as of [now]; see [doneAt]. */
+fun HabitSummary.pendingAt(now: Long, loadedAt: Long): Boolean = onToday && !doneAt(now, loadedAt)
+
 /** Check-ins that fill one day's dot: the goal for daily habits, one for the others. */
 val Habit.dayGoal: UInt get() = if (isDaily) goal else 1u
 
@@ -163,6 +173,39 @@ fun timedStatus(rule: TimedRule, live: TimedLive, now: Long): String {
         else -> "${durationText(live.leftMs)} to go"
     }
     return "$head · $tail"
+}
+
+/** What a timed habit's live notification counts, chosen per habit on this phone. */
+enum class LiveCounter(val label: String) {
+    /** Up, from when the habit left its usual state. */
+    Stretch("This stretch"),
+
+    /** Up, the time counted toward the goal today. */
+    Today("Today"),
+
+    /** Down, to the goal or to the end of the allowance; then up, the time over. */
+    Left("Time left"),
+}
+
+/** Out of its usual state, the habit counts toward the goal: [LiveCounter.Today] and [LiveCounter.Left] move then. */
+val TimedRule.unusualCounts: Boolean get() = !usualOn != atMostOff
+
+/** A notification chronometer: [base] for `setWhen`, counting [down] or up. */
+data class Chrono(val base: Long, val down: Boolean)
+
+/**
+ * The chronometer showing [counter] as of [now]. When the running stretch doesn't count toward the
+ * goal, only the stretch moves, so that's what it shows.
+ */
+fun TimedLive.chrono(counter: LiveCounter, now: Long): Chrono {
+    val counts = tracked && on != atMostOff
+    return when {
+        !counts || counter == LiveCounter.Stretch -> Chrono(since ?: now, down = false)
+        counter == LiveCounter.Today -> Chrono(now - countedMs, down = false)
+        leftMs > 0 -> Chrono(now + leftMs, down = true)
+        // Over the allowance: counts the time over, up.
+        else -> Chrono(now + leftMs, down = false)
+    }
 }
 
 /** Local midnight ending the day that contains [at]. */

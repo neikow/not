@@ -365,6 +365,24 @@ fun TimedSheet(summary: HabitSummary, state: HabitsState, viewModel: HabitsViewM
                         alerts.setLive(habit.id, liveOn)
                     })
                 }
+                // Only worth a choice when the stretch counts toward the goal; otherwise just it moves.
+                if (liveOn && rule.unusualCounts) {
+                    var counter by remember(habit.id) { mutableStateOf(alerts.liveCounter(habit.id)) }
+                    ChoicePills(LiveCounter.entries.map { it.label }, counter.ordinal) {
+                        counter = LiveCounter.entries[it]
+                        alerts.setLiveCounter(habit.id, counter)
+                    }
+                    val stretch = stateName(rule, !rule.usualOn).lowercase()
+                    Text(
+                        when (counter) {
+                            LiveCounter.Stretch -> "Counts up from the moment it's $stretch."
+                            LiveCounter.Today -> "Counts up all the time ${stateName(rule, !rule.atMostOff).lowercase()} today."
+                            LiveCounter.Left -> if (rule.atMostOff) "Counts down the allowance left today, then the time over." else "Counts down to today's goal."
+                        },
+                        style = Not.type.caption,
+                        color = colors.inkMuted,
+                    )
+                }
             }
 
             HabitSection("Repeat") { WeekdayPicker(habit.days, onChange = { save(days = it) }) }

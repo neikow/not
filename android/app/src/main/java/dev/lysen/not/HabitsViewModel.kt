@@ -28,8 +28,8 @@ data class HabitsState(
     val day: LocalDate = today,
     /** The habit open in the detail sheet. */
     val openHabitId: String? = null,
-    /** On today's to-do and not done yet, for badges; counted on today even while a past day is shown. */
-    val pending: Int = 0,
+    /** Today's habits, for badges, even while a past day is shown. */
+    val todays: List<HabitSummary> = emptyList(),
     val error: String? = null,
     /** When [habits] was computed: timed habits keep counting from there until the next reload. */
     val loadedAt: Long = nowMs(),
@@ -37,6 +37,9 @@ data class HabitsState(
     val openHabit: HabitSummary? get() = habits.firstOrNull { it.habit.id == openHabitId }
 
     val isToday: Boolean get() = day == today
+
+    /** On today's to-do and not done yet as of [now], for badges. */
+    fun pending(now: Long): Int = todays.count { it.pendingAt(now, loadedAt) }
 }
 
 /** How far back the day picker goes, today included. */
@@ -178,7 +181,7 @@ class HabitsViewModel(application: Application) : AndroidViewModel(application) 
                 loadedAt = nowMs(),
                 habits = habits,
                 openHabitId = s.openHabitId.takeIf { id -> habits.any { it.habit.id == id } },
-                pending = todays.count { it.pending },
+                todays = todays,
             )
         }
     }

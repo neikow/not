@@ -123,7 +123,7 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
             scope.launch { listState.animateScrollToItem(0) }
             return@OnTabGesture
         }
-        val next = reorder.items.indexOfFirst { it.pending }
+        val next = reorder.items.indexOfFirst { it.pendingAt(nowMs(), state.loadedAt) }
         // Item 0 is the title.
         scope.launch { listState.animateScrollToItem(if (next < 0) 0 else next + 1) }
     }
@@ -204,8 +204,10 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
  */
 @Composable
 private fun DayHeader(state: HabitsState, onSelect: (LocalDate) -> Unit) {
+    // Timed habits keep counting between reloads, so judge them as of now.
+    val now = rememberNow(10_000L)
     val due = state.habits.filter { it.onToday }
-    val done = due.count { it.doneToday }
+    val done = due.count { it.doneAt(now, state.loadedAt, state.isToday) }
     val progress = when {
         due.isEmpty() -> if (state.isToday) "Nothing due today" else "Nothing was due"
         done == due.size -> if (state.isToday) "All done for today" else "All done"

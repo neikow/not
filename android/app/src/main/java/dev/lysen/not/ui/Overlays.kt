@@ -72,6 +72,14 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -91,20 +99,48 @@ private fun BareDialog(onDismissRequest: () -> Unit, content: @Composable () -> 
     }
 }
 
+/** How much of the screen a tall sheet covers when it opens; dragging it up shows the rest. */
+internal const val SHEET_PEEK = 0.6f
+
+/**
+ * Where a sheet goes when the finger lets go, as an offset down from fully open, or null to close.
+ * [peek] is the offset it rests at when it opens (0 when it fits). Below the peek it closes on a
+ * pull of [closeDistance] or a flick down, or comes back; above it, a flick picks the way, else the
+ * nearer of peek and fully open.
+ */
+internal fun sheetRest(offset: Float, velocity: Float, peek: Float, closeDistance: Float): Float? = when {
+    offset > peek -> if (offset - peek > closeDistance || velocity > 1800f) null else peek
+    velocity < -800f -> 0f
+    velocity > 800f -> peek
+    else -> if (offset < peek / 2) 0f else peek
+}
+
 /**
  * A bottom sheet: slides up on a spring, follows the finger down, and closes on a flick, a tap on
- * the scrim or Back. [content] gets `close`, which animates out before calling [onDismiss].
+ * the scrim or Back. A tall one opens to [SHEET_PEEK] of the screen, in thumb reach, and goes full
+ * height when dragged up, or when its content is scrolled up (the sheet moves first, then the
+ * content), or when the keyboard comes up. [content] gets `close`, which animates out before
+ * calling [onDismiss].
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun Sheet(onDismiss: () -> Unit, content: @Composable ColumnScope.(close: () -> Unit) -> Unit) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
+    val closeDistance = with(density) { 120.dp.toPx() }
+    // Down from fully open, in px: 0 shows all of the sheet, [height] none of it.
     val offset = remember { Animatable(2000f) }
     // The finger's pull, on top of [offset]; folded into it when the drag ends.
     var pull by remember { mutableFloatStateOf(0f) }
     val scrim = remember { Animatable(0f) }
     var height by remember { mutableStateOf(0f) }
+    var screen by remember { mutableStateOf(0f) }
     var closing by remember { mutableStateOf(false) }
+    // Opened once: later size changes (content, keyboard) keep where the user put it.
+    var opened by remember { mutableStateOf(false) }
+    // Where it rests when open: as much of it as fits in the peek. Read live by the callbacks below.
+    fun peek(): Float = if (screen <= 0f) 0f else (height - screen * SHEET_PEEK).coerceAtLeast(0f)
+    val keyboard = WindowInsets.isImeVisible
 
     fun close() {
         if (closing) return
@@ -116,22 +152,68 @@ fun Sheet(onDismiss: () -> Unit, content: @Composable ColumnScope.(close: () -> 
         }
     }
 
-    BareDialog(onDismissRequest = ::close) {
-        LaunchedEffect(height) {
-            if (height > 0 && !closing) {
-                offset.snapTo(offset.value.coerceAtMost(height))
-                launch { scrim.animateTo(1f, tween(220)) }
-                offset.animateTo(0f, spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow))
+    fun moveBy(delta: Float): Float {
+        val current = offset.value + pull
+        val next = (current + delta).coerceIn(0f, height)
+        pull = next - offset.value
+        return next - current
+    }
+
+    fun settle(velocity: Float) {
+        scope.launch {
+            offset.snapTo(offset.value + pull)
+            pull = 0f
+            when (val rest = sheetRest(offset.value, velocity, peek(), closeDistance)) {
+                null -> close()
+                else -> offset.animateTo(rest, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow), initialVelocity = velocity)
             }
         }
-        Box(Modifier.fillMaxSize()) {
+    }
+
+    // The content's scrolling moves the sheet first: up until it's fully open, and down (once the
+    // content is back at its top) toward the peek and away.
+    val nested = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset =
+                if (available.y < 0 && offset.value + pull > 0f) Offset(0f, -moveBy(available.y)) else Offset.Zero
+
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
+                if (available.y > 0 && source == NestedScrollSource.UserInput) Offset(0f, -moveBy(available.y)) else Offset.Zero
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                // The sheet didn't move in this gesture: the content flings as usual.
+                if (pull == 0f || closing) return Velocity.Zero
+                settle(available.y)
+                return available
+            }
+        }
+    }
+
+    BareDialog(onDismissRequest = ::close) {
+        LaunchedEffect(height, screen) {
+            if (height <= 0 || screen <= 0 || closing) return@LaunchedEffect
+            if (!opened) {
+                opened = true
+                offset.snapTo(offset.value.coerceAtMost(height))
+                launch { scrim.animateTo(1f, tween(220)) }
+                offset.animateTo(peek(), spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow))
+            } else if (offset.value > peek()) {
+                // Grown or shrunk while resting: back to its rest.
+                offset.animateTo(peek(), spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow))
+            }
+        }
+        // Typing needs the whole sheet in view, above the keyboard.
+        LaunchedEffect(keyboard) {
+            if (keyboard && opened && !closing) offset.animateTo(0f, spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow))
+        }
+        Box(Modifier.fillMaxSize().onSizeChanged { screen = it.height.toFloat() }) {
             Box(
                 Modifier
                     .fillMaxSize()
                     .background(Not.colors.scrim.copy(alpha = Not.colors.scrim.alpha * scrim.value))
                     .clickable(remember { MutableInteractionSource() }, indication = null, onClick = ::close),
             )
-            val drag = rememberDraggableState { delta -> pull = (pull + delta).coerceAtLeast(-offset.value) }
+            val drag = rememberDraggableState { delta -> moveBy(delta) }
             Column(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -142,18 +224,12 @@ fun Sheet(onDismiss: () -> Unit, content: @Composable ColumnScope.(close: () -> 
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                     .background(Not.colors.surface)
+                    .nestedScroll(nested)
                     .draggable(
                         drag,
                         Orientation.Vertical,
-                        onDragStopped = { velocity ->
-                            offset.snapTo(offset.value + pull)
-                            pull = 0f
-                            if (offset.value > with(density) { 120.dp.toPx() } || velocity > 1800f) {
-                                close()
-                            } else {
-                                offset.animateTo(0f, spring(dampingRatio = 0.8f))
-                            }
-                        },
+                        onDragStarted = { offset.stop() },
+                        onDragStopped = { velocity -> settle(velocity) },
                     )
                     .navigationBarsPadding()
                     .imePadding(),

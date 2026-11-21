@@ -78,6 +78,35 @@ class ScreensTest {
     }
 
     @Test
+    @Config(qualifiers = "w411dp-h891dp")
+    fun tagsHaveTheirOwnPageInTheListsSheet() {
+        val store = app.store
+        store.setTags(store.addTask(INBOX_ID, "Call the bank", today()), listOf("admin"))
+        store.setTags(store.addTask(INBOX_ID, "Buy milk", today()), listOf("errands"))
+        dev.lysen.not.FirstRun.done(app)
+        val tasks = TasksViewModel(app)
+        compose.setContent {
+            NotTheme {
+                NotAppUi(tasks, HabitsViewModel(app), NotesViewModel(app), WorkoutsViewModel(app), MutableStateFlow(Tab.Tasks), onTabShown = {})
+            }
+        }
+        compose.onNodeWithContentDescription("Switch list").performClick()
+        // Tags wait behind one row, out of the way of the lists.
+        compose.onNodeWithText("Tags").assertIsDisplayed()
+        assertTrue("no tag rows on the first page", compose.onAllNodesWithText("errands").fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithText("Tags").performClick()
+        compose.onNodeWithText("errands").performClick()
+        compose.waitUntil(5_000) { tasks.state.value.selectedViewId == "#errands" }
+        assertEquals("Buy milk", tasks.state.value.outline.open.single().task.title)
+        // Back on the lists sheet, the row says which tag is shown, and Back leaves the page.
+        compose.onNodeWithContentDescription("Switch list").performClick()
+        compose.onNodeWithText("errands").assertIsDisplayed()
+        compose.onNodeWithText("Tags").performClick()
+        compose.onNodeWithContentDescription("Back to lists").performClick()
+        compose.onNodeWithText("Smart lists").assertIsDisplayed()
+    }
+
+    @Test
     fun aDeletedTaskComesBackFromTheTrash() {
         val store = app.store
         val id = store.addTask(INBOX_ID, "Call the bank", today())

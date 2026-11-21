@@ -85,7 +85,8 @@ fun NotAppUi(
         SettingsScreen(tasks, workouts, onBack = { showsSettings = false })
         return
     }
-    val pendingHabits = habits.state.collectAsStateWithLifecycle().value.pending
+    // Timed habits can meet their goal between reloads: recount every half minute.
+    val pendingHabits = habits.state.collectAsStateWithLifecycle().value.pending(rememberNow(30_000L))
     val editingNote = notes.state.collectAsStateWithLifecycle().value.openNote != null
     val inWorkout = workouts.state.collectAsStateWithLifecycle().value.openId != null
     // Back from another tab goes to Tasks first, then leaves the app.
