@@ -814,7 +814,7 @@ impl Store {
     }
 
     /// Whether `ancestor` is above `id` in the tree.
-    fn is_ancestor(&self, ancestor: TreeID, id: TreeID) -> bool {
+    pub(crate) fn is_ancestor(&self, ancestor: TreeID, id: TreeID) -> bool {
         let mut current = id;
         while let Some(TreeParentId::Node(parent)) = self.tasks.parent(current) {
             if parent == ancestor {

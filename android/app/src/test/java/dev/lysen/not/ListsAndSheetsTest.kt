@@ -22,6 +22,32 @@ class ListsAndSheetsTest {
     }
 
     @Test
+    fun aDroppedRowFindsItsParentAndPlace() {
+        // Trip, ·Flights, ·Hotel, Report  (dots: one level down)
+        val rows = listOf("trip" to 0, "flights" to 1, "hotel" to 1, "report" to 0)
+        // Hotel dragged right under Flights: Flights' subtask, last.
+        assertEquals("flights" to null, placement(rows, "hotel", 2))
+        // Report dragged right: Trip's last subtask (nothing after it at that level).
+        assertEquals("trip" to null, placement(rows, "report", 1))
+        // Flights stays a subtask of Trip, before Hotel.
+        assertEquals("trip" to "hotel", placement(rows, "flights", 1))
+        // Flights dragged left: top level, before Report.
+        assertEquals(null to "report", placement(rows, "flights", 0))
+        assertEquals(null to null, placement(rows, "missing", 0))
+    }
+
+    @Test
+    fun aTaskCantGoUnderItsOwnSubtasks() {
+        fun task(id: String, parent: String?) = dev.lysen.not.core.TaskItem(
+            id = id, parentId = parent, title = id, notes = "", completedAt = null, start = null, time = null,
+            deadline = null, someday = false, priority = 0u, repeat = null, tags = emptyList(),
+        )
+        val tasks = listOf(task("a", null), task("b", "a"), task("c", "b"), task("d", null))
+        assertEquals(setOf("b", "c"), descendants("a", tasks))
+        assertEquals(emptySet<String>(), descendants("d", tasks))
+    }
+
+    @Test
     fun anEmptyListSaysWhatNewTasksGet() {
         fun hint(tags: List<String> = emptyList(), priority: UByte = 0u, start: String? = null, someday: Boolean = false) =
             newTaskHint(dev.lysen.not.core.ViewDefaults(tags, priority, start, someday), "2026-11-08")

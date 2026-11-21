@@ -475,6 +475,89 @@ impl Store {
     /// Makes a subtask a sibling of its parent, right after it, keeping the tags it had through
     /// its ancestors (so a top-level task stays in the views it was in); in `view`'s order right
     /// after the parent. One undo step. False when it is top-level already.
+    /// Moves a task under `parent` (another task) right before its child `before`, or last; or with
+    /// no parent to the top level, shown in `view` right before `before` (a task shown at its top
+    /// level), or last. One undo step. Tags it had only through the tasks it leaves are kept on it,
+    /// so it stays in the lists it was in. For dragging a row sideways into or out of another.
+    pub fn nest_in_view(
+        &self,
+        view: &str,
+        id: &str,
+        parent: Option<&str>,
+        before: Option<&str>,
+        today: Date,
+    ) -> Result<()> {
+        let node = self.node(id, &[KIND_TASK])?;
+        let parent_node = parent.map(|p| self.node(p, &[KIND_TASK])).transpose()?;
+        if let Some(p) = parent_node
+            && (p == node || self.is_ancestor(node, p))
+        {
+            return Err(Error::Invalid("a task can't go under itself".into()));
+        }
+        let before_node = before.map(|b| self.node(b, &[KIND_TASK])).transpose()?;
+        let task = self.task(id)?;
+        let old = self.inherited_tags(task.parent_id.as_deref())?;
+        let new = self.inherited_tags(parent)?;
+        let mut tags = task.tags.clone();
+        for tag in old.into_iter().filter(|t| !new.contains(t)) {
+            if !tags.contains(&tag) {
+                tags.push(tag);
+            }
+        }
+        let retag = tags != task.tags;
+        // At the top level, its place among the rows the view shows (manual order only).
+        let order = if parent.is_none() && self.view_sort(view) == TaskSort::Manual && view != UPCOMING {
+            let query = self.view_query(view)?;
+            let ctx = Context::new(self.all_tasks()?, today);
+            let mut shown: Vec<String> = self
+                .ordered_tops(view, &ctx, &query, TaskSort::Manual, today)
+                .into_iter()
+                .map(|i| ctx.tasks[i].id.clone())
+                .filter(|t| t != id)
+                .collect();
+            let at = before
+                .and_then(|b| shown.iter().position(|t| t == b))
+                .unwrap_or(shown.len());
+            shown.insert(at, id.to_owned());
+            Some(shown)
+        } else {
+            None
+        };
+        self.transact(|| {
+            match (parent_node, before_node) {
+                (Some(_), Some(b)) if b != node => self.tasks.mov_before(node, b)?,
+                (Some(p), _) => self.tasks.mov(node, TreeParentId::Node(p))?,
+                (None, _) => self.tasks.mov(node, TreeParentId::Root)?,
+            }
+            if retag {
+                write_tags(&self.tasks.get_meta(node)?, &tags)?;
+            }
+            if let Some(shown) = &order {
+                let map = self.view_order.ensure_mergeable_map(view)?;
+                for (i, task) in shown.iter().enumerate() {
+                    map.insert(task, i as f64)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Tags a task under `parent` gets through it and its ancestors.
+    fn inherited_tags(&self, parent: Option<&str>) -> Result<Vec<String>> {
+        let mut tags: Vec<String> = Vec::new();
+        let mut at = parent.map(str::to_owned);
+        while let Some(id) = at {
+            let task = self.task(&id)?;
+            for tag in task.tags {
+                if !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+            }
+            at = task.parent_id;
+        }
+        Ok(tags)
+    }
+
     pub(crate) fn outdent(&self, id: &str, view: Option<&str>) -> Result<bool> {
         let node = self.node(id, &[KIND_TASK])?;
         let Some(TreeParentId::Node(parent)) = self.tasks.parent(node) else {

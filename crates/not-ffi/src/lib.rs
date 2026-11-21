@@ -1015,6 +1015,26 @@ impl NotStore {
             .move_in_view(&view, &id, before_id.as_deref(), date(&today)?)?)
     }
 
+    /// Moves a task under `parent_id` right before its child `before_id` (or last), or with no
+    /// parent to the top level of `view`, right before `before_id` shown there (or last). One undo
+    /// step; tags it had only through the tasks it leaves stay on it.
+    pub fn nest_in_view(
+        &self,
+        view: String,
+        id: String,
+        parent_id: Option<String>,
+        before_id: Option<String>,
+        today: String,
+    ) -> Result<(), NotError> {
+        Ok(self.store.nest_in_view(
+            &view,
+            &id,
+            parent_id.as_deref(),
+            before_id.as_deref(),
+            date(&today)?,
+        )?)
+    }
+
     /// Makes the task a subtask of the open task shown above it in `view`. False if there is none.
     pub fn indent_in_view(&self, view: String, id: String, today: String) -> Result<bool, NotError> {
         Ok(self.store.indent_in_view(&view, &id, date(&today)?)?)

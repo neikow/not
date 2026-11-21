@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -53,6 +54,11 @@ class ReorderState<T>(
     private var visualTop by mutableFloatStateOf(0f)
     private var travelled = 0f
     private var session: Session<T>? = null
+    /** Sideways nesting: the dragged row's level when picked up, and where letting go puts it. */
+    private var startDepth = 0
+    var targetDepth by mutableStateOf(0)
+        private set
+    private var dx = 0f
     /** The row whose long press just ended: the tap its release makes isn't a tap. */
     private var heldKey: Any? = null
     private var scroller: Job? = null
@@ -62,7 +68,15 @@ class ReorderState<T>(
         val depth: (T) -> Int,
         val onDrop: (List<T>) -> Unit,
         val onHold: () -> Unit,
+        val nest: Nest<T>?,
     )
+
+    /**
+     * Dragging sideways changes the row's level: [indent] pixels per level, right to go under the
+     * row above, left to come back out. [onLevel] runs as the level changes (a haptic tick), and
+     * [onNest] instead of a plain drop when the level changed, with the order and the new level.
+     */
+    class Nest<T>(val indent: Float, val onLevel: () -> Unit, val onNest: (List<T>, Int) -> Unit)
 
     internal fun update(source: List<T>) {
         this.source = source
@@ -84,6 +98,7 @@ class ReorderState<T>(
         depth: (T) -> Int = { 0 },
         onDrop: (List<T>) -> Unit,
         onHold: () -> Unit = {},
+        nest: Nest<T>? = null,
     ) {
         val key = keyOf(item)
         val info = find(key) ?: return
@@ -92,7 +107,10 @@ class ReorderState<T>(
         draggingKey = key
         visualTop = info.offset.toFloat()
         travelled = 0f
-        session = Session(canSwap, depth, onDrop, onHold)
+        dx = 0f
+        startDepth = depth(item)
+        targetDepth = startDepth
+        session = Session(canSwap, depth, onDrop, onHold, nest)
         heldKey = key
     }
 
@@ -103,12 +121,36 @@ class ReorderState<T>(
         return true
     }
 
-    internal fun drag(dy: Float) {
+    internal fun drag(dy: Float, dxStep: Float = 0f) {
         if (draggingKey == null) return
         visualTop += dy
         travelled += abs(dy)
         swapIfPassed()
         autoscroll()
+        val nest = session?.nest ?: return
+        dx += dxStep
+        travelled += abs(dxStep)
+        relevel(nest)
+    }
+
+    /** The level letting go would give: sideways travel in [Nest.indent] steps, from the top level to one under the row above. */
+    private fun relevel(nest: Nest<T>) {
+        val s = session ?: return
+        val key = draggingKey ?: return
+        val at = items.indexOfFirst { keyOf(it) == key }
+        val deepest = if (at > 0) s.depth(items[at - 1]) + 1 else 0
+        val level = (startDepth + Math.round(dx / nest.indent)).coerceIn(0, deepest)
+        if (level != targetDepth) {
+            targetDepth = level
+            nest.onLevel()
+        }
+    }
+
+    /** How far sideways to draw the dragged row: its new level's indent. */
+    internal fun translationX(key: Any): Float {
+        if (draggingKey != key) return 0f
+        val nest = session?.nest ?: return 0f
+        return (targetDepth - startDepth) * nest.indent
     }
 
     internal fun end() {
@@ -116,6 +158,7 @@ class ReorderState<T>(
         val moved = travelled > edge / 4
         val order = items
         val changed = order.map(keyOf) != source.map(keyOf)
+        val releveled = s.nest != null && targetDepth != startDepth
         val ended = draggingKey
         draggingKey = null
         session = null
@@ -125,7 +168,9 @@ class ReorderState<T>(
             delay(300)
             if (heldKey == ended) heldKey = null
         }
-        if (moved && changed) {
+        if (moved && releveled) {
+            s.nest!!.onNest(order, targetDepth)
+        } else if (moved && changed) {
             // Keep showing the dropped order until the store's arrives.
             s.onDrop(order)
         } else {
@@ -167,6 +212,7 @@ class ReorderState<T>(
             add(if (to > from) blockEnd(this, to - 1, s.depth) else to, moving)
         }
         local = items
+        s.nest?.let(::relevel)
     }
 
     /** Index just past the block starting at [start]: the row and the deeper rows after it. */
@@ -217,15 +263,17 @@ fun <T> rememberReorderState(listState: LazyListState, source: List<T>, keyOf: (
 @Composable
 fun <T> Modifier.reorderHandle(state: ReorderState<T>, key: Any, onStart: () -> Unit): Modifier {
     val haptics = LocalHapticFeedback.current
+    // The gesture outlives recompositions: start from the row as it is now, not as first drawn.
+    val start by rememberUpdatedState(onStart)
     return pointerInput(key) {
         detectDragGesturesAfterLongPress(
             onDragStart = {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                onStart()
+                start()
             },
             onDrag = { change, amount ->
                 change.consume()
-                state.drag(amount.y)
+                state.drag(amount.y, amount.x)
             },
             onDragEnd = { state.end() },
             onDragCancel = { state.end() },
@@ -240,16 +288,18 @@ fun <T> Modifier.reorderHandle(state: ReorderState<T>, key: Any, onStart: () -> 
 @Composable
 fun <T> Modifier.reorderable(state: ReorderState<T>, item: T, key: Any, enabled: Boolean = true, onStart: () -> Unit): Modifier {
     val haptics = LocalHapticFeedback.current
+    // The gesture outlives recompositions: start from the row as it is now, not as first drawn.
+    val start by rememberUpdatedState(onStart)
     val dragging = state.draggingKey == key
     val gesture = if (!enabled) Modifier else Modifier.pointerInput(key) {
         detectDragGesturesAfterLongPress(
             onDragStart = {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                onStart()
+                start()
             },
             onDrag = { change, amount ->
                 change.consume()
-                state.drag(amount.y)
+                state.drag(amount.y, amount.x)
             },
             onDragEnd = { state.end() },
             onDragCancel = { state.end() },
@@ -259,6 +309,7 @@ fun <T> Modifier.reorderable(state: ReorderState<T>, item: T, key: Any, enabled:
         .then(if (dragging) Modifier.zIndex(1f) else Modifier)
         .graphicsLayer {
             translationY = state.translation(key)
+            translationX = state.translationX(key)
             if (state.draggingKey == key) {
                 scaleX = 1.02f
                 scaleY = 1.02f

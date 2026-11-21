@@ -105,6 +105,7 @@ fun TaskDetailSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, o
                 DeadlinePill(task, viewModel)
                 PriorityPill(task, viewModel)
                 TagsPill(task, state, viewModel)
+                ParentPill(task, state, viewModel)
                 PlacePill(task)
             }
 
@@ -217,6 +218,29 @@ private fun TagsPill(task: TaskItem, state: UiState, viewModel: TasksViewModel) 
         onClick = { editing = true },
     )
     if (editing) TagsDialog(task.tags, state, onSave = { viewModel.setTags(task.id, it) }, onDismiss = { editing = false })
+}
+
+/** "Under Trip" (tap to change, × to move it out), or "Make subtask" to pick a parent. */
+@Composable
+private fun ParentPill(task: TaskItem, state: UiState, viewModel: TasksViewModel) {
+    var picking by remember { mutableStateOf(false) }
+    val parent = remember(task.parentId) { task.parentId?.let(viewModel::taskById) }
+    if (parent == null) {
+        Chip(R.drawable.ic_indent, "Make subtask", tint = Not.colors.inkMuted, onClick = { picking = true })
+    } else {
+        Chip(
+            R.drawable.ic_indent,
+            "Under “${parent.title}”",
+            onClick = { picking = true },
+            onRemove = { viewModel.moveOut(task) },
+        )
+    }
+    if (picking) {
+        ParentPicker(task, state, viewModel, onPick = {
+            picking = false
+            viewModel.nest(task, it.id, null, say = true)
+        }, onDismiss = { picking = false })
+    }
 }
 
 /** A plain field for a date in words, with a few quick picks. */

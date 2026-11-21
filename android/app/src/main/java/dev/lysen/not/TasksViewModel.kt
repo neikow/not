@@ -310,12 +310,33 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * [task] goes under [parentId] right before its subtask [beforeId] (or last); with no parent,
+     * to the top level of this view right before [beforeId] (or last). One undo step.
+     */
+    fun nest(task: TaskItem, parentId: String?, beforeId: String?, say: Boolean = false) {
+        run { store.nestInView(_state.value.selectedViewId, task.id, parentId, beforeId, today()) } ?: return
+        if (say) {
+            val parent = parentId?.let { run { store.taskById(it) } }
+            _undoables.trySend(Undoable(if (parent != null) "Moved under “${parent.title}”" else "Moved out to the top"))
+        }
+    }
+
+    fun taskById(id: String): TaskItem? = runCatching { store.taskById(id) }.getOrNull()
+
     fun indent(task: TaskItem) {
         run { store.indentInView(_state.value.selectedViewId, task.id, today()) }
     }
 
     fun outdent(task: TaskItem) {
         run { store.outdentInView(_state.value.selectedViewId, task.id) }
+    }
+
+    /** One level out, right after its parent, with Undo. */
+    fun moveOut(task: TaskItem) {
+        if (run { store.outdentInView(_state.value.selectedViewId, task.id) } == true) {
+            _undoables.trySend(Undoable("Moved out of its parent"))
+        }
     }
 
     fun openTask(id: String?) {

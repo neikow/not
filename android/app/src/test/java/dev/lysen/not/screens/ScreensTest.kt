@@ -5,7 +5,10 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import dev.lysen.not.HabitsViewModel
 import dev.lysen.not.INBOX_ID
@@ -104,6 +107,31 @@ class ScreensTest {
         compose.onNodeWithText("Tags").performClick()
         compose.onNodeWithContentDescription("Back to lists").performClick()
         compose.onNodeWithText("Smart lists").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp")
+    fun holdingATaskMakesItASubtaskOfAnother() {
+        val store = app.store
+        val trip = store.addTask(INBOX_ID, "Plan the trip", today())
+        val flights = store.addTask(INBOX_ID, "Book flights", today())
+        dev.lysen.not.FirstRun.done(app)
+        val tasks = TasksViewModel(app)
+        compose.setContent {
+            NotTheme {
+                NotAppUi(tasks, HabitsViewModel(app), NotesViewModel(app), WorkoutsViewModel(app), MutableStateFlow(Tab.Tasks), onTabShown = {})
+            }
+        }
+        compose.onNodeWithText("Book flights").performTouchInput { longClick() }
+        compose.onNodeWithText("Make subtask of…").performClick()
+        compose.onAllNodesWithText("Plan the trip").onLast().performClick()
+        compose.waitUntil(5_000) { store.taskById(flights).parentId == trip }
+        // And back out from the hold sheet.
+        compose.waitForIdle()
+        compose.onNodeWithText("Book flights").performTouchInput { longClick() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Move out of “Plan the trip”").performClick()
+        compose.waitUntil(5_000) { store.taskById(flights).parentId == null }
     }
 
     @Test

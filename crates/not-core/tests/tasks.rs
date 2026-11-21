@@ -865,3 +865,62 @@ fn a_list_says_what_new_tasks_get() {
     assert_eq!(s.view_defaults(TODAY, today()).unwrap().start, Some(today()));
     assert!(s.view_defaults(INBOX, today()).unwrap().tags.is_empty());
 }
+
+// ---- nesting by dragging sideways ---------------------------------------------------------------
+
+#[test]
+fn a_task_goes_under_another_and_back_out_in_one_step_each() {
+    let s = Store::open_in_memory().unwrap();
+    let trip = add(&s, INBOX, "Trip");
+    let flights = add(&s, INBOX, "Flights");
+    let report = add(&s, INBOX, "Report");
+    // New tasks go on top: Report, Flights, Trip.
+    assert_eq!(open(&s, INBOX), ["Report", "Flights", "Trip"]);
+
+    s.nest_in_view(INBOX, &flights, Some(&trip), None, today())
+        .unwrap();
+    assert_eq!(
+        s.task_by_id(&flights).unwrap().parent_id.as_deref(),
+        Some(trip.as_str())
+    );
+    assert_eq!(open(&s, INBOX), ["Report", "Trip", "Flights"]);
+    // One undo step puts it back.
+    s.undo().unwrap();
+    assert_eq!(s.task_by_id(&flights).unwrap().parent_id, None);
+    s.redo().unwrap();
+
+    // Before a sibling, then out to the top level right before Report.
+    let hotel = s.add_task(&trip, "Hotel", today()).unwrap();
+    s.nest_in_view(INBOX, &hotel, Some(&trip), Some(&flights), today())
+        .unwrap();
+    assert_eq!(open(&s, INBOX), ["Report", "Trip", "Hotel", "Flights"]);
+    s.nest_in_view(INBOX, &hotel, None, Some(&report), today())
+        .unwrap();
+    assert_eq!(open(&s, INBOX), ["Hotel", "Report", "Trip", "Flights"]);
+
+    // Never under itself or its own subtask.
+    assert!(
+        s.nest_in_view(INBOX, &trip, Some(&flights), None, today())
+            .is_err()
+    );
+    assert!(s.nest_in_view(INBOX, &trip, Some(&trip), None, today()).is_err());
+}
+
+#[test]
+fn leaving_a_tagged_parent_keeps_its_tags() {
+    let s = Store::open_in_memory().unwrap();
+    let work = add(&s, INBOX, "Launch #work");
+    let home = add(&s, INBOX, "Chores #home");
+    let deck = s.add_task(&work, "Slides", today()).unwrap();
+    assert_eq!(open(&s, "#work"), ["Launch", "Slides"]);
+    // Under another tagged task: keeps #work, so it still shows in #work, and gains #home through it.
+    s.nest_in_view("#work", &deck, Some(&home), None, today())
+        .unwrap();
+    assert_eq!(s.task_by_id(&deck).unwrap().tags, ["work"]);
+    assert!(open(&s, "#work").contains(&"Slides".to_string()));
+    assert!(open(&s, "#home").contains(&"Slides".to_string()));
+    // Back under its old parent: it keeps #home now too, so it stays in that list.
+    s.nest_in_view("#work", &deck, Some(&work), None, today())
+        .unwrap();
+    assert_eq!(s.task_by_id(&deck).unwrap().tags, ["home", "work"]);
+}

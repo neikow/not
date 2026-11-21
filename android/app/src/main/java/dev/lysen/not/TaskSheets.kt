@@ -92,6 +92,8 @@ fun ViewEditor(draft: ViewDraft, state: UiState, viewModel: TasksViewModel, onDo
 @Composable
 fun TaskActionsSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, onDismiss: () -> Unit) {
     var tagging by remember { mutableStateOf(false) }
+    var picking by remember { mutableStateOf(false) }
+    val parent = remember(task.parentId) { task.parentId?.let(viewModel::taskById) }
     Sheet(onDismiss) { close ->
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
             Text(task.title, style = Not.type.title, maxLines = 2, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 4.dp))
@@ -116,6 +118,13 @@ fun TaskActionsSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, 
                 })
             }
             Spacer(Modifier.height(8.dp))
+            ListRow(R.drawable.ic_indent, "Make subtask of…", onClick = { picking = true })
+            parent?.let { p ->
+                ListRow(R.drawable.ic_outdent, "Move out of “${p.title}”", onClick = {
+                    close()
+                    viewModel.moveOut(task)
+                })
+            }
             ListRow(R.drawable.ic_tag, if (task.tags.isEmpty()) "Add tags" else task.tags.joinToString(" ") { "#$it" }, onClick = { tagging = true })
             ListRow(R.drawable.ic_delete, "Delete", onClick = {
                 close()
@@ -124,6 +133,60 @@ fun TaskActionsSheet(task: TaskItem, state: UiState, viewModel: TasksViewModel, 
         }
     }
     if (tagging) TagsDialog(task.tags, state, onSave = { viewModel.setTags(task.id, it) }, onDismiss = { tagging = false })
+    if (picking) {
+        ParentPicker(task, state, viewModel, onPick = { picked ->
+            picking = false
+            onDismiss()
+            viewModel.nest(task, picked.id, null, say = true)
+        }, onDismiss = { picking = false })
+    }
+}
+
+/**
+ * Picks the task [task] goes under: this list's tasks first, or any open task by search. Leaves
+ * out the task itself, its subtasks, and its current parent.
+ */
+@Composable
+fun ParentPicker(task: TaskItem, state: UiState, viewModel: TasksViewModel, onPick: (TaskItem) -> Unit, onDismiss: () -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val shown = state.outline.open.map { it.task }
+    val below = remember(task.id, shown) { descendants(task.id, shown) }
+    val found = remember(query, shown) {
+        (if (query.isBlank()) shown else viewModel.search(query).filter { it.completedAt == null })
+            .filter { it.id != task.id && it.id !in below && it.id != task.parentId }
+    }
+    Sheet(onDismiss) { close ->
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 16.dp)) {
+            Text("Make subtask of…", style = Not.type.title, modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 2.dp))
+            Text("“${task.title}” goes under the task you pick.", style = Not.type.caption, color = Not.colors.inkMuted, modifier = Modifier.padding(start = 14.dp, bottom = 10.dp))
+            Field(
+                query,
+                { query = it },
+                "Find a task",
+                filled = true,
+                shape = androidx.compose.foundation.shape.CircleShape,
+                leading = { dev.lysen.not.ui.Icon(R.drawable.ic_search, null, tint = Not.colors.inkFaint, size = 20.dp) },
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            )
+            if (found.isEmpty()) {
+                Text(if (query.isBlank()) "No other tasks here: search for one." else "No task matches “${query.trim()}”", style = Not.type.body, color = Not.colors.inkMuted, modifier = Modifier.padding(14.dp))
+            }
+            found.forEach { candidate ->
+                ListRow(R.drawable.ic_indent, candidate.title, onClick = { onPick(candidate) })
+            }
+        }
+    }
+}
+
+/** Ids of the tasks under [id] among [tasks] (at any depth). */
+internal fun descendants(id: String, tasks: List<TaskItem>): Set<String> {
+    val out = mutableSetOf<String>()
+    var frontier = setOf(id)
+    while (frontier.isNotEmpty()) {
+        frontier = tasks.filter { it.parentId in frontier && it.id !in out }.map { it.id }.toSet()
+        out += frontier
+    }
+    return out
 }
 
 val SNOOZES = listOf(

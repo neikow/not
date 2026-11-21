@@ -344,3 +344,37 @@ fn an_empty_list_offers_what_comes_later_and_what_new_tasks_get() {
     );
     assert!(store.view_defaults("bad id".into(), TODAY.into()).is_err());
 }
+
+#[test]
+fn a_task_nests_under_another_and_comes_back_out() {
+    let db = TempDb::new("nest");
+    let store = NotStore::new(db.path()).unwrap();
+    let inbox = not_ffi::inbox_id();
+    let trip = store
+        .add_task(inbox.clone(), "Trip".into(), TODAY.into())
+        .unwrap();
+    let flights = store
+        .add_task(inbox.clone(), "Flights".into(), TODAY.into())
+        .unwrap();
+    store
+        .nest_in_view(
+            inbox.clone(),
+            flights.clone(),
+            Some(trip.clone()),
+            None,
+            TODAY.into(),
+        )
+        .unwrap();
+    assert_eq!(
+        store.task_by_id(flights.clone()).unwrap().parent_id,
+        Some(trip.clone())
+    );
+    store
+        .nest_in_view(inbox.clone(), flights.clone(), None, Some(trip), TODAY.into())
+        .unwrap();
+    let rows = store.view_outline(inbox, TODAY.into()).unwrap().open;
+    assert_eq!(
+        rows.iter().map(|r| r.task.title.as_str()).collect::<Vec<_>>(),
+        ["Flights", "Trip"]
+    );
+}

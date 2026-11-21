@@ -124,6 +124,8 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
 
     val listState = rememberLazyListState()
     val reorder = rememberReorderState(listState, state.outline.open) { it.task.id }
+    // A level of subtasks, as rows draw it: how far a sideways drag goes for one level.
+    val indentPx = with(androidx.compose.ui.platform.LocalDensity.current) { ROW_INDENT.toPx() }
 
     Box(Modifier.fillMaxSize()) {
         LargeTitleScreen(
@@ -225,7 +227,7 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
                     viewModel,
                     (if (reorder.isDragging(row)) Modifier else Modifier.animateItem())
                         .reorderable(reorder, row, row.task.id, enabled = !row.done) {
-                            startDrag(reorder, outline.open, row, viewModel) { held = row.task }
+                            startDrag(reorder, outline.open, row, viewModel, indentPx, onLevel = { haptics.performHapticFeedback(HapticFeedbackType.SegmentTick) }) { held = row.task }
                         },
                     // The tag a view is about goes without saying on its rows.
                     hideTag = state.selectedViewId.removePrefix("#").takeIf { state.isTag } ?: soleTag(state.selectedView?.query),
@@ -333,27 +335,61 @@ fun TasksScreen(viewModel: TasksViewModel, onOpenSettings: () -> Unit, onOpenHab
 }
 
 /**
- * Drags [row] among its siblings, with its subtasks folded away until it's dropped. Dropping places
- * it before the next sibling, so completed siblings (shown elsewhere) don't throw it off.
+ * Drags [row] with its subtasks folded away until it's dropped. Up and down it goes anywhere in
+ * the list; sideways it changes level ([indentPx] per level, [onLevel] ticks): right to go under
+ * the row above, left to come back out. Where it lands decides its parent and the sibling it goes
+ * before (see [placement]), so completed siblings (shown elsewhere) don't throw it off.
  */
-private fun startDrag(reorder: ReorderState<OutlineRow>, open: List<OutlineRow>, row: OutlineRow, viewModel: TasksViewModel, onHold: () -> Unit) {
+private fun startDrag(
+    reorder: ReorderState<OutlineRow>,
+    open: List<OutlineRow>,
+    row: OutlineRow,
+    viewModel: TasksViewModel,
+    indentPx: Float,
+    onLevel: () -> Unit,
+    onHold: () -> Unit,
+) {
     val at = open.indexOfFirst { it.task.id == row.task.id }
     if (at < 0) return
     var end = at + 1
     while (end < open.size && open[end].depth > row.depth) end++
+    fun drop(order: List<OutlineRow>, depth: Int) {
+        val (parent, before) = placement(order.map { it.task.id to it.depth.toInt() }, row.task.id, depth)
+        if (parent == row.task.parentId && depth == row.depth.toInt()) {
+            viewModel.moveBefore(row.task, before)
+        } else {
+            viewModel.nest(row.task, parent, before)
+        }
+    }
     reorder.start(
         row,
         shown = open.take(at + 1) + open.drop(end),
-        // Top-level rows reorder within the view; subtasks among their siblings.
-        canSwap = { it.depth == row.depth && (row.depth == 0u || it.task.parentId == row.task.parentId) },
+        canSwap = { true },
         depth = { it.depth.toInt() },
-        onDrop = { order ->
-            val i = order.indexOfFirst { it.task.id == row.task.id }
-            val next = order.drop(i + 1).firstOrNull { it.depth == row.depth && (row.depth == 0u || it.task.parentId == row.task.parentId) }
-            viewModel.moveBefore(row.task, next?.task?.id)
-        },
+        onDrop = { order -> drop(order, row.depth.toInt()) },
         onHold = onHold,
+        nest = ReorderState.Nest(indentPx, onLevel) { order, depth -> drop(order, depth) },
     )
+}
+
+/**
+ * Where a row dropped at [id]'s place in [rows] (ids and levels, in order) at level [depth] goes:
+ * under the nearest row above one level up (none at the top level), right before the next row at
+ * its level under that same parent, or last.
+ */
+internal fun placement(rows: List<Pair<String, Int>>, id: String, depth: Int): Pair<String?, String?> {
+    val i = rows.indexOfFirst { it.first == id }
+    if (i < 0) return null to null
+    val parent = if (depth == 0) null else rows.subList(0, i).lastOrNull { it.second < depth }?.takeIf { it.second == depth - 1 }?.first
+    var before: String? = null
+    for ((other, level) in rows.drop(i + 1)) {
+        if (level < depth) break
+        if (level == depth) {
+            before = other
+            break
+        }
+    }
+    return parent to before
 }
 
 /**
@@ -494,7 +530,7 @@ private fun TaskRow(
                     onLongClickLabel = onHold?.let { "Actions" },
                 )
                 .heightIn(min = 56.dp)
-                .padding(start = (12 + row.depth.toInt() * 28).dp, end = 24.dp, top = 2.dp, bottom = 2.dp),
+                .padding(start = 12.dp + ROW_INDENT * row.depth.toInt(), end = 24.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             RoundCheck(
@@ -1090,3 +1126,6 @@ fun TextPromptDialog(title: String, confirm: String, onConfirm: (String) -> Unit
 
 /** Empty space under a task list's last row: somewhere to swipe that isn't a row. */
 private val SWIPE_ROOM = 96.dp
+
+/** How far each level of subtasks is indented. */
+private val ROW_INDENT = 28.dp
