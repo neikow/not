@@ -100,7 +100,24 @@ final class AppModel {
     /// Bumped when a menu bar timer setting changes (they live in UserDefaults, unobserved).
     private(set) var timedBarVersion = 0
 
-    func timedBarChanged() { timedBarVersion += 1 }
+    /// Whether the timed habit menu bar item is in, kept as stored state: a computed `isInserted`
+    /// spins SwiftUI. Updated on reloads, the clock and setting changes.
+    private(set) var showsTimedBar = false
+
+    func timedBarChanged() {
+        timedBarVersion += 1
+        updateTimedBar()
+    }
+
+    func updateTimedBar() {
+        let shows = !menuBarTimed.isEmpty
+        if shows != showsTimedBar { showsTimedBar = shows }
+    }
+
+    /// Paired, or holding anything: past the first run (every install from before it existed too).
+    var isEstablished: Bool {
+        syncInfo != nil || lists.contains { $0.openCount > 0 } || noteCount > 0 || !habits.isEmpty || !workouts.isEmpty
+    }
     /// When `habits` was computed: timed habits keep counting from there until the next reload.
     private(set) var habitsLoadedAt = Date()
     var selectedHabitID: String?
@@ -175,6 +192,7 @@ final class AppModel {
                 try? await Task.sleep(for: .seconds(30))
                 guard let self else { return }
                 self.clock = Date()
+                self.updateTimedBar()
             }
         }
 
@@ -1159,6 +1177,7 @@ final class AppModel {
             : run { try store.habits(date: habitDay, nowMs: Self.nowMs(), utcOffsetMinutes: Self.utcOffsetMinutes()) } ?? []
         habitsLoadedAt = Date()
         if selectedHabit == nil { selectedHabitID = nil }
+        updateTimedBar()
     }
 
     private func reloadPanel() {

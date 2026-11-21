@@ -3,6 +3,8 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var model: AppModel
+    /// The first-run steps, on a fresh Mac.
+    @State private var onboarding = false
 
     /// Notes and workouts have no inspector; the editor takes the room.
     private var hasInspector: Bool {
@@ -56,6 +58,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             model.refreshToday()
         }
+        .onAppear { onboarding = FirstRun.needed(model) }
+        .sheet(isPresented: $onboarding) { OnboardingSheet(model: model) }
         .alert("Something went wrong", isPresented: .constant(model.errorMessage != nil)) {
             Button("OK") { model.errorMessage = nil }
         } message: {

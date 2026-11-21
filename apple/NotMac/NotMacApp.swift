@@ -28,7 +28,7 @@ struct NotMacApp: App {
         .menuBarExtraStyle(.window)
 
         // A timed habit out of its usual state, if its timer is switched on here.
-        MenuBarExtra(isInserted: Binding(get: { !appDelegate.model.menuBarTimed.isEmpty }, set: { _ in })) {
+        MenuBarExtra(isInserted: Binding(get: { appDelegate.model.showsTimedBar }, set: { _ in })) {
             TimedBarMenu(model: appDelegate.model)
         } label: {
             TimedBarLabel(model: appDelegate.model)

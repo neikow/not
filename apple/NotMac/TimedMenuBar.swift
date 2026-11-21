@@ -82,23 +82,22 @@ extension AppModel {
     }
 }
 
-/// The menu bar item: a timer icon and the first habit's count, ticking by itself.
+/// The menu bar item: a timer icon and the first habit's count, in minutes, redrawn with the
+/// model's half-minute clock (a ticking `Text` timer up there keeps SwiftUI redrawing nonstop).
 struct TimedBarLabel: View {
     let model: AppModel
 
     var body: some View {
+        let now = model.clock
         if let summary = model.menuBarTimed.first,
-           let live = summary.timedLive(now: .now, loadedAt: model.habitsLoadedAt) {
-            let chrono = live.chrono(TimedBar.counter(summary.habit.id), now: .now)
+           let live = summary.timedLive(now: now, loadedAt: model.habitsLoadedAt) {
+            let chrono = live.chrono(TimedBar.counter(summary.habit.id), now: now)
+            let ms = Int64(abs(now.timeIntervalSince(chrono.base)) * 1000)
+            let over = !chrono.down && TimedBar.counter(summary.habit.id) == .left && live.leftMs < 0 && live.tracked && live.on != live.atMostOff ? "+" : ""
             HStack(spacing: 3) {
                 Image(systemName: summary.habit.timed?.usualOn == true ? "pause.circle" : "timer")
-                if chrono.down {
-                    Text(timerInterval: Date.now...max(chrono.base, .now), countsDown: true)
-                } else {
-                    Text(chrono.base, style: .timer)
-                }
+                Text(over + durationText(ms))
             }
-            .monospacedDigit()
         } else {
             Image(systemName: "timer")
         }

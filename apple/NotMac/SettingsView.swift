@@ -222,7 +222,7 @@ private struct GeneralSettings: View {
     }
 }
 
-private struct PairForm: View {
+struct PairForm: View {
     let model: AppModel
     @State private var serverURL = ""
     @State private var code = ""
