@@ -35,6 +35,12 @@ body:
     attributes:
       label: Device and system
       placeholder: Pixel 8 · Android 15
+  - type: textarea
+    id: logs
+    attributes:
+      label: Crash details
+      description: Filled in when you report a crash from the app. Nothing personal is in it, only where the code stopped.
+      render: text
   - type: dropdown
     id: sync
     attributes:

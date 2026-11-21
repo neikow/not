@@ -10,6 +10,12 @@ stays yours: it lives on your devices, and only goes where you send it.
 Nothing. not has no analytics, no ads, no tracking, and no account. The developer receives no
 data from the app.
 
+## Crash reports
+
+If not crashes, the next launch asks whether to report it. Reporting opens a GitHub bug report in
+your browser with where the app stopped (code locations, no tasks or notes), which you read
+before sending. Nothing is sent otherwise, and there is no crash-reporting service.
+
 ## Where your data lives
 
 - **On your devices.** Tasks, notes, habits, workouts and settings are stored in the app's private

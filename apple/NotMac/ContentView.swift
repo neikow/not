@@ -7,6 +7,8 @@ struct ContentView: View {
     @State private var onboarding = false
     /// What changed since the version last opened, shown once after an update.
     @State private var news: [Release] = []
+    /// The last crash's summary, when the app crashed since it last asked.
+    @State private var crash: String?
 
     /// Notes and workouts have no inspector; the editor takes the room.
     private var hasInspector: Bool {
@@ -63,6 +65,18 @@ struct ContentView: View {
         .onAppear {
             onboarding = FirstRun.needed(model)
             news = WhatsNew.pending(freshInstall: onboarding)
+            crash = CrashReports.pending()
+        }
+        .alert("not closed unexpectedly", isPresented: Binding(get: { crash != nil }, set: { if !$0 { crash = nil } })) {
+            Button("Report") {
+                if let crash {
+                    NSWorkspace.shared.open(AboutLinks.issueForm("bug_report.yml", device: AboutLinks.system, logs: crash))
+                }
+                crash = nil
+            }
+            Button("Not Now", role: .cancel) { crash = nil }
+        } message: {
+            Text("Reporting it opens a bug report on GitHub with where the app stopped, which you can read before sending. Nothing is sent otherwise.")
         }
         .sheet(isPresented: $onboarding) { OnboardingSheet(model: model) }
         .sheet(isPresented: Binding(get: { !onboarding && !news.isEmpty }, set: { if !$0 { news = [] } })) {

@@ -200,6 +200,18 @@ class ScreensTest {
     }
 
     @Test
+    fun aCrashLastTimeIsOfferedOnceAndForgottenOnNotNow() {
+        dev.lysen.not.FirstRun.done(app)
+        java.io.File(app.filesDir, "last-crash.txt").writeText("not 1.0.0 on Pixel\n\njava.lang.IllegalStateException: boom")
+        showApp()
+        compose.onNodeWithText("not closed unexpectedly").assertIsDisplayed()
+        compose.onNodeWithText("Not now").performClick()
+        compose.waitForIdle()
+        assertTrue(dev.lysen.not.CrashReports.pending(app) == null)
+        assertTrue(compose.onAllNodesWithText("not closed unexpectedly").fetchSemanticsNodes().isEmpty())
+    }
+
+    @Test
     fun notePreviewsShowLinesWithoutBrackets() {
         app.store.createNote(null, "Pancakes\nShopping\n- [ ] Flour\n- [x] Eggs\n- [ ]")
         showApp(Tab.Notes)

@@ -78,6 +78,7 @@ open class NotApp : Application() {
     @OptIn(FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
+        CrashReports.install(this)
         SyncWorker.schedulePeriodic(this)
         // What's been in the trash for 30 days goes for good, on every device (idempotent).
         scope.launch { runCatching { store.purgeTrash(System.currentTimeMillis()) } }

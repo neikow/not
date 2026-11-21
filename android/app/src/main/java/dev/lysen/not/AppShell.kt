@@ -83,6 +83,31 @@ fun NotAppUi(
         return
     }
     if (news.isNotEmpty()) WhatsNewSheet(news, onDismiss = { news = emptyList() })
+    // The app crashed last time: offer to report it (nothing is sent without this).
+    var crash by remember { mutableStateOf(CrashReports.pending(app)) }
+    crash?.let { report ->
+        val context = LocalContext.current
+        fun close() {
+            CrashReports.forget(app)
+            crash = null
+        }
+        dev.lysen.not.ui.CardDialog(
+            title = "not closed unexpectedly",
+            onDismiss = ::close,
+            buttons = {
+                dev.lysen.not.ui.Button("Not now", ::close, kind = dev.lysen.not.ui.ButtonKind.Quiet)
+                dev.lysen.not.ui.Button("Report", {
+                    Links.open(context, Links.bugReport(BuildConfig.VERSION_NAME, Links.device(), logs = report))
+                    close()
+                })
+            },
+        ) {
+            dev.lysen.not.ui.Text(
+                "Reporting it opens a bug report on GitHub with where the app stopped, which you can read before sending. Nothing is sent otherwise.",
+                color = dev.lysen.not.ui.Not.colors.inkMuted,
+            )
+        }
+    }
     if (showsSettings) {
         BackHandler { showsSettings = false }
         SettingsScreen(tasks, workouts, onBack = { showsSettings = false })

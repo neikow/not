@@ -21,11 +21,18 @@ object Links {
      * GitHub's bug report form with the app version and the phone filled in, so a report says
      * what it ran on without asking.
      */
-    fun bugReport(version: String, device: String): String = issueForm("bug_report.yml", version, platform = "Android", device = device)
+    fun bugReport(version: String, device: String, logs: String? = null): String =
+        issueForm("bug_report.yml", version, platform = "Android", device = device, logs = logs)
 
-    internal fun issueForm(template: String, version: String, platform: String, device: String? = null): String {
+    /** Kept under what browsers and GitHub take in a URL, with room for the rest. */
+    internal const val MAX_LOGS = 3500
+
+    internal fun issueForm(template: String, version: String, platform: String, device: String? = null, logs: String? = null): String {
         // Issue forms take a field's value from a query parameter named after its id.
-        val params = listOfNotNull("template" to template, "version" to version, "platform" to platform, device?.let { "device" to it })
+        val params = listOfNotNull(
+            "template" to template, "version" to version, "platform" to platform,
+            device?.let { "device" to it }, logs?.let { "logs" to it.take(MAX_LOGS) },
+        )
         return "$REPO/issues/new?" + params.joinToString("&") { (k, v) -> "$k=${encode(v)}" }
     }
 

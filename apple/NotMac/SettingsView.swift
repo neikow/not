@@ -336,13 +336,15 @@ enum AboutLinks {
     }
 
     /// A GitHub issue form (.github/ISSUE_TEMPLATE) with the version and system filled in.
-    static func issueForm(_ template: String, device: String? = nil) -> URL {
+    static func issueForm(_ template: String, device: String? = nil, logs: String? = nil) -> URL {
         var parts = URLComponents(string: repo + "/issues/new")!
         parts.queryItems = [
             URLQueryItem(name: "template", value: template),
             URLQueryItem(name: "version", value: version),
             URLQueryItem(name: "platform", value: "Mac"),
         ] + (device.map { [URLQueryItem(name: "device", value: $0)] } ?? [])
+            // Kept short enough for a URL (like Android's Links.MAX_LOGS).
+            + (logs.map { [URLQueryItem(name: "logs", value: String($0.prefix(3500)))] } ?? [])
         return parts.url!
     }
 }
