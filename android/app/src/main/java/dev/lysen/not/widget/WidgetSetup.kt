@@ -282,7 +282,6 @@ private fun WidgetSetupScreen(
             SetupSection("Look") {
                 LookRows(
                     current = { key -> draft[key] },
-                    withDefault = true,
                     onChange = { key, value -> edit { setOverride(key, value) } },
                 )
                 Text("“Default” follows Settings → Widgets.", style = Not.type.caption, color = colors.inkMuted)
@@ -336,13 +335,12 @@ fun WidgetPreview(kind: WidgetKind, glanceId: GlanceId?, size: DpSize, state: Pr
 }
 
 /**
- * The five look options. [current] gives the chosen value of each key: a widget's override (null =
- * "Default"), or in Settings the default itself, where there's no "Default" pill ([withDefault]).
+ * The five look options. [current] gives the chosen value of each key: a widget's override, or null
+ * for "Default", the look all widgets share.
  */
 @Composable
 fun LookRows(
     current: (Preferences.Key<String>) -> String?,
-    withDefault: Boolean,
     onChange: (Preferences.Key<String>, String?) -> Unit,
 ) {
     val rows = listOf(
@@ -353,7 +351,7 @@ fun LookRows(
         Triple("Title row", LOOK_HEADER, listOf("on" to "Show", "off" to "Hide")),
     )
     rows.forEach { (label, key, values) ->
-        val options = (if (withDefault) listOf("" to "Default") else emptyList()) + values
+        val options = listOf("" to "Default") + values
         ChoiceRow(label, options, current(key) ?: "") { v -> onChange(key, v.ifEmpty { null }) }
     }
 }

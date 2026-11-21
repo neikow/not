@@ -13,14 +13,8 @@ struct SettingsView: View {
             Tab("Calendar", systemImage: "calendar") {
                 CalendarSettings(overlay: model.calendar)
             }
-            Tab("Archive", systemImage: "archivebox") {
-                ArchiveSettings(model: model)
-            }
             Tab("Trash", systemImage: "trash") {
                 TrashSettings(model: model)
-            }
-            Tab("Workouts", systemImage: "dumbbell") {
-                WorkoutSettings(model: model)
             }
             Tab("Credits", systemImage: "heart") {
                 Form {
@@ -45,7 +39,6 @@ struct SettingsView: View {
     }
 }
 
-/// Tasks done over a day ago, out of their lists' way. ⌘Z undoes a restore or delete.
 /// What was deleted, newest first; it goes for good after 30 days.
 private struct TrashSettings: View {
     let model: AppModel
@@ -109,86 +102,6 @@ private struct TrashSettings: View {
         }
         let inside = item.inside > 0 ? "with \(item.inside) inside" : nil
         return [kind, "deleted " + date.formatted(.relative(presentation: .named)), inside].compactMap { $0 }.joined(separator: " · ")
-    }
-}
-
-private struct ArchiveSettings: View {
-    let model: AppModel
-
-    var body: some View {
-        Form {
-            Section {
-                if model.archive.isEmpty {
-                    Text("Tasks you complete stay in their list for a day, then move here.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(model.archive, id: \.id) { task in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(task.title)
-                            Text(detail(task)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Put Back") { model.restore(task) }
-                            .help("Reopen it")
-                        Button(role: .destructive) { model.delete(id: task.id) } label: { Image(systemName: "trash") }
-                            .buttonStyle(.borderless)
-                            .help("Delete")
-                    }
-                }
-            } footer: {
-                if !model.archive.isEmpty {
-                    HStack {
-                        Spacer()
-                        Button("Delete All", role: .destructive) { model.clearArchive() }
-                    }
-                }
-            }
-        }
-        .frame(minHeight: 320)
-    }
-
-    private func detail(_ task: TaskItem) -> String {
-        let tags = task.tags.map { "#" + $0 }.joined(separator: " ")
-        guard let at = task.completedAt else { return tags }
-        let date = Date(timeIntervalSince1970: TimeInterval(at) / 1000)
-        return [tags, date.formatted(.relative(presentation: .named))].filter { !$0.isEmpty }.joined(separator: " · ")
-    }
-}
-
-/// Bringing in sessions logged elsewhere, as pasted text.
-private struct WorkoutSettings: View {
-    let model: AppModel
-    @State private var text = ""
-    @State private var result: Int?
-
-    var body: some View {
-        Form {
-            Section {
-                TextEditor(text: $text)
-                    .font(.body.monospaced())
-                    .frame(minHeight: 200)
-                    .onChange(of: text) { if !text.isEmpty { result = nil } }
-                HStack {
-                    if let result {
-                        Text(result == 0 ? "No dated workouts found." : "Added \(result) workout\(result == 1 ? "" : "s").")
-                            .foregroundStyle(result == 0 ? .orange : .secondary)
-                    }
-                    Spacer()
-                    Button("Import") {
-                        let added = model.importWorkouts(text)
-                        if added > 0 { text = "" }
-                        result = added
-                    }
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            } header: {
-                Text("Import from text")
-            } footer: {
-                Text("Paste a log: a date like 30/10 starts a workout, a line like “24kg x 10 x 3” adds sets, any other line names an exercise.")
-                    .foregroundStyle(.secondary)
-            }
-        }
     }
 }
 

@@ -165,8 +165,8 @@ class WorkoutsViewModel(application: Application) : AndroidViewModel(application
         reload()
     }
 
-    /** Sessions from a pasted text log; returns how many were added. */
-    fun import(text: String): Int {
+    /** Sessions from a text log (demo data); returns how many were added. */
+    private fun import(text: String): Int {
         refreshToday()
         return run { store.importWorkouts(text, today()) }?.toInt() ?: 0
     }

@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.lysen.not.core.Snooze
 import dev.lysen.not.core.TaskItem
@@ -216,8 +217,9 @@ private fun ReviewAction(label: String, onClick: () -> Unit) {
 /** Everything completed, by day, latest first; tapping the check reopens one. */
 @Composable
 fun LogbookSheet(viewModel: TasksViewModel, onDismiss: () -> Unit) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val done = remember(state.outline, state.archive) { viewModel.logbook() }
+    val app = LocalContext.current.applicationContext as NotApp
+    val version by app.changes.collectAsStateWithLifecycle()
+    val done = remember(version) { viewModel.logbook() }
     val zone = ZoneId.systemDefault()
     val today = LocalDate.now()
     val days = done.groupBy { Instant.ofEpochMilli(it.completedAt ?: 0).atZone(zone).toLocalDate() }

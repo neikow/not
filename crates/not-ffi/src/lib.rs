@@ -1619,21 +1619,6 @@ impl NotStore {
             .collect())
     }
 
-    /// Tasks completed over a day ago, from every list, latest first. Reopening one puts it back.
-    pub fn archive(&self) -> Result<Vec<TaskItem>, NotError> {
-        Ok(self
-            .store
-            .archive(now_millis())?
-            .into_iter()
-            .map(TaskItem::from)
-            .collect())
-    }
-
-    /// Deletes everything in the archive (one undo step). Returns how many tasks.
-    pub fn clear_archive(&self) -> Result<u32, NotError> {
-        Ok(self.store.clear_archive(now_millis())?)
-    }
-
     /// Open tasks a view will show once their start day comes, soonest first: for an empty list.
     pub fn view_later(&self, view: String, today: String) -> Result<Vec<TaskItem>, NotError> {
         Ok(self

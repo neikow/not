@@ -512,7 +512,7 @@ fn tags_can_be_listed_renamed_and_deleted() {
 // ---- archive, search, export ---------------------------------------------------------------------
 
 #[test]
-fn completed_tasks_move_to_the_archive_after_a_day() {
+fn completed_tasks_leave_their_list_after_a_day() {
     let s = Store::open_in_memory().unwrap();
     let old = add(&s, INBOX, "old #home");
     s.add_task(&old, "old.1", today()).unwrap();
@@ -530,7 +530,6 @@ fn completed_tasks_move_to_the_archive_after_a_day() {
         s.view_outline_at("#home", today(), now).unwrap().completed.len(),
         2
     );
-    assert!(s.archive(now).unwrap().is_empty());
 
     let later = now + not_core::ARCHIVE_AFTER_MS + 1000;
     assert!(
@@ -539,14 +538,10 @@ fn completed_tasks_move_to_the_archive_after_a_day() {
             .completed
             .is_empty()
     );
-    assert_eq!(titles(&s.archive(later).unwrap()), ["recent", "old"]);
+    assert_eq!(titles(&s.logbook(10).unwrap()), ["recent", "old"]);
 
     s.set_completed(&old, false, today()).unwrap();
     assert_eq!(s.view_outline_at("#home", today(), later).unwrap().open.len(), 3);
-    assert_eq!(s.clear_archive(later).unwrap(), 1);
-    assert!(s.archive(later).unwrap().is_empty());
-    assert!(s.undo().unwrap());
-    assert_eq!(titles(&s.archive(later).unwrap()), ["recent"]);
 }
 
 #[test]

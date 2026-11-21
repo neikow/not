@@ -19,8 +19,6 @@ final class AppModel {
     private(set) var outline = Outline(open: [], completed: [])
     /// Open tasks for today, for the Today badge.
     private(set) var dueCount = 0
-    /// Tasks completed over a day ago, from every list, latest first (Settings → Archive).
-    private(set) var archive: [TaskItem] = []
     /// Typed in the task list's search field; while set, the list shows matches from every list.
     var taskSearch = "" {
         didSet { if oldValue != taskSearch { reloadTasks() } }
@@ -1074,8 +1072,8 @@ final class AppModel {
         linksRevision += 1
     }
 
-    /// Adds sessions from a pasted text log; returns how many.
-    func importWorkouts(_ text: String) -> Int {
+    /// Adds sessions from a text log (demo data); returns how many.
+    private func importWorkouts(_ text: String) -> Int {
         refreshToday()
         return Int(run { try store.importWorkouts(text: text, today: today) } ?? 0)
     }
@@ -1084,14 +1082,11 @@ final class AppModel {
 
     func undo() { run { _ = try store.undo() } }
 
-    /// Puts an archived task back in its list, open.
+    /// Puts a completed task back in its list, open (from the Logbook).
     func restore(_ task: TaskItem) {
         run { try store.setCompleted(id: task.id, completed: false, today: today) }
     }
 
-    func clearArchive() {
-        run { _ = try store.clearArchive() }
-    }
     func redo() { run { _ = try store.redo() } }
 
     /// `not://add?title=Milk[&list=Groceries]` — the smart list is matched by title, else the
@@ -1190,7 +1185,6 @@ final class AppModel {
     }
 
     private func reloadTasks() {
-        archive = run { try store.archive() } ?? []
         if isSearching {
             let found = run { try store.searchTasks(query: taskSearch, limit: 100) } ?? []
             outline = Outline(

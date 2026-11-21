@@ -36,7 +36,8 @@ const VIEW_ORDER: &str = "view_order";
 /// `"all"` → how All Notes sorts (see [`crate::NoteSort`]); folders keep theirs on the folder.
 const NOTE_SORT: &str = "note_sort";
 
-/// Completed tasks stay in their list this long, then move to the archive.
+/// Completed tasks stay in their list this long; after that only the Logbook and views naming
+/// `done` show them.
 pub const ARCHIVE_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Built-in views (ADR 0014). Inbox: untagged tasks.
@@ -755,35 +756,6 @@ impl Store {
         ))?;
         let rows = stmt.query_map([limit], task_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
-    }
-
-    /// Top-level tasks completed more than [`ARCHIVE_AFTER_MS`] before `now`, most recently
-    /// completed first. Their subtasks go with them.
-    pub fn archive(&self, now: i64) -> Result<Vec<Task>> {
-        let inner = self.lock();
-        let mut stmt = inner.db.prepare_cached(&format!(
-            "SELECT {TASK_COLUMNS} FROM task t
-             WHERE t.parent_id IS NULL AND t.completed_at IS NOT NULL AND t.completed_at <= ?1
-             ORDER BY t.completed_at DESC, t.id"
-        ))?;
-        let rows = stmt.query_map([now - ARCHIVE_AFTER_MS], task_row)?;
-        Ok(rows.collect::<Result<_, _>>()?)
-    }
-
-    /// Deletes everything in the archive as of `now`, in one undo step. Returns how many tasks.
-    pub fn clear_archive(&self, now: i64) -> Result<u32> {
-        let ids = self
-            .archive(now)?
-            .into_iter()
-            .map(|t| tree_id(&t.id))
-            .collect::<Result<Vec<_>>>()?;
-        let deleted_at = now_millis();
-        self.write(|tree| {
-            for &id in &ids {
-                tree.get_meta(id)?.insert(DELETED_AT, deleted_at)?;
-            }
-            Ok(ids.len() as u32)
-        })
     }
 
     /// One task by id.

@@ -48,8 +48,6 @@ data class UiState(
     val newTaskHint: String = "",
     /** Today only: the habits on today's to-do, done ones included, in the user's order. */
     val todayHabits: List<HabitSummary> = emptyList(),
-    /** Tasks completed over a day ago, latest first; Settings → Archive. */
-    val archive: List<TaskItem> = emptyList(),
     /** The task open in the detail sheet, and its subtasks. */
     val openTask: TaskItem? = null,
     val openSubtasks: List<TaskItem> = emptyList(),
@@ -209,17 +207,10 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         if (completing) _undoables.trySend(Undoable("“${task.title}” done"))
     }
 
-    /** Puts an archived task back, open. */
+    /** Puts a completed task back, open (from the Logbook). */
     fun restore(task: TaskItem) {
         run { store.setCompleted(task.id, false, today()) }
     }
-
-    fun deleteArchived(task: TaskItem) {
-        run { store.deleteItem(task.id) }
-    }
-
-    /** Returns how many were deleted, for the Undo toast. */
-    fun clearArchive(): Int = run { store.clearArchive() }?.toInt() ?: 0
 
     fun logbook(limit: Int = 300): List<TaskItem> = run { store.logbook(limit.toUInt()) }.orEmpty()
 
@@ -433,7 +424,6 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
         val outline = run { store.viewOutline(viewId, today()) } ?: return
         val later = if (outline.open.isEmpty()) run { store.viewLater(viewId, today()) }.orEmpty() else emptyList()
         val hint = run { store.viewDefaults(viewId, today()) }?.let { newTaskHint(it, today()) }.orEmpty()
-        val archive = run { store.archive() }.orEmpty()
         val habits = if (viewId == TODAY_ID) run { store.habitsNow(today()) }.orEmpty().filter { it.onToday } else emptyList()
         _state.update { s ->
             // The open task may have been deleted on another device.
@@ -443,7 +433,6 @@ class TasksViewModel(application: Application) : AndroidViewModel(application) {
                 later = later,
                 newTaskHint = hint,
                 todayHabits = habits,
-                archive = archive,
                 openTask = open,
                 openSubtasks = open?.let { runCatching { store.subtasks(it.id) }.getOrNull() }.orEmpty(),
             )

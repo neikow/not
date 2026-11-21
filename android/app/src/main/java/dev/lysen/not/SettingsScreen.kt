@@ -71,15 +71,12 @@ import dev.lysen.not.widget.HabitsWidgetReceiver
 import dev.lysen.not.widget.NoteWidgetReceiver
 import dev.lysen.not.widget.NotesWidgetReceiver
 import dev.lysen.not.widget.TasksWidgetReceiver
-import dev.lysen.not.widget.asLook
-import dev.lysen.not.widget.asPreferences
 import kotlinx.coroutines.launch
 
 /** What Settings holds, one page each. */
 private enum class SettingsPage(val title: String, val icon: Int) {
     Sync("Sync", R.drawable.ic_sync),
     Reminders("Reminders", R.drawable.ic_schedule),
-    Archive("Archive", R.drawable.ic_history),
     Trash("Trash", R.drawable.ic_delete),
     Backup("Export and backup", R.drawable.ic_copy),
     Widgets("Widgets", R.drawable.ic_add_task),
@@ -126,7 +123,6 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
                         Section(null) { if (state.syncInfo == null) PairForm(state, tasks) else PairedInfo(state, tasks) }
                     }
                     SettingsPage.Reminders -> item(key = "reminders") { RemindersPage() }
-                    SettingsPage.Archive -> archivePage(state, tasks, toasts)
                     SettingsPage.Trash -> trashPage(toasts)
                     SettingsPage.Backup -> item(key = "backup") { BackupPage(toasts) }
                     SettingsPage.Widgets -> item(key = "widgets") { WidgetsPage() }
@@ -152,15 +148,10 @@ fun SettingsScreen(tasks: TasksViewModel, workouts: WorkoutsViewModel, onBack: (
 private fun summary(page: SettingsPage, state: UiState): String = when (page) {
     SettingsPage.Sync -> state.syncInfo?.let { "${it.serverUrl.removePrefix("https://").removePrefix("http://")} · ${syncStatus(state.sync)}" } ?: "Not paired"
     SettingsPage.Reminders -> "Task times, morning summary, habits in the evening"
-    SettingsPage.Archive -> when (val n = state.archive.size) {
-        0 -> "Tasks done over a day ago"
-        1 -> "1 task done over a day ago"
-        else -> "$n tasks done over a day ago"
-    }
     SettingsPage.Trash -> "Deleted items, kept ${dev.lysen.not.core.trashDays()} days"
     SettingsPage.Backup -> "Everything as JSON, or a backup file to restore"
-    SettingsPage.Widgets -> "Look, home screen widgets, quick add"
-    SettingsPage.Workouts -> "Rest timer, import from text"
+    SettingsPage.Widgets -> "Home screen widgets, quick add"
+    SettingsPage.Workouts -> "Rest timer"
     SettingsPage.About -> "Version ${BuildConfig.VERSION_NAME}, credits"
 }
 
@@ -186,7 +177,6 @@ private fun CategoryRow(page: SettingsPage, detail: String, onClick: () -> Unit)
 private fun WidgetsPage() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    WidgetLookDefaults()
     Section("Home screen", padded = false) {
         ShortcutRow(R.drawable.ic_task_alt, "Tasks widget", "Open tasks of a list, with checkboxes and quick add") {
             scope.launch { Shortcuts.requestWidget(context, TasksWidgetReceiver::class.java) }
@@ -238,93 +228,6 @@ private fun WorkoutsPage(viewModel: WorkoutsViewModel) {
                 Text("Logging a working set starts the countdown", style = Not.type.caption, color = colors.inkMuted)
             }
             RoundCheck(auto, { viewModel.timer.setStartsAfterSet(!auto) })
-        }
-    }
-
-    var text by rememberSaveable { mutableStateOf("") }
-    // How many the last import added; null before one, or once the text changes.
-    var added by remember { mutableStateOf<Int?>(null) }
-    Section("Import from text") {
-        Text(
-            "Paste your log: a date like 30/10 starts a workout, a line like “24kg x 10 x 3” adds sets, any other line names an exercise.",
-            style = Not.type.caption,
-            color = colors.inkMuted,
-        )
-        Field(
-            text,
-            {
-                text = it
-                added = null
-            },
-            "30/10\nTirage vertical\n66kg x 8 x 3",
-            singleLine = false,
-            minLines = 6,
-            filled = true,
-            style = Not.type.body.merge(fontFamily = FontFamily.Monospace),
-            modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
-        )
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button("Import", {
-                val n = viewModel.import(text)
-                if (n > 0) text = ""
-                added = n
-            }, kind = ButtonKind.Secondary, enabled = text.isNotBlank())
-            added?.let { n ->
-                Text(
-                    if (n == 0) "No dated workouts found." else if (n == 1) "Added 1 workout." else "Added $n workouts.",
-                    style = Not.type.caption,
-                    color = if (n == 0) colors.danger else colors.inkMuted,
-                )
-            }
-        }
-    }
-}
-
-/**
- * Tasks done over a day ago, out of their lists' way. Untick one to put it back; swipe it away to
- * delete it. Each row says where it came from and when it was done.
- */
-private fun LazyListScope.archivePage(state: UiState, viewModel: TasksViewModel, toasts: ToastState) {
-    if (state.archive.isEmpty()) {
-        item(key = "empty") {
-            EmptyState(R.drawable.ic_history, "Nothing archived", "Tasks you complete stay in their list for a day, then move here. The Logbook (in Lists) shows them all by day.")
-        }
-        return
-    }
-    item(key = "clear") {
-        val scope = rememberCoroutineScope()
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
-            Button("Delete all", {
-                val n = viewModel.clearArchive()
-                if (n > 0) scope.launch { if (toasts.show(if (n == 1) "1 task deleted" else "$n tasks deleted", action = "Undo")) viewModel.undo() }
-            }, kind = ButtonKind.Quiet, icon = R.drawable.ic_delete)
-        }
-    }
-    items(state.archive, key = { it.id }) { task ->
-        val colors = Not.colors
-        val scope = rememberCoroutineScope()
-        SwipeRow(
-            start = null,
-            end = SwipeAction(R.drawable.ic_delete, colors.danger, Color.White, dismisses = true) {
-                viewModel.deleteArchived(task)
-                scope.launch { if (toasts.show("Task deleted", action = "Undo")) viewModel.undo() }
-            },
-            modifier = Modifier.animateItem(),
-        ) {
-            Row(
-                Modifier.fillMaxWidth().background(colors.background).heightIn(min = 56.dp).padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RoundCheck(true, {
-                    viewModel.restore(task)
-                    scope.launch { if (toasts.show("Reopened", action = "Undo")) viewModel.undo() }
-                }, contentDescription = "Reopen")
-                Column(Modifier.weight(1f).padding(start = 4.dp)) {
-                    Text(task.title, style = Not.type.body, color = colors.inkMuted)
-                    val done = task.completedAt?.let { DateUtils.getRelativeTimeSpanString(it, System.currentTimeMillis(), DateUtils.DAY_IN_MILLIS) }
-                    Text(listOfNotNull(task.tags.joinToString(" ") { "#$it" }.ifEmpty { null }, done).joinToString(" · "), style = Not.type.caption, color = colors.inkFaint, maxLines = 1)
-                }
-            }
         }
     }
 }
@@ -713,47 +616,6 @@ private fun syncStatus(state: SyncState?): String = when (state) {
     SyncState.Synced -> "up to date"
     is SyncState.Offline -> "offline: ${state.reason}"
     SyncState.Unauthorized -> "rejected by the server; unpair, then pair again"
-}
-
-/**
- * How every widget looks unless its own setup says otherwise, with a live preview of one of them.
- * Changes apply to the placed widgets straight away.
- */
-@Composable
-private fun WidgetLookDefaults() {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val look by dev.lysen.not.widget.WidgetLooks.defaults(context).collectAsState()
-    var previewing by remember { mutableStateOf(dev.lysen.not.widget.WidgetKind.Habits) }
-    val current = look ?: dev.lysen.not.widget.WidgetLook()
-    Section("Look of all widgets") {
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            dev.lysen.not.widget.WidgetPreview(
-                previewing,
-                glanceId = null,
-                size = previewing.defaultSize,
-                state = androidx.datastore.preferences.core.emptyPreferences(),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            dev.lysen.not.widget.ChoiceRow(
-                "Preview",
-                listOf(dev.lysen.not.widget.WidgetKind.Habits, dev.lysen.not.widget.WidgetKind.Timed, dev.lysen.not.widget.WidgetKind.Tasks, dev.lysen.not.widget.WidgetKind.Notes, dev.lysen.not.widget.WidgetKind.Next)
-                    .map { it.name to it.title },
-                previewing.name,
-            ) { previewing = dev.lysen.not.widget.WidgetKind.valueOf(it) }
-            val prefs = current.asPreferences()
-            dev.lysen.not.widget.LookRows(
-                current = { key -> prefs[key] },
-                withDefault = false,
-                onChange = { key, value ->
-                    val next = prefs.toMutablePreferences().apply { if (value != null) this[key] = value }.toPreferences().asLook()
-                    dev.lysen.not.widget.WidgetLooks.save(context, next)
-                    scope.launch { dev.lysen.not.widget.WidgetKind.updateAll(context) }
-                },
-            )
-            Text("Each widget can change these in its own setup: long-press it on the home screen.", style = Not.type.caption, color = Not.colors.inkMuted)
-        }
-    }
 }
 
 /**
