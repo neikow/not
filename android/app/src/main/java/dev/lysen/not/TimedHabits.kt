@@ -171,7 +171,12 @@ fun TimedRow(summary: HabitSummary, state: HabitsState, viewModel: HabitsViewMod
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val unusual = live.tracked && live.on != rule.usualOn
                 Text(
-                    if (state.isToday) timedStatus(rule, live, now) else pastDayText(live),
+                    when {
+                        // Why it isn't counted today: its Repeat days leave this one out.
+                        !summary.inDayCount -> if (state.isToday) "Not scheduled today" else "Not scheduled"
+                        state.isToday -> timedStatus(rule, live, now)
+                        else -> pastDayText(live)
+                    },
                     // The streak keeps its place; the status gives way.
                     modifier = Modifier.weight(1f, fill = false),
                     style = Not.type.caption,

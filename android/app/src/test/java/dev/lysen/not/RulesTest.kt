@@ -91,4 +91,14 @@ class RulesTest {
         assertEquals("None", priorityName(0u))
         assertEquals(null, scheduleLabel(null, 540u, "FREQ=DAILY"))
     }
+
+    @Test
+    fun theDaysCountHasEveryHabitButRestDays() {
+        // Weekly habits count every day, needed that day or not.
+        assertTrue(summary(HabitPeriod.WEEK, 2u, count = 0u, due = false).inDayCount)
+        // A daily habit off its schedule counts only once checked in.
+        assertFalse(summary(HabitPeriod.DAY, 1u, count = 0u, due = false).inDayCount)
+        assertTrue(summary(HabitPeriod.DAY, 1u, count = 1u, due = false).inDayCount)
+        assertTrue(summary(HabitPeriod.DAY, 1u, count = 0u, due = true).inDayCount)
+    }
 }

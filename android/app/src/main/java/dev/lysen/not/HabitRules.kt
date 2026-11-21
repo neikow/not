@@ -26,6 +26,17 @@ val HabitSummary.doneToday: Boolean get() = when {
     else -> count > 0u || done
 }
 
+/**
+ * Counted in the day's "2 of 5 done": every habit in the list, except a daily or timed one on a
+ * day it isn't scheduled with nothing logged (or tracked) that day, so rest days can be all done.
+ * Weekly and monthly ones always count, done once checked in that day or the goal is met.
+ */
+val HabitSummary.inDayCount: Boolean get() = when {
+    !habit.isDaily -> true
+    habit.timed != null -> due || (timed?.let { it.onMs + it.offMs > 0 } ?: false)
+    else -> due || count > 0u
+}
+
 /** On the day's to-do and not done yet: what badges count. */
 val HabitSummary.pending: Boolean get() = onToday && !doneToday
 

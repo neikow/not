@@ -129,7 +129,7 @@ struct TimedHabitRow: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(habit.title).foregroundStyle(summary.due ? .primary : .secondary)
                         HStack(spacing: 8) {
-                            Text(isToday ? timedStatus(rule, live, now: context.date) : pastDayText(live))
+                            Text(!summary.inDayCount ? (isToday ? "Not scheduled today" : "Not scheduled") : isToday ? timedStatus(rule, live, now: context.date) : pastDayText(live))
                                 .foregroundStyle(live.atMostOff && live.leftMs < 0 ? AnyShapeStyle(.red)
                                     : isToday && live.tracked && live.on != rule.usualOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                             if summary.streak > 0 {

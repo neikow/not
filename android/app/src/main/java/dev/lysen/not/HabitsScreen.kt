@@ -206,7 +206,7 @@ fun HabitsScreen(viewModel: HabitsViewModel) {
 private fun DayHeader(state: HabitsState, onSelect: (LocalDate) -> Unit) {
     // Timed habits keep counting between reloads, so judge them as of now.
     val now = rememberNow(10_000L)
-    val due = state.habits.filter { it.onToday }
+    val due = state.habits.filter { it.inDayCount }
     val done = due.count { it.doneAt(now, state.loadedAt, state.isToday) }
     val progress = when {
         due.isEmpty() -> if (state.isToday) "Nothing due today" else "Nothing was due"

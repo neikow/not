@@ -61,6 +61,16 @@ class TimedRulesTest {
     }
 
     @Test
+    fun theDaysCountLeavesOutOnlyRestDaysWithNothingTracked() {
+        val scheduled = summary(wear, 60u, on = false, since = null, onMs = 0, offMs = 0)
+        assertTrue(scheduled.inDayCount)
+        val resting = scheduled.copy(due = false)
+        assertFalse(resting.inDayCount)
+        // Tracked anyway on a rest day: it's in play, so it counts.
+        assertTrue(summary(wear, 60u, on = true, since = 0, onMs = 30 * min, offMs = 0).copy(due = false).inDayCount)
+    }
+
+    @Test
     fun theLiveNotificationCountsWhatWasChosen() {
         // Retainer paused since 10 min, 50 min off today of a 60 min allowance; now at 20 min.
         val paused = summary(wear, 60u, on = false, since = 10 * min, onMs = 0, offMs = 50 * min).timedLive(20 * min, 20 * min)!!

@@ -32,7 +32,7 @@ struct HabitsView: View {
     /// "Saturday 21 November · 2 of 4 done" for the day shown; timed habits judged as of now.
     private var subtitle: String {
         let date = (AppModel.dayFormatter.date(from: model.habitDay) ?? .now).formatted(.dateTime.weekday(.wide).day().month(.wide))
-        let due = model.shownHabits.filter(\.onToday)
+        let due = model.shownHabits.filter(\.inDayCount)
         let done = due.count { $0.doneAt(model.clock, loadedAt: model.habitsLoadedAt, isToday: model.isHabitToday) }
         let progress = if due.isEmpty {
             model.isHabitToday ? "Nothing due today" : "Nothing was due"
@@ -531,6 +531,14 @@ extension HabitSummary {
 
     /// Done as far as the day goes: the day's goal met, or for weekly and monthly ones, a check-in.
     var doneToday: Bool { habit.timed != nil ? done : habit.isDaily ? count >= habit.goal : count > 0 || done }
+
+    /// Counted in the day's "2 of 5 done": every habit in the list, except a daily or timed one on a
+    /// day it isn't scheduled with nothing logged (or tracked), so rest days can be all done.
+    var inDayCount: Bool {
+        if !habit.isDaily { return true }
+        if habit.timed != nil { return due || (timed.map { $0.onMs + $0.offMs > 0 } ?? false) }
+        return due || count > 0
+    }
 
     /// On the day's to-do and not done yet: what badges count.
     var pending: Bool { onToday && !doneToday }
