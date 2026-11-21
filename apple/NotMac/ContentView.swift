@@ -204,6 +204,7 @@ private struct Sidebar: View {
         .sheet(item: $editing) { draft in ViewEditor(model: model, draft: draft) }
         .sheet(isPresented: $reviewing) { ReviewSheet(model: model) }
         .sheet(isPresented: $showsLogbook) { LogbookSheet(model: model) }
+        .sheet(isPresented: $model.processingInbox) { ProcessInboxSheet(model: model) }
     }
 }
 
@@ -393,6 +394,12 @@ private struct TaskListView: View {
         .navigationTitle(model.title)
         .searchable(text: Binding(get: { model.taskSearch }, set: { model.taskSearch = $0 }), prompt: "Search tasks")
         .toolbar {
+            if model.selectedListID == model.inboxID, !model.outline.open.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { model.processingInbox = true } label: { Label("Process", systemImage: "play.fill") }
+                        .help("Process the Inbox one task at a time (⇧⌘P)")
+                }
+            }
             // Upcoming is always by date.
             if !model.isDateView, let id = model.selectedListID {
                 let sort = model.selectedList?.sort ?? .manual

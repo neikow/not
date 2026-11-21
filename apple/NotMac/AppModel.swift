@@ -70,6 +70,8 @@ final class AppModel {
     /// The task getting a subtask typed in under it, in the list.
     var addingSubtaskTo: String?
     var showsInspector = false
+    /// The Inbox, one task at a time (see `ProcessInboxSheet`).
+    var processingInbox = false
     /// Bumped to move keyboard focus to the add-task field (⌘N).
     private(set) var addFieldFocusRequests = 0
 
@@ -240,6 +242,10 @@ final class AppModel {
                 showsInspector = true
             }
         case "today": selection = .today
+        case "inbox":
+            selection = .list(inboxID)
+            // `-process YES` opens Process Inbox.
+            if defaults.bool(forKey: "process") { processingInbox = true }
         case "workouts":
             selection = .workouts
             if workouts.isEmpty {

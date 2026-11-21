@@ -72,6 +72,9 @@ private struct TaskCommands: Commands {
             Button(model.showsInspector ? "Hide Info" : "Show Info") { model.showsInspector.toggle() }
                 .keyboardShortcut("i")
             Divider()
+            Button("Process Inbox…") { model.processingInbox = true }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            Divider()
             Button("Add Subtask") { model.beginSubtask() }
                 .keyboardShortcut("n", modifiers: [.command, .option])
                 .disabled(model.selectedTask == nil || model.isDateView)

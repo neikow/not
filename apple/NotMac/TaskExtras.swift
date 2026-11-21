@@ -102,6 +102,148 @@ struct ViewEditor: View {
     }
 }
 
+/// The Inbox one task at a time: give it a day, a tag, park it, finish it or let it go. Each
+/// choice moves on to the next, and single keys do each one; ⌘Z takes a choice back.
+struct ProcessInboxSheet: View {
+    let model: AppModel
+    /// Taken once, so tasks sorted away don't shift what's next.
+    @State private var queue: [TaskItem] = []
+    @State private var at = 0
+    @State private var tagging = false
+    @State private var tagDraft = ""
+    @FocusState private var tagFieldFocused: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Process Inbox").font(.headline)
+                Spacer()
+                Text(at < queue.count ? "\(at + 1) of \(queue.count)" : "Done").foregroundStyle(.secondary).monospacedDigit()
+            }
+            if let task = queue.indices.contains(at) ? queue[at] : nil {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(task.title).font(.title2.weight(.semibold))
+                    TaskMeta(task: task, today: model.today)
+                    if let line = task.notes.split(separator: "\n").first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                        Text(line).foregroundStyle(.secondary).lineLimit(3).padding(.top, 4)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 90, alignment: .topLeading)
+                .padding(16)
+                .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 14))
+                .id(task.id)
+                .transition(.push(from: .trailing))
+
+                if tagging {
+                    tagField(task)
+                } else {
+                    actions(task)
+                }
+            } else {
+                ContentUnavailableView("All sorted", systemImage: "tray", description: Text("Everything in the Inbox has a place now."))
+                    .frame(minHeight: 160)
+                HStack {
+                    Spacer()
+                    Button("Close") { dismiss() }.keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .animation(.snappy, value: at)
+        .onAppear { queue = model.viewTasks(model.inboxID) }
+    }
+
+    private func next() {
+        tagging = false
+        at += 1
+    }
+
+    @ViewBuilder private func actions(_ task: TaskItem) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                key("Today", "T", "star") { model.moveToToday([task.id]) }
+                key("Tomorrow", "M", "sunrise") { model.snooze([task.id], .tomorrow) }
+                key("Weekend", "W", "sofa") { model.snooze([task.id], .weekend) }
+                key("Someday", "S", "cloud") { model.setSomeday(task) }
+            }
+            HStack(spacing: 6) {
+                Button { tagDraft = ""; tagging = true } label: { shortcutLabel("Tag…", "G", "number") }
+                    .keyboardShortcut("g", modifiers: [])
+                key("Done", "D", "checkmark") { model.toggle(task) }
+                Button(role: .destructive) { model.delete(id: task.id); next() } label: { shortcutLabel("Delete", "⌫", "trash") }
+                    .keyboardShortcut(.delete, modifiers: [])
+                Spacer()
+                Button { next() } label: { shortcutLabel("Skip", "→", "arrow.right") }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+    }
+
+    private func key(_ title: String, _ key: Character, _ symbol: String, _ action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            next()
+        } label: {
+            shortcutLabel(title, String(key), symbol)
+        }
+        .keyboardShortcut(KeyEquivalent(Character(key.lowercased())), modifiers: [])
+    }
+
+    private func shortcutLabel(_ title: String, _ key: String, _ symbol: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+            Text(title)
+            Text(key).font(.caption.monospaced()).foregroundStyle(.tertiary)
+        }
+    }
+
+    /// Tags for the task: existing ones to click, or type one (comma or space for several).
+    @ViewBuilder private func tagField(_ task: TaskItem) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Tags, like “work home”", text: $tagDraft)
+                .textFieldStyle(.roundedBorder)
+                .focused($tagFieldFocused)
+                // On the next turn: the field has to be in the window before it can take focus.
+                .task {
+                    try? await Task.sleep(for: .milliseconds(50))
+                    tagFieldFocused = true
+                }
+                .onSubmit { saveTags(task) }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(model.tags.map(\.name), id: \.self) { name in
+                        Button("#" + name) {
+                            tagDraft = (tagDraft.trimmingCharacters(in: .whitespaces) + " " + name).trimmingCharacters(in: .whitespaces)
+                            tagFieldFocused = true
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { tagging = false }.keyboardShortcut(.cancelAction)
+                Button("Tag and Next") { saveTags(task) }.keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+
+    private func saveTags(_ task: TaskItem) {
+        let typed = tagDraft.split(whereSeparator: { $0 == " " || $0 == "," }).map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "#")) }.filter { !$0.isEmpty }
+        guard !typed.isEmpty else { tagging = false; return }
+        var tags = task.tags
+        for tag in typed where !tags.contains(tag) { tags.append(tag) }
+        model.setTags(task.id, tags)
+        next()
+    }
+}
+
 /// The weekly review: Inbox, what slipped, Someday, and tasks untouched for a month.
 struct ReviewSheet: View {
     let model: AppModel
@@ -128,6 +270,13 @@ struct ReviewSheet: View {
                 Text(steps[step].0).font(.title3.weight(.semibold))
                 Text(steps[step].1).foregroundStyle(.secondary)
                 let shown = tasks.filter { !handled.contains($0.id) }
+                if step == 0, !shown.isEmpty {
+                    Button("Process One by One") {
+                        dismiss()
+                        // After this sheet has gone: one sheet at a time.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { model.processingInbox = true }
+                    }
+                }
                 if shown.isEmpty {
                     Text("Nothing here.").foregroundStyle(.tertiary).frame(maxWidth: .infinity, minHeight: 80)
                 } else {
