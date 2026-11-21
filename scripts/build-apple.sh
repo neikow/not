@@ -21,5 +21,7 @@ cp "$GEN/NotFFI.modulemap" "$HEADERS/module.modulemap"
 rm -rf "$PKG/NotFFI.xcframework"
 xcodebuild -create-xcframework -library "$LIB_DIR/libnot_ffi.a" -headers "$HEADERS" \
   -output "$PKG/NotFFI.xcframework" >/dev/null
+# The folder holds only this generated (untracked) file, so a fresh checkout doesn't have it.
+mkdir -p "$PKG/Sources/NotCore"
 cp "$GEN/not_ffi.swift" "$PKG/Sources/NotCore/Generated.swift"
 echo "apple: $PKG ready"
