@@ -108,6 +108,7 @@ class ToggleHabit : ActionCallback {
             return // deleted on another device in the meantime
         }
         SyncWorker.pushSoon(context)
+        WidgetKind.updateAll(context)
     }
 }
 

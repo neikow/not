@@ -128,6 +128,7 @@ class SwitchTimedHabit : ActionCallback {
         }
         app.timedAlerts.refresh()
         SyncWorker.pushSoon(context)
+        WidgetKind.updateAll(context)
     }
 }
 

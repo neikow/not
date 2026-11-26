@@ -232,6 +232,7 @@ class ToggleNoteCheckbox : ActionCallback {
             return
         }
         SyncWorker.pushSoon(context)
+        WidgetKind.updateAll(context)
     }
 }
 

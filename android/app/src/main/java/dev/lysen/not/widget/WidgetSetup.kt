@@ -148,7 +148,13 @@ enum class WidgetKind(val title: String, val receiver: Class<*>) {
     companion object {
         fun of(className: String?): WidgetKind? = entries.firstOrNull { it.receiver.name == className }
 
-        /** Redraws every placed widget, after the look defaults changed. */
+        /**
+         * Redraws every placed widget: after the look defaults changed, and at the end of every
+         * widget action. An action's change shows in other widgets too (a completed task leaves
+         * Next and Tasks), and awaiting the redraw before the action returns matters: the app's
+         * debounced redraw on store changes may never run once the broadcast is done and the
+         * process is frozen.
+         */
         suspend fun updateAll(context: Context) = entries.forEach { it.widget().updateAll(context) }
     }
 }
