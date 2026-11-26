@@ -39,6 +39,10 @@ pub fn routes() -> Router<AppState> {
         .route("/l/{list}", get(list_page))
         .route("/l/{list}/add", post(add_task))
         .route("/t/{task}/toggle", post(toggle_task))
+        .route("/search", get(search_page))
+        .route("/habits", get(habits_page))
+        .route("/h/{habit}/toggle", post(toggle_habit))
+        .route("/workouts", get(workouts_page))
         .route("/notes", get(notes_page))
         .route("/n/{note}", get(note_page))
         .route("/img/{id}", get(image))
@@ -160,25 +164,32 @@ async fn list_page(
         Ok(outline) => (outline.open, outline.completed),
         Err(e) => return core_error(e),
     };
+    let tags = store.tags().unwrap_or_default();
 
-    let mut nav = String::new();
-    for v in &views {
-        let current = if v.id == list {
-            r#" aria-current="page""#
-        } else {
-            ""
-        };
+    // The lists as pills: built-in and saved views, then tags with open tasks.
+    let mut lists = String::from(r#"<nav class="lists" aria-label="Lists">"#);
+    let pill = |out: &mut String, id: &str, title: &str| {
+        let current = if id == list { r#" aria-current="page""# } else { "" };
         let _ = write!(
-            nav,
+            out,
             r#"<a href="/l/{}"{current}>{}</a>"#,
-            urlencode(&v.id),
-            esc(&v.title)
+            urlencode(id),
+            esc(title)
         );
+    };
+    for v in &views {
+        pill(&mut lists, &v.id, &v.title);
     }
-    nav.push_str(r#"<a href="/notes">Notes</a>"#);
+    for tag in tags.iter().filter(|t| t.open_count > 0) {
+        let id = format!("#{}", tag.name);
+        if !views.iter().any(|v| v.id == id) {
+            pill(&mut lists, &id, &id);
+        }
+    }
+    lists.push_str("</nav>");
 
     let here = format!("/l/{}", urlencode(&list));
-    let mut body = format!(r#"<main><h1>{}</h1>"#, esc(&title));
+    let mut body = format!(r#"{lists}<main><h1>{}</h1>"#, esc(&title));
     let placeholder = match list.as_str() {
         TODAY => "New task for today",
         UPCOMING => "New task — say when, like “fri”",
@@ -189,15 +200,35 @@ async fn list_page(
         r#"<form method="post" action="/l/{}/add" class="add"><input name="text" placeholder="{placeholder} — try “call mum fri 6pm #home !1”" required><button aria-label="Add">+</button></form>"#,
         urlencode(&list),
     );
-    body.push_str(&task_rows(
-        today,
-        &rows,
-        |t| format!("/t/{}/toggle", esc(&t.id)),
-        &here,
-        true,
-    ));
+    let toggle = |t: &Task| format!("/t/{}/toggle", esc(&t.id));
+    if list == UPCOMING {
+        // By day, as in the apps; subtasks stay with their task.
+        for (label, group) in by_day(&rows, today) {
+            let _ = write!(body, r#"<h2 class="day">{}</h2>"#, esc(&label));
+            body.push_str(&task_rows(today, group, toggle, &here, true));
+        }
+    } else {
+        body.push_str(&task_rows(today, &rows, toggle, &here, true));
+    }
     if rows.is_empty() {
-        body.push_str(r#"<p class="empty">Nothing here.</p>"#);
+        // What the list will hold once their day comes.
+        let later = store.view_later(&list, today).unwrap_or_default();
+        if later.is_empty() {
+            body.push_str(r#"<p class="empty">Nothing here.</p>"#);
+        } else {
+            body.push_str(r#"<p class="empty">Nothing here for now.</p><h2 class="day">Later</h2>"#);
+            let later: Vec<OutlineRow> = later
+                .into_iter()
+                .map(|task| OutlineRow {
+                    task,
+                    depth: 0,
+                    done: false,
+                    subtasks: 0,
+                    subtasks_done: 0,
+                })
+                .collect();
+            body.push_str(&task_rows(today, &later, toggle, &here, true));
+        }
     }
     if !completed.is_empty() {
         let _ = write!(
@@ -205,17 +236,273 @@ async fn list_page(
             r#"<details><summary>Completed {}</summary>"#,
             completed.iter().filter(|r| r.depth == 0).count()
         );
-        body.push_str(&task_rows(
-            today,
-            &completed,
-            |t| format!("/t/{}/toggle", esc(&t.id)),
-            &here,
-            true,
-        ));
+        body.push_str(&task_rows(today, &completed, toggle, &here, true));
         body.push_str("</details>");
     }
     body.push_str(r#"<form method="post" action="/logout" class="signout"><button class="quiet">Sign out this browser</button></form></main>"#);
-    page(&title, Some(&nav), &body).into_response()
+    page(&title, Some(&sections("tasks")), &body).into_response()
+}
+
+/// The open rows of Upcoming under day headings ("Tomorrow", "Fri", "3 Dec"), soonest first;
+/// a subtask goes under its top-level task's day.
+fn by_day(rows: &[OutlineRow], today: Date) -> Vec<(String, &[OutlineRow])> {
+    let label = |row: &OutlineRow| {
+        let t = &row.task;
+        t.start
+            .as_deref()
+            .or(t.deadline.as_deref())
+            .and_then(|d| Date::parse(d).ok())
+            .map_or_else(|| "Later".to_owned(), |d| not_core::due_label(d, None, today))
+    };
+    // Rows come soonest first, so a day's rows are next to each other.
+    let mut groups: Vec<(String, usize, usize)> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        match groups.last_mut() {
+            Some((_, _, end)) if row.depth > 0 => *end = i + 1,
+            Some((name, _, end)) if *name == label(row) => *end = i + 1,
+            _ => groups.push((label(row), i, i + 1)),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(name, start, end)| (name, &rows[start..end]))
+        .collect()
+}
+
+/// The app's sections, the current one marked.
+fn sections(current: &str) -> String {
+    let mut out = String::new();
+    for (id, href, title) in [
+        ("tasks", "/l/today", "Tasks"),
+        ("habits", "/habits", "Habits"),
+        ("notes", "/notes", "Notes"),
+        ("workouts", "/workouts", "Workouts"),
+    ] {
+        let mark = if id == current {
+            r#" aria-current="page""#
+        } else {
+            ""
+        };
+        let _ = write!(out, r#"<a href="{href}"{mark}>{title}</a>"#);
+    }
+    out.push_str(r#"<form action="/search" class="search" role="search"><input name="q" type="search" placeholder="Search tasks" aria-label="Search tasks"></form>"#);
+    out
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
+}
+
+async fn search_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SearchQuery>,
+) -> Response {
+    if signed_in(&state, &headers).is_none() {
+        return Redirect::to("/login").into_response();
+    }
+    let Some(store) = state.replica(true) else {
+        return unavailable();
+    };
+    let today = today(&headers);
+    let q = query.q.trim();
+    let mut body = format!(
+        r#"<main><h1>Search</h1><form action="/search" class="add"><input name="q" type="search" value="{}" placeholder="Words from a title, notes or #tag" autofocus><button aria-label="Search">→</button></form>"#,
+        esc(q)
+    );
+    if !q.is_empty() {
+        let found = match store.search_tasks(q, 100) {
+            Ok(found) => found,
+            Err(e) => return core_error(e),
+        };
+        if found.is_empty() {
+            let _ = write!(body, r#"<p class="empty">No task matches “{}”.</p>"#, esc(q));
+        } else {
+            let rows: Vec<OutlineRow> = found
+                .into_iter()
+                .map(|task| OutlineRow {
+                    done: task.completed_at.is_some(),
+                    task,
+                    depth: 0,
+                    subtasks: 0,
+                    subtasks_done: 0,
+                })
+                .collect();
+            let back = format!("/search?q={}", urlencode(q));
+            body.push_str(&task_rows(
+                today,
+                &rows,
+                |t| format!("/t/{}/toggle", esc(&t.id)),
+                &esc(&back),
+                true,
+            ));
+        }
+    }
+    body.push_str("</main>");
+    page("Search", Some(&sections("tasks")), &body).into_response()
+}
+
+async fn habits_page(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if signed_in(&state, &headers).is_none() {
+        return Redirect::to("/login").into_response();
+    }
+    let Some(store) = state.replica(true) else {
+        return unavailable();
+    };
+    let today = today(&headers);
+    let habits = match store.habits(&today.to_string()) {
+        Ok(habits) => habits,
+        Err(e) => return core_error(e),
+    };
+    let left = habits.iter().filter(|h| h.due && !h.done).count();
+    let mut body = String::from("<main><h1>Habits</h1>");
+    if habits.is_empty() {
+        body.push_str(r#"<p class="empty">No habits yet. Add them in the app.</p>"#);
+    } else {
+        let _ = write!(
+            body,
+            r#"<p class="muted">{}</p><ul class="tasks habits">"#,
+            match left {
+                0 => "All done for today".to_owned(),
+                1 => "1 left today".to_owned(),
+                n => format!("{n} left today"),
+            }
+        );
+        for h in &habits {
+            body.push_str(&habit_row(h));
+        }
+        body.push_str("</ul>");
+    }
+    body.push_str("</main>");
+    page("Habits", Some(&sections("habits")), &body).into_response()
+}
+
+/// A habit: a check-in button (timed habits only show where they are), how far along the period
+/// is, the streak, and the last seven days as dots.
+fn habit_row(h: &not_core::HabitSummary) -> String {
+    use not_core::Period;
+    let habit = &h.habit;
+    let mut meta = Vec::new();
+    let check = if let Some(timed) = &h.timed {
+        meta.push(format!(
+            "{} · {} of {} min",
+            if timed.on { "On" } else { "Off" },
+            h.progress,
+            habit.goal
+        ));
+        format!(
+            r#"<span class="check{}" aria-hidden="true"></span>"#,
+            if h.done { " on" } else { "" }
+        )
+    } else {
+        let period = match habit.period {
+            Period::Day => "today",
+            Period::Week => "this week",
+            Period::Month => "this month",
+        };
+        if habit.goal > 1 || habit.period != Period::Day {
+            meta.push(format!("{} of {} {period}", h.progress, habit.goal));
+        }
+        if !h.due && !h.done {
+            meta.push("Not due".to_owned());
+        }
+        format!(
+            r#"<form method="post" action="/h/{}/toggle"><button class="check{}" aria-label="{} {}"></button></form>"#,
+            esc(&habit.id),
+            if h.done { " on" } else { "" },
+            if h.count > 0 && habit.goal <= 1 {
+                "Undo"
+            } else {
+                "Check in"
+            },
+            esc(&habit.title)
+        )
+    };
+    if h.streak > 1 {
+        meta.push(format!("{} in a row", h.streak));
+    }
+    let week: String = h
+        .week
+        .iter()
+        .map(|&n| if n > 0 { r#"<i class="on"></i>"# } else { "<i></i>" })
+        .collect();
+    format!(
+        r#"<li class="{}">{check}<div><span class="title">{}</span>{}</div><span class="week" aria-hidden="true">{week}</span></li>"#,
+        if h.done { "met" } else { "" },
+        esc(&habit.title),
+        if meta.is_empty() {
+            String::new()
+        } else {
+            format!(r#"<span class="meta">{}</span>"#, esc(&meta.join(" · ")))
+        },
+    )
+}
+
+async fn toggle_habit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    UrlPath(habit): UrlPath<String>,
+) -> Response {
+    if signed_in(&state, &headers).is_none() {
+        return Redirect::to("/login").into_response();
+    }
+    let Some(store) = state.replica(true) else {
+        return unavailable();
+    };
+    // Only check-ins here: timed habits switch on the phone, where their alerts live.
+    match store.habits(&today(&headers).to_string()) {
+        Ok(habits) if habits.iter().any(|h| h.habit.id == habit && h.timed.is_none()) => {}
+        Ok(_) => return not_found(),
+        Err(e) => return core_error(e),
+    }
+    if let Err(e) = store.toggle_habit(&habit, &today(&headers).to_string()) {
+        return core_error(e);
+    }
+    state.publish_replica();
+    Redirect::to("/habits").into_response()
+}
+
+async fn workouts_page(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if signed_in(&state, &headers).is_none() {
+        return Redirect::to("/login").into_response();
+    }
+    let Some(store) = state.replica(true) else {
+        return unavailable();
+    };
+    let today = today(&headers);
+    let workouts = match store.workouts() {
+        Ok(w) => w,
+        Err(e) => return core_error(e),
+    };
+    let mut body = String::from("<main><h1>Workouts</h1>");
+    if workouts.is_empty() {
+        body.push_str(r#"<p class="empty">No workouts yet. Log them in the app.</p>"#);
+    }
+    body.push_str(r#"<ul class="notes">"#);
+    for w in workouts.iter().take(100) {
+        let date =
+            Date::parse(&w.date).map_or_else(|_| w.date.clone(), |d| not_core::due_label(d, None, today));
+        let title = if w.title.is_empty() { "Workout" } else { &w.title };
+        let _ = write!(
+            body,
+            r#"<li><div class="card"><strong>{} <span class="when">{}</span></strong><span>{}</span></div></li>"#,
+            esc(title),
+            esc(&date),
+            esc(&format!(
+                "{}{}",
+                w.exercise_names.join(", "),
+                match w.set_count {
+                    0 => String::new(),
+                    1 => " · 1 set".to_owned(),
+                    n => format!(" · {n} sets"),
+                }
+            )),
+        );
+    }
+    body.push_str("</ul></main>");
+    page("Workouts", Some(&sections("workouts")), &body).into_response()
 }
 
 #[derive(Deserialize)]
@@ -318,12 +605,7 @@ async fn notes_page(State(state): State<AppState>, headers: HeaderMap) -> Respon
         body.push_str("</ul>");
     }
     body.push_str("</main>");
-    page(
-        "Notes",
-        Some(r#"<a href="/">Tasks</a><a href="/notes" aria-current="page">Notes</a>"#),
-        &body,
-    )
-    .into_response()
+    page("Notes", Some(&sections("notes")), &body).into_response()
 }
 
 async fn note_page(
@@ -351,12 +633,7 @@ async fn note_page(
         r#"<main><article class="note">{}</article></main>"#,
         markdown_html(&text)
     );
-    page(
-        &title,
-        Some(r#"<a href="/">Tasks</a><a href="/notes">Notes</a>"#),
-        &body,
-    )
-    .into_response()
+    page(&title, Some(&sections("notes")), &body).into_response()
 }
 
 /// A note's image, for the signed-in owner only.
@@ -616,6 +893,13 @@ fn task_rows(
         if let Some(deadline) = t.deadline.as_deref().and_then(|d| Date::parse(d).ok()) {
             meta.push(format!("Due {}", not_core::due_label(deadline, None, today)));
         }
+        if let Some(repeat) = t
+            .repeat
+            .as_deref()
+            .and_then(|r| not_core::Repeat::parse_rrule(r).ok())
+        {
+            meta.push(format!("↻ {}", repeat.label()));
+        }
         if row.subtasks > 0 {
             meta.push(format!("{}/{}", row.subtasks_done, row.subtasks));
         }
@@ -792,6 +1076,12 @@ details{margin-top:16px}summary{cursor:pointer;color:var(--muted);padding:8px 0}
 ul.notes{list-style:none;padding:0;margin:0;display:grid;gap:8px}ul.notes a{display:flex;flex-direction:column;padding:12px 16px;border-radius:16px;background:var(--surface);color:inherit;text-decoration:none}
 ul.notes span{color:var(--muted);font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .note{background:var(--surface);border-radius:20px;padding:8px 20px}.note p{margin:.3rem 0}.note img{display:block;max-width:100%;max-height:70vh;border-radius:12px;margin:.6rem 0}
+nav{align-items:center}nav .search{margin-left:auto;flex:0 1 220px;min-width:140px}nav .search input{padding:6px 14px}
+nav.lists{background:none;border:0;padding:12px 16px 0;max-width:672px;margin:0 auto;flex-wrap:wrap}nav.lists a{font-size:.9rem;padding:4px 12px;border:1px solid var(--line)}nav.lists a[aria-current]{border-color:var(--accent)}
+h2.day{margin:1.25rem 0 .25rem}
+ul.habits li{align-items:center}ul.habits li div{flex:1}.week{display:flex;gap:4px}.week i{width:8px;height:8px;border-radius:50%;background:var(--line)}.week i.on{background:var(--accent-ink)}
+ul.notes .card{display:flex;flex-direction:column;padding:12px 16px;border-radius:16px;background:var(--surface)}.when{font-weight:400;color:var(--faint);font-size:.9rem;margin-left:6px}
+@media (max-width:520px){nav .search{flex-basis:100%;margin-left:0}nav{flex-wrap:wrap}}
 .signout{margin-top:32px}code{background:var(--surface);padding:1px 6px;border-radius:6px}
 "#;
 

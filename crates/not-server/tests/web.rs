@@ -631,3 +631,102 @@ async fn too_many_wrong_codes_pause_pairing_for_a_while() {
         not_server::PairOutcome::Paired(_)
     ));
 }
+
+#[tokio::test]
+async fn the_web_has_habits_workouts_search_and_upcoming_by_day() {
+    let (state, base) = start().await;
+    let (client, phone, cookie) = phone_and_browser(&state, &base).await;
+    let today = utc_today();
+    let stretch = phone
+        .create_habit("Stretch <daily>", 1, not_core::EVERY_DAY)
+        .unwrap();
+    let gym = phone.create_workout(&today.to_string(), "Legs & back").unwrap();
+    phone.add_exercise(&gym, "Squat", "3x5 100").unwrap();
+    phone
+        .quick_add(
+            not_core::INBOX,
+            "Water plants tomorrow every week #home",
+            today,
+            &[],
+        )
+        .unwrap();
+    let trip = phone
+        .quick_add(not_core::INBOX, "Trip in 3 days", today, &[])
+        .unwrap();
+    phone.add_task(&trip, "Pack", today).unwrap();
+    client.sync(&phone).await.unwrap();
+
+    // Every section is a step away, from every page.
+    let (_, _, html) = send(&state, get("/l/inbox", Some(&cookie))).await;
+    for link in [
+        r#"href="/habits""#,
+        r#"href="/notes""#,
+        r#"href="/workouts""#,
+        r#"action="/search""#,
+    ] {
+        assert!(html.contains(link), "{link}");
+    }
+    assert!(
+        html.contains(r#"<a href="/l/%23home">#home</a>"#),
+        "tags with open tasks are lists too"
+    );
+    let (_, _, html) = send(&state, get("/l/%23home", Some(&cookie))).await;
+    assert!(html.contains("↻ Weekly"), "repeats show their rhythm: {html}");
+
+    // Upcoming by day; the subtask stays under its task's day though it has no date itself.
+    let (_, _, html) = send(&state, get("/l/upcoming", Some(&cookie))).await;
+    let tomorrow = html
+        .find(r#"<h2 class="day">Tomorrow</h2>"#)
+        .expect("a day heading");
+    let later_day = not_core::due_label(today.add_days(3), None, today);
+    let trip_day = html
+        .find(&format!(r#"<h2 class="day">{later_day}</h2>"#))
+        .expect("Trip's day");
+    let pack = html.find(">Pack<").unwrap();
+    assert!(tomorrow < trip_day && trip_day < pack, "{html}");
+    assert_eq!(html.matches(r#"<h2 class="day">"#).count(), 2, "{html}");
+
+    // Habits: check in from the browser, and it flows back to the phone.
+    let (_, _, html) = send(&state, get("/habits", Some(&cookie))).await;
+    assert!(
+        html.contains("Stretch &lt;daily&gt;") && html.contains("1 left today"),
+        "{html}"
+    );
+    let (status, location, _) = send(&state, post(&format!("/h/{stretch}/toggle"), "", Some(&cookie))).await;
+    assert_eq!(
+        (status, location.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/habits"))
+    );
+    let (_, _, html) = send(&state, get("/habits", Some(&cookie))).await;
+    assert!(
+        html.contains("All done for today") && html.contains(r#"class="met""#),
+        "{html}"
+    );
+    client.sync(&phone).await.unwrap();
+    let summary = &phone.habits(&today.to_string()).unwrap()[0];
+    assert!(summary.done);
+    let (status, _, _) = send(&state, post("/h/1@2/toggle", "", Some(&cookie))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Workouts, read only.
+    let (_, _, html) = send(&state, get("/workouts", Some(&cookie))).await;
+    assert!(
+        html.contains("Legs &amp; back") && html.contains("Squat"),
+        "{html}"
+    );
+
+    // Search finds by title, and ticks come back to the search.
+    let (_, _, html) = send(&state, get("/search?q=pack", Some(&cookie))).await;
+    assert!(html.contains(">Pack<") && !html.contains(">Trip<"), "{html}");
+    assert!(html.contains(r#"value="/search?q=pack""#), "{html}");
+    let (_, _, html) = send(&state, get("/search?q=%3Cnope%3E", Some(&cookie))).await;
+    assert!(html.contains("No task matches “&lt;nope&gt;”"), "{html}");
+
+    // Signed out, none of it.
+    for path in ["/habits", "/workouts", "/search?q=a"] {
+        let (_, location, _) = send(&state, get(path, None)).await;
+        assert_eq!(location.as_deref(), Some("/login"), "{path}");
+    }
+    let (_, location, _) = send(&state, post(&format!("/h/{stretch}/toggle"), "", None)).await;
+    assert_eq!(location.as_deref(), Some("/login"));
+}
