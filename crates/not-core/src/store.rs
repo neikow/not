@@ -1056,39 +1056,83 @@ pub(crate) fn complete_in(tree: &LoroTree, id: TreeID, completed: bool, today: D
     let parent = tree.parent(id).ok_or_else(|| Error::NotFound(id.to_string()))?;
     let copy = tree.create(parent)?;
     let done = tree.get_meta(copy)?;
-    done.insert(KIND, KIND_TASK)?;
-    done.insert(TITLE, meta_str(&meta, TITLE).unwrap_or_default())?;
-    write_schedule(
-        &done,
-        &Schedule {
-            repeat: None,
-            ..schedule
-        },
-    )?;
-    write_priority(&done, meta_i64(&meta, PRIORITY).unwrap_or(0) as u8)?;
-    write_tags(&done, &projection::tags_of(&meta))?;
-    if let Some(notes) = meta_text(&meta, NOTES).filter(|n| !n.is_empty()) {
-        done.ensure_mergeable_text(NOTES)?
+    copy_task(&meta, &done, Some(schedule))?;
+    done.insert(OCCURRENCE_OF, id.to_string())?;
+    done.insert(COMPLETED_AT, now_millis())?;
+
+    // Start date and deadline move on together, keeping the days between them; dated subtasks
+    // move with them.
+    let next = repeat.next_for_completion(anchor, today);
+    let shift = next.days_since(anchor);
+    write_schedule(&meta, &shifted(schedule, shift))?;
+    start_over(tree, id, copy, shift)?;
+    Ok(())
+}
+
+/// Meta a task's logged occurrence carries: the id of the repeating task it was done from.
+/// Under a repeating parent, such a copy belongs to the parent's occurrence, not to its next one.
+const OCCURRENCE_OF: &str = "occurrence_of";
+
+/// A schedule `days` later, start and deadline together.
+fn shifted(schedule: Schedule, days: i64) -> Schedule {
+    Schedule {
+        start: schedule.start.map(|d| d.add_days(days)),
+        deadline: schedule.deadline.map(|d| d.add_days(days)),
+        ..schedule
+    }
+}
+
+/// Copies what a logged occurrence keeps of a task: title, priority, tags, notes, and with
+/// `schedule` its dates (without the repeat).
+fn copy_task(from: &LoroMap, to: &LoroMap, schedule: Option<Schedule>) -> Result<()> {
+    to.insert(KIND, KIND_TASK)?;
+    to.insert(TITLE, meta_str(from, TITLE).unwrap_or_default())?;
+    if let Some(schedule) = schedule {
+        write_schedule(
+            to,
+            &Schedule {
+                repeat: None,
+                ..schedule
+            },
+        )?;
+    }
+    write_priority(to, meta_i64(from, PRIORITY).unwrap_or(0) as u8)?;
+    write_tags(to, &projection::tags_of(from))?;
+    if let Some(notes) = meta_text(from, NOTES).filter(|n| !n.is_empty()) {
+        to.ensure_mergeable_text(NOTES)?
             .update(&notes, Default::default())
             .map_err(|e| Error::Invalid(format!("notes: {e}")))?;
     }
-    done.insert(COMPLETED_AT, now_millis())?;
+    Ok(())
+}
 
-    // Start date and deadline move on together, keeping the days between them.
-    let next = repeat.next_for_completion(anchor, today);
-    let shift = next.days_since(anchor);
-    write_schedule(
-        &meta,
-        &Schedule {
-            start: schedule.start.map(|d| d.add_days(shift)),
-            deadline: schedule.deadline.map(|d| d.add_days(shift)),
-            ..schedule
-        },
-    )?;
-    let mut stack = tree.children(id).unwrap_or_default();
-    while let Some(child) = stack.pop() {
-        tree.get_meta(child)?.delete(COMPLETED_AT)?;
-        stack.extend(tree.children(child).unwrap_or_default());
+/// The subtasks of a repeating task that just moved on: each is copied under the logged
+/// occurrence `log` as it was (done or not), then reopened, its dates `shift` days later.
+/// Occurrences logged by repeating subtasks move to `log` instead: they belong to this round.
+/// Deleted subtasks stay as they are.
+fn start_over(tree: &LoroTree, from: TreeID, log: TreeID, shift: i64) -> Result<()> {
+    for child in tree.children(from).unwrap_or_default() {
+        let meta = tree.get_meta(child)?;
+        if meta.get(DELETED_AT).is_some() || meta_str(&meta, KIND).as_deref() != Some(KIND_TASK) {
+            continue;
+        }
+        if meta.get(OCCURRENCE_OF).is_some() {
+            tree.mov(child, TreeParentId::Node(log))?;
+            continue;
+        }
+        let copy = tree.create(TreeParentId::Node(log))?;
+        let logged = tree.get_meta(copy)?;
+        let schedule = read_schedule(&meta);
+        copy_task(&meta, &logged, Some(schedule))?;
+        if let Some(at) = meta_i64(&meta, COMPLETED_AT) {
+            logged.insert(COMPLETED_AT, at)?;
+            meta.delete(COMPLETED_AT)?;
+        }
+        // A repeating subtask keeps its own rhythm.
+        if schedule.repeat.is_none() && (schedule.start.is_some() || schedule.deadline.is_some()) {
+            write_schedule(&meta, &shifted(schedule, shift))?;
+        }
+        start_over(tree, child, copy, shift)?;
     }
     Ok(())
 }

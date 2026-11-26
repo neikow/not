@@ -181,6 +181,97 @@ fn completing_a_repeating_task_moves_it_on() {
 }
 
 #[test]
+fn a_repeating_task_logs_its_subtasks_with_each_occurrence() {
+    let s = Store::open_in_memory().unwrap();
+    let id = add(&s, INBOX, "Review the week every sun");
+    let inbox = s.add_task(&id, "Clear inbox", today()).unwrap();
+    let plan = s.add_task(&id, "Plan week", today()).unwrap();
+    let deep = s.add_task(&plan, "Pick three goals", today()).unwrap();
+    s.set_completed(&inbox, true, today()).unwrap();
+    s.set_completed(&deep, true, today()).unwrap();
+
+    s.set_completed(&id, true, today()).unwrap();
+
+    // The task starts over with every subtask open, in the same order.
+    let titles = |id: &str| -> Vec<(String, bool)> {
+        s.subtasks(id)
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.title, t.completed_at.is_some()))
+            .collect()
+    };
+    assert_eq!(
+        titles(&id),
+        [("Clear inbox".into(), false), ("Plan week".into(), false)]
+    );
+    assert_eq!(titles(&plan), [("Pick three goals".into(), false)]);
+
+    // The occurrence kept in the log has them as they were when it was done.
+    let outline = s.view_outline(INBOX, today()).unwrap();
+    let logged: Vec<(String, u32, bool)> = outline
+        .completed
+        .iter()
+        .map(|r| (r.task.title.clone(), r.depth, r.task.completed_at.is_some()))
+        .collect();
+    assert_eq!(
+        logged,
+        [
+            ("Review the week".into(), 0, true),
+            ("Clear inbox".into(), 1, true),
+            ("Plan week".into(), 1, false),
+            ("Pick three goals".into(), 2, true),
+        ]
+    );
+
+    // One step to undo, and the occurrence's copies go with it.
+    assert!(s.undo().unwrap());
+    assert_eq!(s.all_tasks().unwrap().len(), 4);
+    assert!(s.task_by_id(&inbox).unwrap().completed_at.is_some());
+}
+
+#[test]
+fn repeating_subtasks_under_a_repeating_task_dont_pile_up() {
+    let s = Store::open_in_memory().unwrap();
+    let id = add(&s, INBOX, "Chores every week");
+    let sub = add(&s, &id, "Water plants today every day");
+    // Done twice this week: two logged occurrences under the parent.
+    s.set_completed(&sub, true, today()).unwrap();
+    s.set_completed(&sub, true, day("2026-11-09")).unwrap();
+    assert_eq!(s.subtasks(&id).unwrap().len(), 3);
+
+    s.set_completed(&id, true, today()).unwrap();
+
+    // The week starts over with just the one repeating subtask; its log goes with the week's.
+    let open: Vec<String> = s.subtasks(&id).unwrap().into_iter().map(|t| t.title).collect();
+    assert_eq!(open, ["Water plants"]);
+    assert!(s.task_by_id(&sub).unwrap().repeat.is_some());
+    let outline = s.view_outline(INBOX, today()).unwrap();
+    let done = &outline.completed[0];
+    assert_eq!(
+        (done.task.title.as_str(), done.subtasks, done.subtasks_done),
+        ("Chores", 3, 2)
+    );
+}
+
+#[test]
+fn dated_subtasks_move_on_with_their_repeating_task() {
+    let s = Store::open_in_memory().unwrap();
+    let id = s
+        .quick_add(INBOX, "Trip prep 1/11 every week", day("2026-11-01"), &[])
+        .unwrap();
+    let sub = s
+        .quick_add(&id, "Pack 2/11 by 3/11", day("2026-11-01"), &[])
+        .unwrap();
+    s.set_completed(&id, true, day("2026-11-02")).unwrap();
+    assert_eq!(s.task_by_id(&id).unwrap().start.as_deref(), Some("2026-11-08"));
+    let sub = s.task_by_id(&sub).unwrap();
+    assert_eq!(
+        (sub.start.as_deref(), sub.deadline.as_deref()),
+        (Some("2026-11-09"), Some("2026-11-10"))
+    );
+}
+
+#[test]
 fn repeats_from_completion_and_on_nth_weekdays() {
     let s = Store::open_in_memory().unwrap();
     let cut = s
