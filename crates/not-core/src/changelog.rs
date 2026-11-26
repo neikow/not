@@ -12,7 +12,7 @@ pub struct Release {
 
 /// Newest first.
 pub const RELEASES: &[Release] = &[Release {
-    version: "0.2.1",
+    version: "0.2.2",
     highlights: &[
         "Widgets update right away when you tick something on them.",
         "Repeating tasks with subtasks: each round is logged with its checklist, repeating subtasks no longer pile up, and dated subtasks move along.",
@@ -63,14 +63,14 @@ mod tests {
 
     #[test]
     fn only_what_came_since_the_last_version_opened() {
-        assert_eq!(whats_new("0.2.0", "0.2.1").len(), 1);
-        assert!(whats_new("0.2.1", "0.2.1").is_empty(), "already seen");
-        assert!(whats_new("", "0.2.1").is_empty(), "fresh install");
+        assert_eq!(whats_new("0.2.0", "0.2.2").len(), 1);
+        assert!(whats_new("0.2.2", "0.2.2").is_empty(), "already seen");
+        assert!(whats_new("", "0.2.2").is_empty(), "fresh install");
         assert!(
             whats_new("0.1.0", "0.2.0").is_empty(),
             "not past the installed version"
         );
-        assert_eq!(whats_new("v0.1.11", "v0.2.1").len(), 1);
+        assert_eq!(whats_new("v0.1.11", "v0.2.2").len(), 1);
         assert_eq!(parse("1.2"), None);
         assert_eq!(parse("1.2.3.4"), None);
     }

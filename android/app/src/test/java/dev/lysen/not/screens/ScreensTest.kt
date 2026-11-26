@@ -191,12 +191,12 @@ class ScreensTest {
 
     @Test
     fun whatsNewShowsOnceAfterAnUpdateAndNeverOnAFreshInstall() {
-        assertTrue("fresh install", dev.lysen.not.WhatsNew.pending(app, freshInstall = true, current = "1.0.0").isEmpty())
-        assertTrue("same version", dev.lysen.not.WhatsNew.pending(app, freshInstall = false, current = "1.0.0").isEmpty())
+        assertTrue("fresh install", dev.lysen.not.WhatsNew.pending(app, freshInstall = true, current = "0.2.2").isEmpty())
+        assertTrue("same version", dev.lysen.not.WhatsNew.pending(app, freshInstall = false, current = "0.2.2").isEmpty())
         app.getSharedPreferences("app", android.content.Context.MODE_PRIVATE).edit().clear().commit()
-        val news = dev.lysen.not.WhatsNew.pending(app, freshInstall = false, current = "1.0.0")
-        assertEquals("an install from before this existed catches up", "1.0.0", news.first().version)
-        assertTrue("once", dev.lysen.not.WhatsNew.pending(app, freshInstall = false, current = "1.0.0").isEmpty())
+        val news = dev.lysen.not.WhatsNew.pending(app, freshInstall = false, current = "0.2.2")
+        assertEquals("an install from before this existed catches up", "0.2.2", news.first().version)
+        assertTrue("once", dev.lysen.not.WhatsNew.pending(app, freshInstall = false, current = "0.2.2").isEmpty())
     }
 
     @Test

@@ -408,8 +408,8 @@ fn imports_report_what_came_in_and_refuse_other_files() {
 
 #[test]
 fn whats_new_lists_releases_since_the_last_version_opened() {
-    assert!(not_ffi::whats_new(String::new(), "0.2.1".into()).is_empty());
-    let new = not_ffi::whats_new("0.2.0".into(), "0.2.1".into());
-    assert_eq!(new[0].version, "0.2.1");
+    assert!(not_ffi::whats_new(String::new(), "0.2.2".into()).is_empty());
+    let new = not_ffi::whats_new("0.2.0".into(), "0.2.2".into());
+    assert_eq!(new[0].version, "0.2.2");
     assert!(!not_ffi::all_releases()[0].highlights.is_empty());
 }
