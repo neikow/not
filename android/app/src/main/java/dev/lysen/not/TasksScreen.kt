@@ -435,7 +435,12 @@ private fun byDay(rows: List<OutlineRow>, calendar: CalendarEvents): List<Triple
             else -> "Later"
         }
     }
-    val tasks = rows.groupBy { row -> label(upcomingDate(row.task)) }
+    // Subtasks stay under their top-level task's day, whatever their own dates.
+    var day = ""
+    val tasks = rows.groupBy { row ->
+        if (row.depth == 0u || day.isEmpty()) day = label(upcomingDate(row.task))
+        day
+    }
     val events = calendar.week().groupBy { label(it.day) }
     val order = (1..6).map { label(today.plusDays(it.toLong())) } + "Later"
     return order.mapNotNull { day ->

@@ -37,6 +37,14 @@ class ListsAndSheetsTest {
     }
 
     @Test
+    fun aRowGoneFromTheStoreLeavesTheDragOrder() {
+        // Mid-drag, sync completes "b": it leaves the dragged order (it now shows under
+        // Completed, and a list can't show one key twice); rows new in the store wait for the drop.
+        val dragged = listOf("c", "a", "b")
+        assertEquals(listOf("c", "a"), dev.lysen.not.ui.stillShown(dragged, listOf("a", "c", "d")) { it })
+    }
+
+    @Test
     fun aTaskCantGoUnderItsOwnSubtasks() {
         fun task(id: String, parent: String?) = dev.lysen.not.core.TaskItem(
             id = id, parentId = parent, title = id, notes = "", completedAt = null, start = null, time = null,

@@ -80,8 +80,25 @@ class ReorderState<T>(
 
     internal fun update(source: List<T>) {
         this.source = source
-        if (draggingKey == null) local = null
+        // Mid-drag the local order stays, minus rows the store no longer shows here (completed or
+        // deleted meanwhile, e.g. by sync): showing one would give the list a key twice.
+        local = if (draggingKey == null) null else local?.let { stillShown(it, source, keyOf) }
         items = local ?: source
+    }
+
+    /**
+     * After a drop, the dropped order shows until the store's arrives; if the drop changed
+     * nothing there (refused, or the same place), go back to the store's order rather than keep
+     * the dragged row's subtasks folded away.
+     */
+    private fun settle(order: List<T>) {
+        scope.launch {
+            delay(1000)
+            if (draggingKey == null && local === order) {
+                local = null
+                items = source
+            }
+        }
     }
 
     fun isDragging(item: T) = draggingKey != null && draggingKey == keyOf(item)
@@ -170,9 +187,11 @@ class ReorderState<T>(
         }
         if (moved && releveled) {
             s.nest!!.onNest(order, targetDepth)
+            settle(order)
         } else if (moved && changed) {
             // Keep showing the dropped order until the store's arrives.
             s.onDrop(order)
+            settle(order)
         } else {
             local = null
             items = source
@@ -243,6 +262,12 @@ class ReorderState<T>(
             }
         }
     }
+}
+
+/** [order] without the rows [source] no longer has. */
+internal fun <T> stillShown(order: List<T>, source: List<T>, keyOf: (T) -> Any): List<T> {
+    val keys = source.mapTo(HashSet(), keyOf)
+    return order.filter { keyOf(it) in keys }
 }
 
 @Composable
